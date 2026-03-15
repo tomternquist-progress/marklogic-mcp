@@ -9,7 +9,7 @@ export class OpticClient {
   constructor(private readonly base: MarkLogicBaseClient) {}
 
   async query(plan: Record<string, unknown>, database?: string): Promise<OpticResult> {
-    const params: Record<string, string> = { output: "json" };
+    const params: Record<string, string> = {};
     if (database) params.database = database;
 
     const raw = await this.base.post<Record<string, unknown>>(
