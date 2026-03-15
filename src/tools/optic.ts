@@ -8,15 +8,25 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
     "ml_optic_query",
     "Execute an Optic query against MarkLogic using a serialized plan (the $optic JSON format). Returns rows and column names.",
     {
-      plan: z.record(z.unknown()).describe(
-        "Serialized Optic plan as a JSON object. Must be the $optic plan format, e.g. {\"$optic\":{\"ns\":\"op\",\"fn\":\"operators\",\"args\":[...]}}"
+      plan: z.union([z.record(z.unknown()), z.string()]).describe(
+        "Serialized Optic plan as a JSON object (preferred) or JSON string. Must be the $optic plan format, e.g. {\"$optic\":{\"ns\":\"op\",\"fn\":\"operators\",\"args\":[...]}}"
       ),
       database: z.string().optional().describe("Target database (uses server default if omitted)"),
       strip_schema_prefix: z.boolean().optional().describe("Strip the 'schema.view.' prefix from result column names. Useful when querying a single view and the fully-qualified names are too verbose. Default: false."),
     },
     async ({ plan, database, strip_schema_prefix }) => {
+      let planObj: Record<string, unknown>;
+      if (typeof plan === "string") {
+        try {
+          planObj = JSON.parse(plan) as Record<string, unknown>;
+        } catch {
+          return { content: [{ type: "text", text: "Invalid plan: could not parse string as JSON. Pass the $optic plan as a JSON object, not a string." }], isError: true };
+        }
+      } else {
+        planObj = plan;
+      }
       try {
-        const result = await clients.optic.query(plan, database, strip_schema_prefix);
+        const result = await clients.optic.query(planObj, database, strip_schema_prefix);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         let msg = toToolError(err);

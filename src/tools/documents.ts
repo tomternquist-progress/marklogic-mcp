@@ -26,6 +26,49 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
   );
 
   server.tool(
+    "ml_document_sample",
+    "Fetch a small sample of documents from a MarkLogic collection and show their content and structure. Use this to understand document shape before writing TDE templates, Optic queries, or eval scripts — it saves multiple round-trips compared to listing URIs then fetching individually.\n\nReturns up to 5 documents with their full content. Use show_keys_only=true to get just the top-level field names and value types without the full document bodies.",
+    {
+      collection: z.string().describe("Collection to sample documents from"),
+      count: z.number().int().positive().max(5).optional().describe("Number of documents to return (default: 3, max: 5)"),
+      show_keys_only: z.boolean().optional().describe("Return only top-level field names and value types instead of full document content. Useful for large documents or when you just need the schema shape."),
+      database: z.string().optional().describe("Database name (uses server default if omitted)"),
+    },
+    async ({ collection, count = 3, show_keys_only, database }) => {
+      try {
+        const listing = await clients.documents.list({ collection, pageLength: count, database });
+        if (!listing.uris || listing.uris.length === 0) {
+          return { content: [{ type: "text", text: `No documents found in collection "${collection}".` }] };
+        }
+        const samples: unknown[] = [];
+        for (const uri of listing.uris.slice(0, count)) {
+          try {
+            const doc = await clients.documents.get(uri, database, false);
+            const content = typeof doc.content === "string"
+              ? (() => { try { return JSON.parse(doc.content as string) as unknown; } catch { return doc.content; } })()
+              : doc.content;
+            if (show_keys_only && content !== null && typeof content === "object" && !Array.isArray(content)) {
+              const shape: Record<string, string> = {};
+              for (const [k, v] of Object.entries(content as Record<string, unknown>)) {
+                const t = v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
+                shape[k] = t;
+              }
+              samples.push({ uri, fields: shape });
+            } else {
+              samples.push({ uri, content });
+            }
+          } catch {
+            samples.push({ uri, error: "Could not retrieve document" });
+          }
+        }
+        return { content: [{ type: "text", text: JSON.stringify(samples, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
     "ml_document_list",
     "List document URIs in a MarkLogic collection or directory.",
     {

@@ -10,6 +10,31 @@ import { AuthenticationError, MarkLogicError } from "../utils/errors.js";
 import { buildDigestHeader } from "../utils/digest.js";
 import { logger } from "../utils/logger.js";
 
+/**
+ * Extract a readable error message from MarkLogic's HTML 500 error body.
+ * MarkLogic returns errors as HTML with <dl><dt>label</dt><dd>value</dd></dl> pairs.
+ * Falls back to stripping all tags if the <dl> structure isn't found.
+ */
+function extractHtmlError(raw: string): string {
+  // Try to pull <dt>/<dd> pairs out of the <dl> block
+  const dlMatch = raw.match(/<dl[^>]*>([\s\S]*?)<\/dl>/i);
+  if (dlMatch) {
+    const dl = dlMatch[1];
+    const dtMatches = [...dl.matchAll(/<dt[^>]*>([\s\S]*?)<\/dt>/gi)];
+    const ddMatches = [...dl.matchAll(/<dd[^>]*>([\s\S]*?)<\/dd>/gi)];
+    const stripTags = (s: string) => s.replace(/<[^>]+>/g, "").trim();
+    const parts: string[] = [];
+    for (let i = 0; i < dtMatches.length; i++) {
+      const key = stripTags(dtMatches[i][1]);
+      const val = ddMatches[i] ? stripTags(ddMatches[i][1]) : "";
+      if (key && val) parts.push(`${key}: ${val}`);
+    }
+    if (parts.length > 0) return parts.join(" | ");
+  }
+  // Fallback: strip HTML tags and collapse whitespace
+  return raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 600);
+}
+
 export class MarkLogicBaseClient {
   readonly config: ConnectionConfig;
   readonly http: AxiosInstance;   // Main REST port (8000, etc.)
@@ -96,7 +121,7 @@ export class MarkLogicBaseClient {
     const mlMessage =
       errObj?.["message"] ??
       (body?.message as string | undefined) ??
-      (rawBodyStr ? `${error.message} — body: ${rawBodyStr.slice(0, 300)}` : error.message);
+      (rawBodyStr ? `${error.message} — body: ${extractHtmlError(rawBodyStr)}` : error.message);
     const mlCode = (errObj?.["status-code"] ?? errObj?.["messageCode"]) as string | undefined;
 
     if (status === 401) return new AuthenticationError(`${this.config.host}`);

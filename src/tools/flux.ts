@@ -109,7 +109,7 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals). NOTE: The URL must be reachable from the flux runner host, not your local machine. .gz files are passed to Flux as-is and decompressed by Spark natively. ZIP (.zip) files are automatically extracted by the runner — all files inside the ZIP are extracted to a temp directory and that directory is passed as --path. WARNING: Socrata /rows.json endpoints return an array-of-arrays format (not an array of objects) — use /rows.csv with import-delimited-files instead for one-document-per-record imports."),
       collections: z.array(z.string()).optional().describe("MarkLogic collections to assign to imported documents"),
       permissions: z.string().optional().describe("Comma-separated role:capability pairs, e.g. 'rest-reader:read,rest-writer:update'. Valid MarkLogic capabilities: read, insert, update, execute, node-update. Must be lowercase."),
-      uri_template: z.string().optional().describe("URI template for document naming, e.g. '/import/{filename}'"),
+      uri_template: z.string().optional().describe("URI template for document naming, e.g. '/import/{filename}'. Template variables must exactly match the CSV/JSON field names. WARNING: field names with spaces (e.g. 'State Abbreviation') cannot be used in URI templates — Flux will silently produce malformed URIs. Sanitize column names first (use column_names to rename headers, or import without a uri_template and rely on auto-generated URIs)."),
       database: z.string().optional().describe("Target MarkLogic database (defaults to configured database)"),
       jdbc_url: z.string().optional().describe("JDBC URL for import-jdbc, e.g. 'jdbc:postgresql://host/db'"),
       jdbc_driver: z.string().optional().describe("JDBC driver class, e.g. 'org.postgresql.Driver'"),
@@ -255,10 +255,14 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
           const colSummary = cols.length > 0
             ? `\n  Columns (${cols.length}): ${cols.map((c) => `${c.name}:${c.scalarType}${c.nullable ? "?" : ""}`).join(", ")}`
             : "";
+          const sanitizedNote = generated.sanitizedColumns.length > 0
+            ? `\n  WARNING: ${generated.sanitizedColumns.length} column(s) had spaces/special chars in their JSON property names and were sanitized (spaces→underscores) for TDE compatibility: ${generated.sanitizedColumns.join(", ")}. Verify the view returns data with ml_tde_validate.`
+            : "";
           tdeGenNote =
             `\n\nTDE AUTO-GENERATED: ${generated.uri}\n` +
             `  Schema: ${schemaName}, View: ${viewName}` +
             colSummary +
+            sanitizedNote +
             `\n  Run ml_tde_validate with tde_uri="${generated.uri}" and collection="${targetCollection}" to verify.`;
         } catch (tdeErr) {
           tdeGenNote = `\n\nWARNING: Could not auto-generate TDE: ${tdeErr instanceof Error ? tdeErr.message : String(tdeErr)}`;

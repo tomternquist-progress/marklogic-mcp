@@ -51,6 +51,8 @@ export interface TdeColumn {
 export interface GeneratedTdeTemplate {
   uri: string;
   template: Record<string, unknown>;
+  /** Column names that were sanitized (spaces/special chars replaced with underscores) */
+  sanitizedColumns: string[];
 }
 
 export interface ViewDescriptor {
@@ -316,17 +318,25 @@ export class SchemaClient {
   }): Promise<TdeValidationResult> {
     const { tdeUri, collection, sampleSize = 5 } = options;
 
+    // Read the TDE template from the Schemas database first, then pass its JSON
+    // content as a variable so the eval (which runs against the Documents DB) can
+    // reconstruct a document node with xdmp.unquote() without needing cross-DB access.
+    const tdeResult = await this.getTdeSchemas(undefined, tdeUri);
+    if (!tdeResult.length) {
+      throw new Error(`TDE template not found at: ${tdeUri}`);
+    }
+    const tdeContent = (tdeResult[0] as { content: unknown }).content;
+    const tdeJson = typeof tdeContent === "string" ? tdeContent : JSON.stringify(tdeContent);
+
     const javascript = `
       const tde = require('/MarkLogic/tde');
-      const template = fn.doc(tdeUri);
-      if (!template) throw new Error('TDE template not found at: ' + tdeUri);
+      const templateNode = fn.head(xdmp.unquote(tdeJson));
+      if (!templateNode) throw new Error('Failed to reconstruct TDE template from JSON');
       const results = [];
-      let count = 0;
       for (const doc of fn.subsequence(cts.search(cts.collectionQuery(collection)), 1, sampleSize)) {
-        count++;
         const docUri = xdmp.nodeUri(doc);
         try {
-          const errs = tde.validate([template], [doc]);
+          const errs = tde.validate([templateNode], [doc]);
           const errArr = Array.from(errs).map(e => String(e));
           results.push({ uri: docUri, valid: errArr.length === 0, errors: errArr });
         } catch (e) {
@@ -338,7 +348,7 @@ export class SchemaClient {
 
     const body = new URLSearchParams();
     body.append("javascript", javascript);
-    body.append("vars[tdeUri]", JSON.stringify(tdeUri));
+    body.append("vars[tdeJson]", JSON.stringify(tdeJson));
     body.append("vars[collection]", JSON.stringify(collection));
     body.append("vars[sampleSize]", JSON.stringify(sampleSize));
 
@@ -461,11 +471,17 @@ export class SchemaClient {
       database: options.database,
     });
 
+    const sanitizedColumns: string[] = [];
     const columns: TdeColumn[] = discovery.inferredFields
       .filter((f) => !f.path.includes(".")) // top-level fields only
       .map((f) => {
         const scalarType = inferTdeScalarType(f);
-        const col: TdeColumn = { name: f.path, scalarType, val: f.path };
+        // MarkLogic's JSON-to-XML model maps property names to XML element names.
+        // Spaces and characters invalid in XML names are converted to underscores.
+        // TDE val paths must use the sanitized form, not the raw JSON key.
+        const sanitizedPath = f.path.replace(/[ \t]/g, "_").replace(/[^a-zA-Z0-9_.:-]/g, "_");
+        if (sanitizedPath !== f.path) sanitizedColumns.push(f.path);
+        const col: TdeColumn = { name: sanitizedPath, scalarType, val: sanitizedPath };
         if (f.nullable || f.type === "null" || f.type === "mixed") col.nullable = true;
         return col;
       });
@@ -483,7 +499,7 @@ export class SchemaClient {
     };
 
     const uri = `/tde/${options.schemaName}/${options.viewName}.json`;
-    return { uri, template };
+    return { uri, template, sanitizedColumns };
   }
 }
 
