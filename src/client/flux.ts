@@ -68,9 +68,17 @@ export class FluxClient {
     } catch (err: unknown) {
       const isConnErr = err instanceof Error && ("code" in err) &&
         ["ECONNREFUSED", "ENOTFOUND", "ECONNRESET"].includes((err as NodeJS.ErrnoException).code ?? "");
-      const msg = isConnErr
-        ? `Flux runner is not reachable at ${this.http.defaults.baseURL}. Ensure the flux-runner service is running (use --profile flux with docker compose).`
-        : (err instanceof Error ? err.message : String(err));
+      let msg: string;
+      if (isConnErr) {
+        msg = `Flux runner is not reachable at ${this.http.defaults.baseURL}. Ensure the flux-runner service is running (use --profile flux with docker compose).`;
+      } else if (axios.isAxiosError(err) && err.response) {
+        const body = typeof err.response.data === "string"
+          ? err.response.data
+          : JSON.stringify(err.response.data);
+        msg = `Flux runner returned HTTP ${err.response.status}: ${body}`;
+      } else {
+        msg = err instanceof Error ? err.message : String(err);
+      }
       return { exitCode: -1, output: msg, success: false };
     }
   }

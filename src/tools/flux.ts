@@ -23,7 +23,7 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
         "import-mlcp-archive",
       ]).describe("Flux import subcommand"),
       path: z.string().optional().describe("Local path or S3 URI (s3a://bucket/key) to read from. For import-jdbc, omit this. Use http_url instead to download from a URL first."),
-      http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals). NOTE: .gz files are decompressed automatically when the filename ends in .gz. ZIP (.zip) files are NOT supported — extract them first or use a direct link to the uncompressed file. For other compression formats use extra_args: ['--spark-prop', 'compression=<algorithm>']. WARNING: Socrata /rows.json endpoints return an array-of-arrays format (not an array of objects) — use /rows.csv with import-delimited-files instead for one-document-per-record imports."),
+      http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals). NOTE: The URL must be reachable from the flux runner host, not your local machine. .gz files are decompressed automatically when the filename ends in .gz. ZIP (.zip) files: pass extra_args: ['--compression', 'zip'] to tell Flux/Spark to decompress on read. For other compression formats use extra_args: ['--compression', '<algorithm>'] (e.g. 'bzip2', 'lz4'). WARNING: Socrata /rows.json endpoints return an array-of-arrays format (not an array of objects) — use /rows.csv with import-delimited-files instead for one-document-per-record imports."),
       collections: z.array(z.string()).optional().describe("MarkLogic collections to assign to imported documents"),
       permissions: z.string().optional().describe("Comma-separated role:capability pairs, e.g. 'rest-reader:read,rest-writer:update'. Valid MarkLogic capabilities: read, insert, update, execute, node-update. Must be lowercase."),
       uri_template: z.string().optional().describe("URI template for document naming, e.g. '/import/{filename}'"),
@@ -37,30 +37,35 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       skip_preview: z.boolean().optional().describe("Skip the automatic preview step. When http_url is set and no --limit is in extra_args, a preview is run first to show row count and sample data. Set to true to bypass this and import immediately."),
     },
     async ({ subcommand, path, http_url, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, skip_preview }) => {
-      // Validate permissions format before sending to Flux (avoids confusing uppercased error)
+      // Validate and convert permissions from "role:capability" notation to Flux's "role,capability" alternating format
+      let fluxPermissions: string | undefined;
       if (permissions) {
         const validCapabilities = new Set(["read", "insert", "update", "execute", "node-update"]);
+        const parts: string[] = [];
         for (const pair of permissions.split(",")) {
-          const parts = pair.trim().split(":");
-          if (parts.length !== 2) {
+          const tokens = pair.trim().split(":");
+          if (tokens.length !== 2) {
             return { content: [{ type: "text", text: `Invalid permissions format: "${pair.trim()}". Expected "role:capability" pairs separated by commas.` }], isError: true };
           }
-          const capability = parts[1].trim().toLowerCase();
+          const capability = tokens[1].trim().toLowerCase();
           if (!validCapabilities.has(capability)) {
-            return { content: [{ type: "text", text: `Invalid capability "${parts[1].trim()}" in permissions. Valid MarkLogic capabilities are: ${[...validCapabilities].join(", ")}.` }], isError: true };
+            return { content: [{ type: "text", text: `Invalid capability "${tokens[1].trim()}" in permissions. Valid MarkLogic capabilities are: ${[...validCapabilities].join(", ")}.` }], isError: true };
           }
+          parts.push(tokens[0].trim(), capability);
         }
+        fluxPermissions = parts.join(",");
       }
 
       const args: string[] = [
         subcommand,
         "--connection-string", flux.connectionString(database),
+        "--auth-type", flux.authType,
       ];
 
       if (http_url) args.push("--http-url", http_url);
       else if (path) args.push("--path", path);
       if (collections?.length) args.push("--collections", collections.join(","));
-      if (permissions) args.push("--permissions", permissions);
+      if (fluxPermissions) args.push("--permissions", fluxPermissions);
       if (uri_template) args.push("--uri-template", uri_template);
       if (jdbc_url) args.push("--jdbc-url", jdbc_url);
       if (jdbc_driver) args.push("--jdbc-driver", jdbc_driver);
@@ -73,9 +78,9 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       const hasLimit = extra_args?.some(a => a === "--limit");
       if (http_url && !skip_preview && !hasLimit) {
         const previewArgs = [
+          subcommand,
           "--connection-string", flux.connectionString(database),
           "--auth-type", flux.authType,
-          subcommand,
           "--http-url", http_url,
           "--preview", "10",
         ];
@@ -87,6 +92,14 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       }
 
       const result = await flux.run(args);
+
+      // Improve PATH_NOT_FOUND error: the path resolves on the flux runner host, not the client machine
+      if (!result.success && result.output.includes("PATH_NOT_FOUND")) {
+        const enhanced = result.output + "\n\nNOTE: --path must exist on the flux runner host, not your local machine. " +
+          "Use http_url to serve the file over HTTP so the runner can download it, or place the file in a volume mounted on the runner.";
+        return { content: [{ type: "text", text: formatResult({ ...result, output: enhanced }) }], isError: true };
+      }
+
       return { content: [{ type: "text", text: formatResult(result) }], isError: !result.success };
     }
   );
@@ -119,6 +132,7 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       const args: string[] = [
         subcommand,
         "--connection-string", flux.connectionString(database),
+        "--auth-type", flux.authType,
       ];
 
       if (path) args.push("--path", path);
@@ -154,6 +168,7 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       const args: string[] = [
         "copy",
         "--connection-string", flux.connectionString(database),
+        "--auth-type", flux.authType,
         "--output-connection-string", output_connection_string,
       ];
 
@@ -186,6 +201,7 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       const args: string[] = [
         "reprocess",
         "--connection-string", flux.connectionString(database),
+        "--auth-type", flux.authType,
         "--invoke", invoke_module,
       ];
 
@@ -209,12 +225,23 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       preview_rows: z.number().int().positive().optional().describe("Number of rows to preview (default: 10)"),
     },
     async ({ args, preview_rows }) => {
-      // Auto-inject connection string and auth type if not already supplied
+      // Auto-inject connection string and auth type if not already supplied.
+      // Flux requires connection flags AFTER the subcommand, so we extract the subcommand
+      // (first element) and insert connection args immediately after it.
       const hasConn = args.some(a => a === "--connection-string" || a === "-c");
-      const connArgs = hasConn
-        ? []
-        : ["--connection-string", flux.connectionString(), "--auth-type", flux.authType];
-      const previewArgs = [...connArgs, ...args, "--preview", String(preview_rows ?? 10)];
+      let previewArgs: string[];
+      if (hasConn) {
+        previewArgs = [...args, "--preview", String(preview_rows ?? 10)];
+      } else {
+        const [subcommand, ...rest] = args;
+        previewArgs = [
+          subcommand,
+          "--connection-string", flux.connectionString(),
+          "--auth-type", flux.authType,
+          ...rest,
+          "--preview", String(preview_rows ?? 10),
+        ];
+      }
       const result = await flux.run(previewArgs);
       return { content: [{ type: "text", text: formatResult(result) }], isError: !result.success };
     }
