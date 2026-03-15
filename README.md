@@ -55,7 +55,20 @@ MCP_TRANSPORT=http MCP_HTTP_PORT=3000 ML_HOST=your-host ML_USERNAME=admin ML_PAS
 
 Health check: `GET http://localhost:3000/health`
 
-### Docker Compose (local MarkLogic + MCP server)
+### Docker Compose — MCP only (existing MarkLogic install)
+
+```bash
+# Point at your existing MarkLogic instance
+ML_HOST=192.168.175.200 ML_AUTH_TYPE=basic ML_PASSWORD=admin \
+  docker compose -f docker-compose.mcp-only.yml up
+
+# MCP server available at http://localhost:3000
+# Health check: curl http://localhost:3000/health
+```
+
+All variables fall back to defaults so you can override only what you need. You can also create a `.env` file in the same directory and `docker compose` will pick it up automatically.
+
+### Docker Compose — full stack (MarkLogic + MCP server)
 
 ```bash
 docker compose up
