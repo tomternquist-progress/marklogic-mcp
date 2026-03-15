@@ -255,6 +255,65 @@ Output only the SPARQL query.`,
     })
   );
 
+  // ── Dataset Import Prompts ─────────────────────────────────────────────────
+
+  server.prompt(
+    "gdelt_import",
+    "Import GDELT 1.0 Event Database records into MarkLogic for a specific date. Provides the correct URL, all 58 column names, and exact flux_import parameters.",
+    {
+      date: z.string().describe("Date to import in YYYYMMDD format, e.g. '20260314'"),
+      collection: z.string().optional().describe("MarkLogic collection to assign (default: gdelt-events)"),
+      database: z.string().optional().describe("Target MarkLogic database (defaults to configured database)"),
+    },
+    ({ date, collection, database }) => {
+      const columnNames = [
+        "GlobalEventID", "SQLDATE", "MonthYear", "Year", "FractionDate",
+        "Actor1Code", "Actor1Name", "Actor1CountryCode", "Actor1KnownGroupCode", "Actor1EthnicCode",
+        "Actor1Religion1Code", "Actor1Religion2Code", "Actor1Type1Code", "Actor1Type2Code", "Actor1Type3Code",
+        "Actor2Code", "Actor2Name", "Actor2CountryCode", "Actor2KnownGroupCode", "Actor2EthnicCode",
+        "Actor2Religion1Code", "Actor2Religion2Code", "Actor2Type1Code", "Actor2Type2Code", "Actor2Type3Code",
+        "IsRootEvent", "EventCode", "EventBaseCode", "EventRootCode", "QuadClass", "GoldsteinScale",
+        "NumMentions", "NumSources", "NumArticles", "AvgTone",
+        "Actor1Geo_Type", "Actor1Geo_FullName", "Actor1Geo_CountryCode", "Actor1Geo_ADM1Code",
+        "Actor1Geo_Lat", "Actor1Geo_Long", "Actor1Geo_FeatureID",
+        "Actor2Geo_Type", "Actor2Geo_FullName", "Actor2Geo_CountryCode", "Actor2Geo_ADM1Code",
+        "Actor2Geo_Lat", "Actor2Geo_Long", "Actor2Geo_FeatureID",
+        "ActionGeo_Type", "ActionGeo_FullName", "ActionGeo_CountryCode", "ActionGeo_ADM1Code",
+        "ActionGeo_Lat", "ActionGeo_Long", "ActionGeo_FeatureID",
+        "DATEADDED", "SOURCEURL",
+      ];
+      const targetCollection = collection ?? "gdelt-events";
+      const url = `http://data.gdeltproject.org/events/${date}.export.CSV.zip`;
+      return {
+        messages: [{
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `Import GDELT 1.0 Event Database records for ${date} into MarkLogic.
+
+GDELT event export files are tab-delimited ZIP archives with no header row. Use the column_names parameter so each imported JSON document gets proper field names.
+
+Call flux_import with these exact parameters:
+\`\`\`json
+{
+  "subcommand": "import-delimited-files",
+  "http_url": "${url}",
+  "column_names": ${JSON.stringify(columnNames)},
+  "extra_args": ["--delimiter", "\\t", "--ignore-null-fields"],
+  "collections": ["${targetCollection}"],
+  "uri_template": "/gdelt/events/{GlobalEventID}.json",
+  "permissions": "rest-reader:read,rest-writer:update"${database ? `,\n  "database": "${database}"` : ""},
+  "skip_preview": true
+}
+\`\`\`
+
+Expect ~80,000–100,000 event records and approximately 90 seconds import time.`,
+          },
+        }],
+      };
+    }
+  );
+
   // ── QuickSight Integration Prompts ─────────────────────────────────────────
 
   server.prompt(

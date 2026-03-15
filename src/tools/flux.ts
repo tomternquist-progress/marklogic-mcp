@@ -33,10 +33,12 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       query: z.string().optional().describe("SQL query for import-jdbc"),
       thread_count: z.number().int().positive().optional().describe("Parallel writer threads (default: 4)"),
       batch_size: z.number().int().positive().optional().describe("Documents per batch (default: 100)"),
-      extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim. Common flags for import-delimited-files: ['--delimiter', '|'] for pipe-delimited, ['--encoding', 'ISO-8859-1'] for non-UTF-8 files. For headerless files: ['--header-line', '1'] (skip header) or supply column names via ['--spark-master', 'local', '--spark-prop', 'header=false']. To force compression: ['--spark-prop', 'compression=gzip']. Run flux_help with subcommand='import-delimited-files' to see all accepted flags."),
+      column_names: z.array(z.string()).optional().describe("Column names for headerless delimited files. When set, the runner prepends these as a header row before importing — so each document gets proper field names instead of _c0, _c1, etc. Use with import-delimited-files when the source has no header (e.g. GDELT events, many government open-data exports)."),
+      local_file: z.string().optional().describe("Absolute path to a file on the MCP server machine. The file is uploaded to the flux runner before importing — avoiding any need for a temporary HTTP server. Cannot be combined with http_url or path."),
+      extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim. Common flags for import-delimited-files: ['--delimiter', '|'] for pipe-delimited, ['--encoding', 'ISO-8859-1'] for non-UTF-8 files. To force compression: ['--spark-prop', 'compression=gzip']. Run flux_help with subcommand='import-delimited-files' to see all accepted flags."),
       skip_preview: z.boolean().optional().describe("Skip the automatic preview step. When http_url is set and no --limit is in extra_args, a preview is run first to show row count and sample data. Set to true to bypass this and import immediately."),
     },
-    async ({ subcommand, path, http_url, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, skip_preview }) => {
+    async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, skip_preview }) => {
       // Validate and convert permissions from "role:capability" notation to Flux's "role,capability" alternating format
       let fluxPermissions: string | undefined;
       if (permissions) {
@@ -62,8 +64,21 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
         "--auth-type", flux.authType,
       ];
 
-      if (http_url) args.push("--http-url", http_url);
-      else if (path) args.push("--path", path);
+      // local_file: upload from MCP server → runner, then use as --path
+      if (local_file) {
+        let runnerPath: string;
+        try {
+          runnerPath = await flux.upload(local_file);
+        } catch (err) {
+          return { content: [{ type: "text", text: `Failed to upload local file to flux runner: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+        }
+        args.push("--path", runnerPath);
+      } else if (http_url) {
+        args.push("--http-url", http_url);
+      } else if (path) {
+        args.push("--path", path);
+      }
+      if (column_names?.length) args.push("--column-names", column_names.join("\t"));
       if (collections?.length) args.push("--collections", collections.join(","));
       if (fluxPermissions) args.push("--permissions", fluxPermissions);
       if (uri_template) args.push("--uri-template", uri_template);
@@ -74,7 +89,8 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       if (batch_size) args.push("--batch-size", String(batch_size));
       if (extra_args?.length) args.push(...extra_args);
 
-      // Auto-preview when importing from http_url with no explicit limit
+      // Auto-preview when importing from http_url with no explicit limit.
+      // Include column_names in the preview so field names show up correctly.
       const hasLimit = extra_args?.some(a => a === "--limit");
       if (http_url && !skip_preview && !hasLimit) {
         const previewArgs = [
@@ -82,6 +98,7 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
           "--connection-string", flux.connectionString(database),
           "--auth-type", flux.authType,
           "--http-url", http_url,
+          ...(column_names?.length ? ["--column-names", column_names.join("\t")] : []),
           "--preview", "10",
         ];
         const preview = await flux.run(previewArgs);
@@ -96,7 +113,7 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       // Improve PATH_NOT_FOUND error: the path resolves on the flux runner host, not the client machine
       if (!result.success && result.output.includes("PATH_NOT_FOUND")) {
         const enhanced = result.output + "\n\nNOTE: --path must exist on the flux runner host, not your local machine. " +
-          "Use http_url to serve the file over HTTP so the runner can download it, or place the file in a volume mounted on the runner.";
+          "Use local_file to upload a file from this machine to the runner, or use http_url to download from a URL.";
         return { content: [{ type: "text", text: formatResult({ ...result, output: enhanced }) }], isError: true };
       }
 

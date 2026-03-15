@@ -1,3 +1,5 @@
+import { readFileSync, statSync } from "node:fs";
+import { basename } from "node:path";
 import axios, { type AxiosInstance } from "axios";
 import type { ConnectionConfig } from "../config/schema.js";
 
@@ -81,6 +83,33 @@ export class FluxClient {
       }
       return { exitCode: -1, output: msg, success: false };
     }
+  }
+
+  /**
+   * Upload a local file (on the MCP server) to the flux runner's /tmp directory.
+   * Returns the absolute path of the file on the runner, suitable for use as --path.
+   */
+  async upload(localPath: string): Promise<string> {
+    if (!this.configured) {
+      throw new Error("Flux runner is not configured. Set FLUX_RUNNER_URL.");
+    }
+    try {
+      statSync(localPath);
+    } catch {
+      throw new Error(`File not found on MCP server: ${localPath}`);
+    }
+    const fileBytes = readFileSync(localPath);
+    const filename = basename(localPath);
+    const res = await this.http.post<{ path: string }>(
+      `/upload?filename=${encodeURIComponent(filename)}`,
+      fileBytes,
+      {
+        headers: { "Content-Type": "application/octet-stream" },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+    return res.data.path;
   }
 
   async healthCheck(): Promise<boolean> {

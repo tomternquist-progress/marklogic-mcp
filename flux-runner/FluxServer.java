@@ -46,6 +46,34 @@ public class FluxServer {
             respond(exchange, 200, "{\"status\":\"ok\"}");
         });
 
+        // Upload a file from the MCP server to the runner's /tmp so it can be used as --path.
+        // POST /upload?filename=myfile.csv  (raw bytes in request body)
+        // Returns: { "path": "/tmp/myfile.csv" }
+        server.createContext("/upload", exchange -> {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                return;
+            }
+            String query = exchange.getRequestURI().getQuery();
+            String filename = "upload-" + System.currentTimeMillis();
+            if (query != null) {
+                for (String param : query.split("&")) {
+                    String[] kv = param.split("=", 2);
+                    if (kv.length == 2 && "filename".equals(kv[0])) {
+                        filename = java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8)
+                            .replaceAll("[^a-zA-Z0-9._-]", "_");
+                        break;
+                    }
+                }
+            }
+            Path dest = Path.of("/tmp", filename);
+            try (InputStream is = exchange.getRequestBody()) {
+                Files.copy(is, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+            System.out.println("Uploaded " + Files.size(dest) + " bytes → " + dest);
+            respond(exchange, 200, "{\"path\":" + jsonString(dest.toString()) + "}");
+        });
+
         // Thread pool: Flux jobs are blocking so keep pool small to avoid resource exhaustion
         server.setExecutor(Executors.newFixedThreadPool(4));
         System.out.println("Flux runner listening on :" + port);
@@ -89,6 +117,14 @@ public class FluxServer {
                 resolvedArgs = resolveHttpUrls(userArgs, tempFiles);
             } catch (Exception e) {
                 respond(exchange, 400, jsonObj("error", "Failed to download --http-url: " + e.getMessage()));
+                return;
+            }
+
+            // Inject --column-names as a header row into the target file(s) if requested
+            try {
+                resolvedArgs = injectColumnNames(resolvedArgs);
+            } catch (Exception e) {
+                respond(exchange, 400, jsonObj("error", "Failed to inject column names: " + e.getMessage()));
                 return;
             }
 
@@ -223,6 +259,74 @@ public class FluxServer {
                     zis.closeEntry();
                 }
             }
+        }
+
+        /**
+         * Look for --column-names <tab-delimited-header> in args. If present, remove it
+         * from the arg list and prepend the header row to every delimited file at the
+         * path identified by --path in the same arg list.
+         */
+        private List<String> injectColumnNames(List<String> args) throws IOException {
+            List<String> result = new ArrayList<>(args);
+            int colNamesIdx = -1;
+            String header = null;
+
+            for (int i = 0; i < result.size() - 1; i++) {
+                if ("--column-names".equals(result.get(i))) {
+                    colNamesIdx = i;
+                    header = result.get(i + 1);
+                    break;
+                }
+            }
+            if (header == null) return result;
+
+            // Remove --column-names <value> from the args that will be passed to Flux
+            result.remove(colNamesIdx); // removes "--column-names"
+            result.remove(colNamesIdx); // removes the value (shifted down)
+
+            // Find --path and inject the header into the file(s) there
+            for (int i = 0; i < result.size() - 1; i++) {
+                if ("--path".equals(result.get(i))) {
+                    Path dataPath = Path.of(result.get(i + 1));
+                    injectHeaderIntoPath(dataPath, header);
+                    break;
+                }
+            }
+            return result;
+        }
+
+        /**
+         * Prepend header to every delimited file in a directory, or to a single file.
+         * Only processes files with common delimited-text extensions.
+         */
+        private void injectHeaderIntoPath(Path dataPath, String header) throws IOException {
+            if (Files.isDirectory(dataPath)) {
+                try (var stream = Files.list(dataPath)) {
+                    List<Path> files = stream
+                        .filter(p -> {
+                            String name = p.getFileName().toString().toLowerCase();
+                            return name.endsWith(".csv") || name.endsWith(".tsv")
+                                || name.endsWith(".txt") || name.endsWith(".tab");
+                        })
+                        .toList();
+                    for (Path file : files) {
+                        prependHeader(file, header);
+                    }
+                }
+            } else if (Files.isRegularFile(dataPath)) {
+                prependHeader(dataPath, header);
+            }
+        }
+
+        /** Write header + newline + original file contents back to the same file. */
+        private void prependHeader(Path file, String header) throws IOException {
+            byte[] original = Files.readAllBytes(file);
+            byte[] headerBytes = (header + "\n").getBytes(StandardCharsets.UTF_8);
+            byte[] combined = new byte[headerBytes.length + original.length];
+            System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
+            System.arraycopy(original, 0, combined, headerBytes.length, original.length);
+            Files.write(file, combined);
+            System.out.println("Injected header into " + file + " (" + original.length + " → " + combined.length + " bytes)");
         }
 
         /**
