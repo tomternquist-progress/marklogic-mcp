@@ -34,9 +34,9 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       thread_count: z.number().int().positive().optional().describe("Parallel writer threads (default: 4)"),
       batch_size: z.number().int().positive().optional().describe("Documents per batch (default: 100)"),
       column_names: z.array(z.string()).optional().describe("Column names for headerless delimited files. When set, the runner prepends these as a header row before importing — so each document gets proper field names instead of _c0, _c1, etc. Use with import-delimited-files when the source has no header (e.g. GDELT events, many government open-data exports)."),
-      local_file: z.string().optional().describe("Absolute path to a file on the MCP server machine. The file is uploaded to the flux runner before importing — avoiding any need for a temporary HTTP server. Cannot be combined with http_url or path."),
+      local_file: z.string().optional().describe("Absolute path to a file on the host where the MCP server process is running — NOT the flux runner container and NOT your local development machine if you are connecting remotely. The MCP server reads this path and uploads it to the flux runner over HTTP. If the file lives on your laptop or a machine other than the MCP server host, use http_url instead (serve the file over HTTP or use a public URL). Cannot be combined with http_url or path."),
       extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim. Common flags for import-delimited-files: ['--delimiter', '|'] for pipe-delimited, ['--encoding', 'ISO-8859-1'] for non-UTF-8 files. To force compression: ['--spark-prop', 'compression=gzip']. Run flux_help with subcommand='import-delimited-files' to see all accepted flags."),
-      skip_preview: z.boolean().optional().describe("Skip the automatic preview step. When http_url is set and no --limit is in extra_args, a preview is run first to show row count and sample data. Set to true to bypass this and import immediately."),
+      skip_preview: z.boolean().optional().describe("Deprecated — previews no longer run automatically. Kept for backwards compatibility; has no effect."),
     },
     async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, skip_preview }) => {
       // Validate and convert permissions from "role:capability" notation to Flux's "role,capability" alternating format
@@ -87,25 +87,17 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       if (query) args.push("--query", query);
       if (thread_count) args.push("--thread-count", String(thread_count));
       if (batch_size) args.push("--batch-size", String(batch_size));
-      if (extra_args?.length) args.push(...extra_args);
-
-      // Auto-preview when importing from http_url with no explicit limit.
-      // Include column_names in the preview so field names show up correctly.
-      const hasLimit = extra_args?.some(a => a === "--limit");
-      if (http_url && !skip_preview && !hasLimit) {
-        const previewArgs = [
-          subcommand,
-          "--connection-string", flux.connectionString(database),
-          "--auth-type", flux.authType,
-          "--http-url", http_url,
-          ...(column_names?.length ? ["--column-names", column_names.join("\t")] : []),
-          "--preview", "10",
-        ];
-        const preview = await flux.run(previewArgs);
-        const previewText = `[PREVIEW — 10 rows]\n\n${preview.output || "(no output)"}\n\n` +
-          `Dataset size is unknown. Call flux_import again with skip_preview: true to proceed with the full import, ` +
-          `or add a --limit via extra_args to import only a subset.`;
-        return { content: [{ type: "text", text: previewText }] };
+      if (extra_args?.length) {
+        // Auto-inject --tde-collections when --tde-schema/--tde-view are present but
+        // --tde-collections is not.  MarkLogic requires a collection or directory scope
+        // on TDE templates; without it the template insert fails with TDE-MISSINGSCOPE.
+        const hasTdeSchema = extra_args.some(a => a === "--tde-schema");
+        const hasTdeCollections = extra_args.some(a => a === "--tde-collections");
+        if (hasTdeSchema && !hasTdeCollections && collections?.length) {
+          args.push(...extra_args, "--tde-collections", collections.join(","));
+        } else {
+          args.push(...extra_args);
+        }
       }
 
       const result = await flux.run(args);
@@ -115,6 +107,24 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
         const enhanced = result.output + "\n\nNOTE: --path must exist on the flux runner host, not your local machine. " +
           "Use local_file to upload a file from this machine to the runner, or use http_url to download from a URL.";
         return { content: [{ type: "text", text: formatResult({ ...result, output: enhanced }) }], isError: true };
+      }
+
+      // When TDE template insertion fails, documents may already have been written.
+      // Surface this clearly so the caller knows to retry only the TDE step.
+      if (!result.success && result.output.includes("TDE-")) {
+        const docsWritten = (() => {
+          const m = result.output.match(/(\d[\d,]*)\s+documents?\s+(?:written|inserted|committed)/i);
+          return m ? m[0] : null;
+        })();
+        const note = docsWritten
+          ? `\n\nNOTE: ${docsWritten} before the TDE error — those documents are in MarkLogic. ` +
+            `To install the TDE view separately, call ml_document_put with the template JSON shown above, ` +
+            `adding a \"collections\" scope matching your import collections (e.g. "${collections?.join(",") ?? "gdelt-events"}").`
+          : `\n\nNOTE: The TDE template could not be installed (TDE-MISSINGSCOPE means a collection or ` +
+            `directory scope is required). Documents that were written before the error remain in MarkLogic. ` +
+            `Re-run with --tde-collections set to one of your import collections to fix the scope, ` +
+            `or install the TDE manually via ml_document_put.`;
+        return { content: [{ type: "text", text: formatResult({ ...result, output: result.output + note }) }], isError: true };
       }
 
       return { content: [{ type: "text", text: formatResult(result) }], isError: !result.success };

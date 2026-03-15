@@ -42,6 +42,7 @@ public class FluxServer {
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
 
         server.createContext("/run", new RunHandler());
+        server.createContext("/run-stream", new StreamRunHandler());
         server.createContext("/health", exchange -> {
             respond(exchange, 200, "{\"status\":\"ok\"}");
         });
@@ -139,12 +140,24 @@ public class FluxServer {
                 pb.environment().put("HOME", "/tmp");
 
                 Process process = pb.start();
-                boolean finished = process.waitFor(TIMEOUT_MINUTES, TimeUnit.MINUTES);
 
-                String output;
-                try (InputStream is = process.getInputStream()) {
-                    output = new String(is.readAllBytes(), StandardCharsets.UTF_8);
-                }
+                // Drain stdout on a virtual thread to prevent pipe-buffer deadlock.
+                // Spark is verbose; if we wait before reading, the OS pipe buffer (~64 KB)
+                // fills up, the child blocks on write, and waitFor() never returns.
+                StringBuilder outputBuf = new StringBuilder();
+                Thread reader = Thread.ofVirtual().start(() -> {
+                    try (var is = process.getInputStream()) {
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = is.read(buf)) != -1) {
+                            outputBuf.append(new String(buf, 0, n, StandardCharsets.UTF_8));
+                        }
+                    } catch (IOException ignored) {}
+                });
+
+                boolean finished = process.waitFor(TIMEOUT_MINUTES, TimeUnit.MINUTES);
+                reader.join(10_000); // give drain thread up to 10 s to flush remaining output
+                String output = outputBuf.toString();
 
                 if (!finished) {
                     process.destroyForcibly();
@@ -177,6 +190,17 @@ public class FluxServer {
                     } catch (Exception ignored) {}
                 }
             }
+        }
+
+        // Package-visible wrappers so StreamRunHandler can share the same logic.
+        List<String> resolveHttpUrlsPublic(List<String> args, List<Path> tempFiles) throws Exception {
+            return resolveHttpUrls(args, tempFiles);
+        }
+        List<String> injectColumnNamesPublic(List<String> args) throws IOException {
+            return injectColumnNames(args);
+        }
+        static List<String> parseArgsStatic(String json) {
+            return new RunHandler().parseArgsFromJson(json);
         }
 
         /**
@@ -318,15 +342,25 @@ public class FluxServer {
             }
         }
 
-        /** Write header + newline + original file contents back to the same file. */
+        /**
+         * Prepend header + newline to file using a temp-file swap so the entire
+         * original file is never loaded into heap (avoids 2× memory allocation for
+         * large files like GDELT exports).
+         */
         private void prependHeader(Path file, String header) throws IOException {
-            byte[] original = Files.readAllBytes(file);
-            byte[] headerBytes = (header + "\n").getBytes(StandardCharsets.UTF_8);
-            byte[] combined = new byte[headerBytes.length + original.length];
-            System.arraycopy(headerBytes, 0, combined, 0, headerBytes.length);
-            System.arraycopy(original, 0, combined, headerBytes.length, original.length);
-            Files.write(file, combined);
-            System.out.println("Injected header into " + file + " (" + original.length + " → " + combined.length + " bytes)");
+            long originalSize = Files.size(file);
+            Path tmp = Files.createTempFile(file.getParent(), ".hdr-", null);
+            try {
+                try (var out = Files.newOutputStream(tmp)) {
+                    out.write((header + "\n").getBytes(StandardCharsets.UTF_8));
+                    Files.copy(file, out);
+                }
+                Files.move(tmp, file, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                System.out.println("Injected header into " + file + " (" + originalSize + " → " + Files.size(file) + " bytes)");
+            } catch (IOException e) {
+                Files.deleteIfExists(tmp);
+                throw e;
+            }
         }
 
         /**
@@ -377,6 +411,121 @@ public class FluxServer {
                 }
             }
             return result;
+        }
+    }
+
+    /**
+     * SSE streaming variant of RunHandler.
+     *
+     * POST /run-stream  { "args": [...] }
+     *
+     * Responds with Content-Type: text/event-stream.  Each line of Flux stdout/stderr
+     * is emitted as an SSE event:
+     *   data: <line>\n\n
+     *
+     * When the process exits a final sentinel event is emitted:
+     *   data: __exit__:<exitCode>\n\n
+     *
+     * Streaming stdout as it arrives eliminates the pipe-buffer deadlock risk entirely
+     * and lets callers display progress in real time.
+     */
+    static class StreamRunHandler implements HttpHandler {
+        private static final int TIMEOUT_MINUTES = Integer.parseInt(
+            System.getenv().getOrDefault("FLUX_TIMEOUT_MINUTES", "30")
+        );
+
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"Method not allowed\"}");
+                return;
+            }
+
+            String body;
+            try (InputStream is = exchange.getRequestBody()) {
+                body = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            }
+
+            List<String> userArgs;
+            try {
+                userArgs = RunHandler.parseArgsStatic(body);
+            } catch (Exception e) {
+                respond(exchange, 400, jsonObj("error", "Invalid request body: " + e.getMessage()));
+                return;
+            }
+            if (userArgs.isEmpty()) {
+                respond(exchange, 400, jsonObj("error", "args array is empty"));
+                return;
+            }
+
+            List<Path> tempFiles = new ArrayList<>();
+            List<String> resolvedArgs;
+            try {
+                resolvedArgs = new RunHandler().resolveHttpUrlsPublic(userArgs, tempFiles);
+                resolvedArgs = new RunHandler().injectColumnNamesPublic(resolvedArgs);
+            } catch (Exception e) {
+                respond(exchange, 400, jsonObj("error", "Pre-processing failed: " + e.getMessage()));
+                return;
+            }
+
+            List<String> cmd = new ArrayList<>();
+            cmd.add("/flux/bin/flux");
+            cmd.addAll(resolvedArgs);
+
+            // SSE headers — no Content-Length, chunked transfer
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream; charset=utf-8");
+            exchange.getResponseHeaders().set("Cache-Control", "no-cache");
+            exchange.sendResponseHeaders(200, 0);
+
+            try (var out = exchange.getResponseBody()) {
+                ProcessBuilder pb = new ProcessBuilder(cmd);
+                pb.redirectErrorStream(true);
+                pb.environment().put("HOME", "/tmp");
+                Process process = pb.start();
+
+                // Read process output line-by-line, flushing each line as an SSE event
+                var reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
+
+                // Use a virtual thread with a deadline to enforce the timeout
+                long deadlineMs = System.currentTimeMillis() + TIMEOUT_MINUTES * 60_000L;
+                Thread lineReader = Thread.ofVirtual().start(() -> {
+                    try {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            byte[] event = ("data: " + line + "\n\n").getBytes(StandardCharsets.UTF_8);
+                            synchronized (out) { out.write(event); out.flush(); }
+                        }
+                    } catch (IOException ignored) {}
+                });
+
+                boolean finished = process.waitFor(TIMEOUT_MINUTES, TimeUnit.MINUTES);
+                lineReader.join(Math.max(0, deadlineMs - System.currentTimeMillis()));
+
+                int exitCode = finished ? process.exitValue() : -1;
+                if (!finished) process.destroyForcibly();
+
+                byte[] sentinel = ("data: __exit__:" + exitCode + "\n\n").getBytes(StandardCharsets.UTF_8);
+                synchronized (out) { out.write(sentinel); out.flush(); }
+
+            } catch (Exception e) {
+                // Best-effort: process may have already started writing SSE events
+                try {
+                    byte[] err = ("data: __exit__:-1\n\n").getBytes(StandardCharsets.UTF_8);
+                    exchange.getResponseBody().write(err);
+                } catch (IOException ignored) {}
+            } finally {
+                for (Path p : tempFiles) {
+                    try {
+                        if (Files.isDirectory(p)) {
+                            Files.walk(p).sorted(Comparator.reverseOrder())
+                                .forEach(f -> { try { Files.deleteIfExists(f); } catch (Exception ignored) {} });
+                        } else {
+                            Files.deleteIfExists(p);
+                        }
+                    } catch (Exception ignored) {}
+                }
+            }
         }
     }
 

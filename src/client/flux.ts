@@ -1,5 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
+import http from "node:http";
+import https from "node:https";
+import { URL } from "node:url";
 import axios, { type AxiosInstance } from "axios";
 import type { ConnectionConfig } from "../config/schema.js";
 
@@ -50,6 +53,18 @@ export class FluxClient {
     return this.mlConfig.authType;
   }
 
+  /**
+   * Run a Flux command via the /run-stream SSE endpoint.
+   *
+   * The runner streams each line of Flux stdout/stderr as:
+   *   data: <line>\n\n
+   * and terminates with:
+   *   data: __exit__:<exitCode>\n\n
+   *
+   * Consuming the stream as it arrives prevents the pipe-buffer deadlock that
+   * occurs when buffering all output until process exit.  Falls back to the
+   * synchronous /run endpoint if the runner doesn't support /run-stream.
+   */
   async run(args: string[]): Promise<FluxRunResult> {
     if (!this.configured) {
       return {
@@ -60,6 +75,96 @@ export class FluxClient {
     }
 
     try {
+      return await this.runStream(args);
+    } catch (err: unknown) {
+      // If the runner is an older build without /run-stream, fall back to /run.
+      const isConnErr = err instanceof Error && ("code" in err) &&
+        ["ECONNREFUSED", "ENOTFOUND", "ECONNRESET"].includes((err as NodeJS.ErrnoException).code ?? "");
+      if (isConnErr) {
+        return {
+          exitCode: -1,
+          output: `Flux runner is not reachable at ${this.http.defaults.baseURL}. Ensure the flux-runner service is running (use --profile flux with docker compose).`,
+          success: false,
+        };
+      }
+      // Unknown error — surface it directly.
+      const msg = err instanceof Error ? err.message : String(err);
+      return { exitCode: -1, output: msg, success: false };
+    }
+  }
+
+  /**
+   * Internal: POST to /run-stream and consume the SSE response, accumulating
+   * all lines into a single output string.
+   */
+  private runStream(args: string[]): Promise<FluxRunResult> {
+    return new Promise((resolve, reject) => {
+      const baseUrl = new URL(this.http.defaults.baseURL ?? "http://flux-runner:8080");
+      const isHttps = baseUrl.protocol === "https:";
+      const requestOptions = {
+        hostname: baseUrl.hostname,
+        port: baseUrl.port || (isHttps ? 443 : 80),
+        path: "/run-stream",
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      };
+
+      const body = JSON.stringify({ args });
+      const transport = isHttps ? https : http;
+
+      const req = transport.request(requestOptions, (res) => {
+        // Older runner without /run-stream falls through to /run-fallback below.
+        if (res.statusCode === 404) {
+          res.resume(); // drain
+          this.runLegacy(args).then(resolve, reject);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`Flux runner returned HTTP ${res.statusCode} from /run-stream`));
+          return;
+        }
+
+        const lines: string[] = [];
+        let exitCode = 0;
+        let buf = "";
+
+        res.setEncoding("utf8");
+        res.on("data", (chunk: string) => {
+          buf += chunk;
+          // SSE events are separated by double newline
+          const events = buf.split("\n\n");
+          buf = events.pop() ?? "";
+          for (const event of events) {
+            // Each event is "data: <value>"
+            const match = /^data: (.*)$/m.exec(event);
+            if (!match) continue;
+            const data = match[1];
+            if (data.startsWith("__exit__:")) {
+              exitCode = parseInt(data.slice("__exit__:".length), 10);
+            } else {
+              lines.push(data);
+            }
+          }
+        });
+
+        res.on("end", () => {
+          const output = lines.join("\n");
+          resolve({ exitCode, output, success: exitCode === 0 });
+        });
+
+        res.on("error", reject);
+      });
+
+      req.on("error", reject);
+      req.write(body);
+      req.end();
+    });
+  }
+
+  /** Legacy synchronous /run endpoint — used as fallback for older runner builds. */
+  private async runLegacy(args: string[]): Promise<FluxRunResult> {
+    try {
       const res = await this.http.post<{ exitCode: number; output: string; timedOut?: boolean }>(
         "/run",
         { args },
@@ -68,20 +173,13 @@ export class FluxClient {
       const { exitCode, output, timedOut } = res.data;
       return { exitCode, output, timedOut, success: exitCode === 0 };
     } catch (err: unknown) {
-      const isConnErr = err instanceof Error && ("code" in err) &&
-        ["ECONNREFUSED", "ENOTFOUND", "ECONNRESET"].includes((err as NodeJS.ErrnoException).code ?? "");
-      let msg: string;
-      if (isConnErr) {
-        msg = `Flux runner is not reachable at ${this.http.defaults.baseURL}. Ensure the flux-runner service is running (use --profile flux with docker compose).`;
-      } else if (axios.isAxiosError(err) && err.response) {
+      if (axios.isAxiosError(err) && err.response) {
         const body = typeof err.response.data === "string"
           ? err.response.data
           : JSON.stringify(err.response.data);
-        msg = `Flux runner returned HTTP ${err.response.status}: ${body}`;
-      } else {
-        msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`Flux runner returned HTTP ${err.response.status}: ${body}`);
       }
-      return { exitCode: -1, output: msg, success: false };
+      throw err;
     }
   }
 
