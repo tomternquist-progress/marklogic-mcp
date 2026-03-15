@@ -23,8 +23,7 @@ services:
       start_period: 60s
 
   flux-runner:
-    build:
-      context: ./flux-runner
+    image: ghcr.io/tternquist/marklogic-mcp/flux-runner:master
     container_name: flux-runner
     environment:
       - FLUX_PORT=8080

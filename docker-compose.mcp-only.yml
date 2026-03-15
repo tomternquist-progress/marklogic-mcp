@@ -13,8 +13,7 @@ services:
   # Optional Flux sidecar — only started when the "flux" profile is active:
   #   docker compose -f docker-compose.mcp-only.yml --profile flux up
   flux-runner:
-    build:
-      context: ./flux-runner
+    image: ghcr.io/tternquist/marklogic-mcp/flux-runner:master
     container_name: flux-runner
     restart: unless-stopped
     profiles: ["flux"]
