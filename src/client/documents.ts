@@ -37,13 +37,13 @@ export class DocumentsClient {
   ) {}
 
   async get(uri: string, database?: string, includeMetadata = false): Promise<GetDocumentResult> {
-    const params: Record<string, string> = { uri };
-    if (database) params.database = database;
-    if (includeMetadata) params.category = "content,metadata";
+    const qs = new URLSearchParams({ uri });
+    if (database) qs.set("database", database);
+    if (includeMetadata) { qs.append("category", "content"); qs.append("category", "metadata"); }
 
     let res: AxiosResponse<unknown>;
     try {
-      res = await this.base.http.get("/v1/documents", { params, responseType: "text" });
+      res = await this.base.http.get(`/v1/documents?${qs.toString()}`, { responseType: "text" });
     } catch (err: unknown) {
       const e = err as { statusCode?: number; message?: string };
       if (e.statusCode === 404) throw new NotFoundError(uri);
