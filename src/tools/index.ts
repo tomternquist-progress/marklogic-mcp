@@ -10,8 +10,10 @@ import { registerGraphTools } from "./graphs.js";
 import { registerQuickSightTools } from "./quicksight.js";
 import { registerOpticTools } from "./optic.js";
 import { registerFluxTools } from "./flux.js";
+import { registerSuggestApproachTool } from "./suggest-approach.js";
 
 export function registerAllTools(server: McpServer, clients: MarkLogicClients, config: AppConfig): void {
+  registerSuggestApproachTool(server);
   registerAdminTools(server, clients);
   registerDocumentTools(server, clients, config.safety.readonly);
   registerSearchTools(server, clients);
