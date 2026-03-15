@@ -1,13 +1,96 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import type { FluxClient } from "../client/flux.js";
+import type { MarkLogicClients } from "../client/index.js";
 
 function formatResult(result: { exitCode: number; output: string; success: boolean; timedOut?: boolean }): string {
   const status = result.success ? "SUCCESS" : result.timedOut ? "TIMED OUT" : `FAILED (exit ${result.exitCode})`;
   return `[${status}]\n\n${result.output || "(no output)"}`;
 }
 
-export function registerFluxTools(server: McpServer, flux: FluxClient): void {
+/**
+ * Condense repetitive "Unable to write document" error floods into a compact summary.
+ * When > 5 write failures appear, replaces the flood with a count + up to 3 unique reasons,
+ * keeping all non-error lines intact for context.
+ */
+function condenseWriteErrors(output: string): string {
+  const lines = output.split("\n");
+  const writeErrorLines: string[] = [];
+  const otherLines: string[] = [];
+
+  for (const line of lines) {
+    if (line.includes("Unable to write document")) {
+      writeErrorLines.push(line);
+    } else {
+      otherLines.push(line);
+    }
+  }
+
+  if (writeErrorLines.length <= 5) return output;
+
+  // Deduplicate by the "Server Message: ..." portion — that's the actual ML error
+  const reasonCounts = new Map<string, number>();
+  for (const line of writeErrorLines) {
+    const serverMsg = line.match(/Server Message: (.+)$/)?.[1]
+      ?? line.match(/cause: (.+)$/)?.[1]
+      ?? line.slice(0, 120);
+    const key = serverMsg.slice(0, 120);
+    reasonCounts.set(key, (reasonCounts.get(key) ?? 0) + 1);
+  }
+
+  const shown: string[] = [];
+  let i = 0;
+  for (const [reason, count] of reasonCounts) {
+    if (i >= 3) break;
+    shown.push(`  [×${count}] ${reason}`);
+    i++;
+  }
+  const remaining = reasonCounts.size - shown.length;
+
+  const summary = [
+    `${writeErrorLines.length} documents failed to write. Top unique errors (${reasonCounts.size} distinct):`,
+    ...shown,
+    ...(remaining > 0 ? [`  … and ${remaining} more distinct error type(s).`] : []),
+  ].join("\n");
+
+  return [...otherLines, summary].join("\n");
+}
+
+/**
+ * Extract TDE-related error details from Flux output to produce actionable guidance.
+ * Returns null if no TDE errors are present.
+ */
+function buildTdeNote(output: string, collections?: string[]): string | null {
+  if (!output.includes("TDE-")) return null;
+
+  // Collect all unique column names mentioned in cast/eval errors
+  const colPattern = /Eval for Column (\w+)=|Column (\w+).*(?:XDMP-CAST|nullable)/gi;
+  const badCols = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = colPattern.exec(output)) !== null) {
+    const col = m[1] ?? m[2];
+    if (col) badCols.add(col);
+  }
+
+  const colHint = badCols.size > 0
+    ? `\n  Columns with cast errors: ${[...badCols].join(", ")} — add "nullable": true to each.`
+    : "";
+
+  const validateHint = collections?.length
+    ? `\n  Run ml_tde_validate with tde_uri=<your-template-uri> and collection="${collections[0]}" to see per-document errors.`
+    : `\n  Run ml_tde_validate with your TDE URI and collection name to see per-document errors.`;
+
+  return (
+    `\n\nTDE ERROR NOTE: Documents that were written before the TDE error remain in MarkLogic — ` +
+    `TDEs apply at query time, so you do NOT need to re-import data to fix this.` +
+    colHint +
+    validateHint +
+    `\n  Fix the TDE template with ml_document_put (database=Schemas), then re-run ml_tde_validate to confirm.`
+  );
+}
+
+export function registerFluxTools(server: McpServer, clients: MarkLogicClients): void {
+  const { flux, schema, documents } = clients;
+
   // ── flux_import ──────────────────────────────────────────────────────────────
   server.tool(
     "flux_import",
@@ -36,10 +119,13 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       column_names: z.array(z.string()).optional().describe("Column names for headerless delimited files. When set, the runner prepends these as a header row before importing — so each document gets proper field names instead of _c0, _c1, etc. Use with import-delimited-files when the source has no header (e.g. GDELT events, many government open-data exports)."),
       local_file: z.string().optional().describe("Absolute path to a file on the host where the MCP server process is running — NOT the flux runner container and NOT your local development machine if you are connecting remotely. The MCP server reads this path and uploads it to the flux runner over HTTP. If the file lives on your laptop or a machine other than the MCP server host, use http_url instead (serve the file over HTTP or use a public URL). Cannot be combined with http_url or path."),
       extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim. Common flags for import-delimited-files: ['--delimiter', '|'] for pipe-delimited, ['--encoding', 'ISO-8859-1'] for non-UTF-8 files. To force compression: ['--spark-prop', 'compression=gzip']. Run flux_help with subcommand='import-delimited-files' to see all accepted flags."),
+      generate_tde: z.boolean().optional().describe("After a successful import, auto-generate a TDE template by sampling the imported collection and writing it to the Schemas database. Requires collections to be set. The template is written to /tde/<tde_schema>/<tde_view>.json."),
+      tde_schema: z.string().optional().describe("Schema name for the auto-generated TDE view (used with generate_tde). Defaults to the first collection name with non-alphanumeric chars replaced by underscores."),
+      tde_view: z.string().optional().describe("View name for the auto-generated TDE view (used with generate_tde). Defaults to the last segment of the first collection name."),
       skip_preview: z.boolean().optional().describe("Deprecated — previews no longer run automatically. Kept for backwards compatibility; has no effect."),
     },
-    async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, skip_preview }) => {
-      // Validate and convert permissions from "role:capability" notation to Flux's "role,capability" alternating format
+    async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview }) => {
+      // Validate and convert permissions
       let fluxPermissions: string | undefined;
       if (permissions) {
         const validCapabilities = new Set(["read", "insert", "update", "execute", "node-update"]);
@@ -58,13 +144,28 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
         fluxPermissions = parts.join(",");
       }
 
+      // ── TDE pre-flight: warn if existing TDE templates scope to these collections ──
+      let preflightNote = "";
+      if (collections?.length) {
+        try {
+          const conflicting = await schema.findTdesByCollection(collections);
+          if (conflicting.length > 0) {
+            preflightNote =
+              `NOTE: Found ${conflicting.length} TDE template(s) scoped to your import collections ` +
+              `(${conflicting.join(", ")}). If these templates have type mismatches (e.g. missing nullable:true), ` +
+              `write failures will occur. Run ml_tde_validate first to check, or use generate_tde=true to auto-generate a fresh template.\n\n`;
+          }
+        } catch {
+          // pre-flight is best-effort; don't block the import
+        }
+      }
+
       const args: string[] = [
         subcommand,
         "--connection-string", flux.connectionString(database),
         "--auth-type", flux.authType,
       ];
 
-      // local_file: upload from MCP server → runner, then use as --path
       if (local_file) {
         let runnerPath: string;
         try {
@@ -78,6 +179,7 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       } else if (path) {
         args.push("--path", path);
       }
+
       if (column_names?.length) args.push("--column-names", column_names.join("\t"));
       if (collections?.length) args.push("--collections", collections.join(","));
       if (fluxPermissions) args.push("--permissions", fluxPermissions);
@@ -88,9 +190,6 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       if (thread_count) args.push("--thread-count", String(thread_count));
       if (batch_size) args.push("--batch-size", String(batch_size));
       if (extra_args?.length) {
-        // Auto-inject --tde-collections when --tde-schema/--tde-view are present but
-        // --tde-collections is not.  MarkLogic requires a collection or directory scope
-        // on TDE templates; without it the template insert fails with TDE-MISSINGSCOPE.
         const hasTdeSchema = extra_args.some(a => a === "--tde-schema");
         const hasTdeCollections = extra_args.some(a => a === "--tde-collections");
         if (hasTdeSchema && !hasTdeCollections && collections?.length) {
@@ -102,32 +201,69 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
 
       const result = await flux.run(args);
 
-      // Improve PATH_NOT_FOUND error: the path resolves on the flux runner host, not the client machine
-      if (!result.success && result.output.includes("PATH_NOT_FOUND")) {
-        const enhanced = result.output + "\n\nNOTE: --path must exist on the flux runner host, not your local machine. " +
+      // Condense repetitive write-error floods before surfacing output
+      const condensedOutput = condenseWriteErrors(result.output);
+
+      // ── PATH_NOT_FOUND: explain runner-local paths ──
+      if (!result.success && condensedOutput.includes("PATH_NOT_FOUND")) {
+        const enhanced = condensedOutput +
+          "\n\nNOTE: --path must exist on the flux runner host, not your local machine. " +
           "Use local_file to upload a file from this machine to the runner, or use http_url to download from a URL.";
-        return { content: [{ type: "text", text: formatResult({ ...result, output: enhanced }) }], isError: true };
+        return { content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: enhanced }) }], isError: true };
       }
 
-      // When TDE template insertion fails, documents may already have been written.
-      // Surface this clearly so the caller knows to retry only the TDE step.
-      if (!result.success && result.output.includes("TDE-")) {
-        const docsWritten = (() => {
-          const m = result.output.match(/(\d[\d,]*)\s+documents?\s+(?:written|inserted|committed)/i);
-          return m ? m[0] : null;
-        })();
-        const note = docsWritten
-          ? `\n\nNOTE: ${docsWritten} before the TDE error — those documents are in MarkLogic. ` +
-            `To install the TDE view separately, call ml_document_put with the template JSON shown above, ` +
-            `adding a \"collections\" scope matching your import collections (e.g. "${collections?.join(",") ?? "gdelt-events"}").`
-          : `\n\nNOTE: The TDE template could not be installed (TDE-MISSINGSCOPE means a collection or ` +
-            `directory scope is required). Documents that were written before the error remain in MarkLogic. ` +
-            `Re-run with --tde-collections set to one of your import collections to fix the scope, ` +
-            `or install the TDE manually via ml_document_put.`;
-        return { content: [{ type: "text", text: formatResult({ ...result, output: result.output + note }) }], isError: true };
+      // ── TDE errors: surface column hints and no-re-import guidance ──
+      const tdeNote = buildTdeNote(condensedOutput, collections);
+      if (tdeNote) {
+        const annotated = condensedOutput + tdeNote;
+        return {
+          content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: annotated }) }],
+          isError: !result.success,
+        };
       }
 
-      return { content: [{ type: "text", text: formatResult(result) }], isError: !result.success };
+      // ── Column count mismatch hint ──
+      const hasUnnamedCols = condensedOutput.includes("_c0") || / _c\d+/.test(condensedOutput);
+      let colNote = "";
+      if (column_names?.length && hasUnnamedCols) {
+        colNote = "\n\nNOTE: Output contains unnamed columns (_c0, _cN…). " +
+          `The file may have more columns than the ${column_names.length} names provided in column_names. ` +
+          "Run flux_preview to see the raw column layout and adjust column_names accordingly.";
+      }
+
+      // ── Auto-generate TDE after successful import ──
+      let tdeGenNote = "";
+      if (generate_tde && result.success && collections?.length) {
+        const targetCollection = collections[0];
+        const schemaName = tde_schema ?? targetCollection.replace(/[^a-zA-Z0-9]/g, "_");
+        const viewName   = tde_view   ?? (targetCollection.split("-").pop() ?? targetCollection);
+        try {
+          const generated = await schema.generateTdeTemplate({
+            collection: targetCollection,
+            schemaName,
+            viewName,
+            database,
+          });
+          await documents.put(
+            generated.uri,
+            JSON.stringify(generated.template, null, 2),
+            "application/json",
+            { collections: ["http://marklogic.com/xdmp/tde"], database: "Schemas" }
+          );
+          tdeGenNote =
+            `\n\nTDE AUTO-GENERATED: ${generated.uri}\n` +
+            `  Schema: ${schemaName}, View: ${viewName}\n` +
+            `  Run ml_tde_validate with tde_uri="${generated.uri}" and collection="${targetCollection}" to verify.`;
+        } catch (tdeErr) {
+          tdeGenNote = `\n\nWARNING: Could not auto-generate TDE: ${tdeErr instanceof Error ? tdeErr.message : String(tdeErr)}`;
+        }
+      }
+
+      const finalOutput = condensedOutput + colNote + tdeGenNote;
+      return {
+        content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: finalOutput }) }],
+        isError: !result.success,
+      };
     }
   );
 
@@ -252,9 +388,6 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       preview_rows: z.number().int().positive().optional().describe("Number of rows to preview (default: 10)"),
     },
     async ({ args, preview_rows }) => {
-      // Auto-inject connection string and auth type if not already supplied.
-      // Flux requires connection flags AFTER the subcommand, so we extract the subcommand
-      // (first element) and insert connection args immediately after it.
       const hasConn = args.some(a => a === "--connection-string" || a === "-c");
       let previewArgs: string[];
       if (hasConn) {
@@ -307,7 +440,6 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
           isError: true,
         };
       }
-      // Get version by running flux --version
       const result = await flux.run(["version"]);
       return {
         content: [{ type: "text", text: `Flux runner is healthy.\n\n${result.output}` }],

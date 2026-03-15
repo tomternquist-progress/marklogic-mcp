@@ -64,7 +64,10 @@ export class DocumentsClient {
     pageLength?: number;
     database?: string;
   }): Promise<ListDocumentsResult> {
+    // /v1/search returns URIs for a collection or directory without requiring a ?uri=
+    // (the /v1/documents endpoint requires a uri param and is for single-doc fetch only)
     const params: Record<string, string | number> = {
+      format: "json",
       start: options.start ?? 1,
       "page-length": options.pageLength ?? 20,
     };
@@ -73,14 +76,13 @@ export class DocumentsClient {
     if (options.database) params.database = options.database;
 
     const data = await this.base.get<{
-      "uri-list": { uri: string | string[] };
       total: number;
       start: number;
       "page-length": number;
-    }>(this.base.http, "/v1/documents", { params });
+      results: Array<{ uri: string }>;
+    }>(this.base.http, "/v1/search", { params });
 
-    const uriList = data?.["uri-list"]?.uri ?? [];
-    const uris = Array.isArray(uriList) ? uriList : [uriList];
+    const uris = (data?.results ?? []).map((r) => r.uri);
     return {
       uris,
       total: data?.total ?? uris.length,

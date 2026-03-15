@@ -1,6 +1,7 @@
 import type { MarkLogicBaseClient } from "./base.js";
 import type { SearchClient } from "./search.js";
 import type { AdminClient } from "./admin.js";
+import { parseMultipartMixed } from "../utils/multipart.js";
 
 export interface FieldDescriptor {
   path: string;
@@ -28,6 +29,30 @@ export interface RangeIndex {
   scalarType: string;
 }
 
+export interface TdeValidationResult {
+  tdeUri: string;
+  collection: string;
+  sampledDocuments: number;
+  validDocuments: number;
+  invalidDocuments: number;
+  errors: Array<{ uri: string; messages: string[] }>;
+  /** Column names that appear in errors and likely need nullable:true */
+  suggestedNullableColumns: string[];
+  summary: string;
+}
+
+export interface TdeColumn {
+  name: string;
+  scalarType: string;
+  val: string;
+  nullable?: boolean;
+}
+
+export interface GeneratedTdeTemplate {
+  uri: string;
+  template: Record<string, unknown>;
+}
+
 export class SchemaClient {
   constructor(
     private readonly base: MarkLogicBaseClient,
@@ -42,7 +67,6 @@ export class SchemaClient {
   }): Promise<SchemaDiscoveryResult> {
     const sampleSize = options.sampleSize ?? 10;
 
-    // Fetch sample documents
     const searchResult = await this.search.search({
       q: "",
       collection: options.collection,
@@ -76,14 +100,11 @@ export class SchemaClient {
       collectFields(doc as Record<string, unknown>, "", fieldMap, docs.length);
     }
 
-    // Get range indexes from DB properties
     let rangeIndexes: RangeIndex[] = [];
     if (options.database) {
       try {
         const props = await this.admin.getDatabaseProperties(options.database);
         rangeIndexes = extractRangeIndexes(props as Record<string, unknown>);
-
-        // Mark fields that have range indexes
         for (const idx of rangeIndexes) {
           const path = idx.pathExpression ?? idx.localname ?? "";
           if (fieldMap.has(path)) {
@@ -95,21 +116,17 @@ export class SchemaClient {
       }
     }
 
-    // Get TDE schemas via search on Schemas DB
-    const tdeSchemas: unknown[] = [];
-
     return {
       collection: options.collection,
       database: options.database,
       documentCount: searchResult.total,
       inferredFields: Array.from(fieldMap.values()),
       rangeIndexes,
-      tdeSchemas,
+      tdeSchemas: [],
     };
   }
 
   async listCollections(database?: string, limit = 50): Promise<Array<{ name: string; count: number }>> {
-    // Use /v1/values with built-in collection lexicon
     try {
       const params: Record<string, string | number> = { format: "json", limit };
       if (database) params.database = database;
@@ -126,7 +143,6 @@ export class SchemaClient {
         }
       );
 
-      // Fall back to eval if values approach doesn't return collections
       const xquery = `
         for $c in cts:collections()
         let $count := xdmp:estimate(cts:collection-query($c))
@@ -147,9 +163,8 @@ export class SchemaClient {
           responseType: "text",
         }
       );
-      void raw; // used for database param passing; actual result from eval
+      void raw;
 
-      // Quick parse of multipart — just extract JSON objects
       const text = evalRes.data as string;
       const matches = [...text.matchAll(/\{[^}]+\}/g)];
       return matches
@@ -209,38 +224,232 @@ export class SchemaClient {
     }
   }
 
+  /**
+   * List TDE template URIs from the Schemas database.
+   * When schemaName (a URI like /tde/gdelt/events.json) is provided, returns the
+   * full template content rather than just the URI.
+   */
   async getTdeSchemas(database?: string, schemaName?: string): Promise<unknown[]> {
-    try {
-      let xquery = `
-        for $schema in cts:search(/, cts:and-query(()))
-        where fn:ends-with(xdmp:node-uri($schema), ".json") or fn:ends-with(xdmp:node-uri($schema), ".xml")
-        return xdmp:node-uri($schema)
-      `;
-      if (schemaName) {
-        xquery = `
-          for $schema in cts:search(/, cts:element-value-query(xs:QName("template-name"), "${schemaName}"))
-          return xdmp:node-uri($schema)
-        `;
-      }
-      const evalParams: Record<string, string> = {};
-      if (database) evalParams.database = database;
-      const evalRes = await this.base.http.post(
-        "/v1/eval",
-        new URLSearchParams({ xquery }).toString(),
-        {
-          params: { ...evalParams, database: "Schemas" },
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            Accept: "multipart/mixed",
-          },
-          responseType: "text",
-        }
-      );
-      const text = evalRes.data as string;
-      return text.split("\r\n").filter((l) => l.startsWith("/"));
-    } catch {
-      return [];
+    if (schemaName) {
+      // Fetch the specific template document directly by URI from Schemas DB.
+      // This is reliable regardless of what element/property names are inside.
+      const res = await this.base.http.get("/v1/documents", {
+        params: { uri: schemaName, database: "Schemas" },
+        responseType: "text",
+      });
+      const text = res.data as string;
+      let content: unknown;
+      try { content = JSON.parse(text); } catch { content = text; }
+      return [{ uri: schemaName, content }];
     }
+
+    // List all TDE template URIs via the TDE collection in Schemas DB.
+    const xquery = `
+      for $uri in cts:uris((), (), cts:collection-query("http://marklogic.com/xdmp/tde"))
+      return $uri
+    `;
+    const evalRes = await this.base.http.post(
+      "/v1/eval",
+      new URLSearchParams({ xquery }).toString(),
+      {
+        params: { database: "Schemas" },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "multipart/mixed",
+        },
+        responseType: "text",
+      }
+    );
+    const text = evalRes.data as string;
+    return text.split("\r\n").filter((l) => l.startsWith("/"));
+  }
+
+  /**
+   * Find TDE template URIs (in Schemas DB) whose collection scope overlaps with
+   * the given collection list. Used for pre-flight conflict detection before import.
+   */
+  async findTdesByCollection(collections: string[]): Promise<string[]> {
+    if (!collections.length) return [];
+    const javascript = `
+      const cols = collections;
+      const uris = [];
+      for (const uri of cts.uris(null, null, cts.collectionQuery('http://marklogic.com/xdmp/tde'))) {
+        const obj = cts.doc(uri).toObject();
+        const tcols = obj && obj.template && obj.template.collections;
+        if (tcols && tcols.some(c => cols.includes(c))) uris.push(uri);
+      }
+      uris;
+    `;
+    const body = new URLSearchParams();
+    body.append("javascript", javascript);
+    body.append("vars[collections]", JSON.stringify(collections));
+    const res = await this.base.http.post("/v1/eval", body.toString(), {
+      params: { database: "Schemas" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "multipart/mixed" },
+      responseType: "text",
+    });
+    const results = parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
+    // Results may be individual strings (one per URI) or a single array
+    const flat: string[] = [];
+    for (const r of results) {
+      if (Array.isArray(r.value)) flat.push(...(r.value as string[]));
+      else if (typeof r.value === "string" && r.value.startsWith("/")) flat.push(r.value);
+    }
+    return flat;
+  }
+
+  /**
+   * Validate a TDE template against sample documents from a collection.
+   * Returns structured results including which columns fail and suggestions for nullable:true.
+   */
+  async validateTde(options: {
+    tdeUri: string;
+    collection: string;
+    sampleSize?: number;
+  }): Promise<TdeValidationResult> {
+    const { tdeUri, collection, sampleSize = 5 } = options;
+
+    const javascript = `
+      const tde = require('/MarkLogic/tde');
+      const template = fn.doc(tdeUri);
+      if (!template) throw new Error('TDE template not found at: ' + tdeUri);
+      const results = [];
+      let count = 0;
+      for (const doc of fn.subsequence(cts.search(cts.collectionQuery(collection)), 1, sampleSize)) {
+        count++;
+        const docUri = xdmp.nodeUri(doc);
+        try {
+          const errs = tde.validate([template], [doc]);
+          const errArr = Array.from(errs).map(e => String(e));
+          results.push({ uri: docUri, valid: errArr.length === 0, errors: errArr });
+        } catch (e) {
+          results.push({ uri: docUri, valid: false, errors: [e.message] });
+        }
+      }
+      results;
+    `;
+
+    const body = new URLSearchParams();
+    body.append("javascript", javascript);
+    body.append("vars[tdeUri]", JSON.stringify(tdeUri));
+    body.append("vars[collection]", JSON.stringify(collection));
+    body.append("vars[sampleSize]", JSON.stringify(sampleSize));
+
+    const res = await this.base.http.post("/v1/eval", body.toString(), {
+      params: {},
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "multipart/mixed" },
+      responseType: "text",
+    });
+    const parsed = parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
+
+    // Results come back as individual objects (one per document) or a single array
+    type DocResult = { uri: string; valid: boolean; errors: string[] };
+    const docResults: DocResult[] = [];
+    for (const r of parsed) {
+      if (Array.isArray(r.value)) {
+        docResults.push(...(r.value as DocResult[]));
+      } else if (r.value && typeof r.value === "object" && "uri" in (r.value as object)) {
+        docResults.push(r.value as DocResult);
+      }
+    }
+
+    const errorEntries = docResults
+      .filter((d) => !d.valid)
+      .map((d) => ({ uri: d.uri, messages: d.errors }));
+
+    // Extract column names mentioned in cast/eval errors to suggest nullable:true
+    const nullablePattern = /Column\s+(\w+)\s*=.*XDMP-CAST|invalid cast.*Column\s+(\w+)|nullable.*Column\s+(\w+)/gi;
+    const colPattern = /Eval for Column (\w+)=|Column (\w+).*cast|Column (\w+).*nullable/gi;
+    const nullableCols = new Set<string>();
+    for (const entry of errorEntries) {
+      for (const msg of entry.messages) {
+        for (const re of [nullablePattern, colPattern]) {
+          let m: RegExpExecArray | null;
+          re.lastIndex = 0;
+          while ((m = re.exec(msg)) !== null) {
+            const col = m[1] ?? m[2] ?? m[3];
+            if (col) nullableCols.add(col);
+          }
+        }
+      }
+    }
+
+    const valid = docResults.filter((d) => d.valid).length;
+    const invalid = docResults.filter((d) => !d.valid).length;
+    const summary = docResults.length === 0
+      ? `No documents found in collection "${collection}".`
+      : invalid === 0
+        ? `All ${valid} sampled documents passed TDE validation.`
+        : `${invalid}/${docResults.length} documents failed. ${nullableCols.size > 0 ? `Add nullable:true to: ${[...nullableCols].join(", ")}.` : "Check error details."}`;
+
+    return {
+      tdeUri,
+      collection,
+      sampledDocuments: docResults.length,
+      validDocuments: valid,
+      invalidDocuments: invalid,
+      errors: errorEntries,
+      suggestedNullableColumns: [...nullableCols],
+      summary,
+    };
+  }
+
+  /**
+   * Generate a TDE template JSON by sampling documents from a collection and
+   * inferring column types. All string columns that appear nullable get nullable:true.
+   * Returns both the template object and the suggested Schemas DB URI.
+   */
+  async generateTdeTemplate(options: {
+    collection: string;
+    schemaName: string;
+    viewName: string;
+    sampleSize?: number;
+    database?: string;
+  }): Promise<GeneratedTdeTemplate> {
+    const discovery = await this.discoverSchema({
+      collection: options.collection,
+      sampleSize: options.sampleSize ?? 15,
+      database: options.database,
+    });
+
+    const columns: TdeColumn[] = discovery.inferredFields
+      .filter((f) => !f.path.includes(".")) // top-level fields only
+      .map((f) => {
+        const scalarType = inferTdeScalarType(f);
+        const col: TdeColumn = { name: f.path, scalarType, val: f.path };
+        if (f.nullable || f.type === "null" || f.type === "mixed") col.nullable = true;
+        return col;
+      });
+
+    const template = {
+      template: {
+        context: "/",
+        collections: [options.collection],
+        rows: [{
+          schemaName: options.schemaName,
+          viewName: options.viewName,
+          columns,
+        }],
+      },
+    };
+
+    const uri = `/tde/${options.schemaName}/${options.viewName}.json`;
+    return { uri, template };
+  }
+}
+
+// ── Type helpers ──────────────────────────────────────────────────────────────
+
+function inferTdeScalarType(field: FieldDescriptor): string {
+  switch (field.type) {
+    case "number": {
+      const examples = field.exampleValues.filter((v) => v !== null && v !== undefined);
+      if (examples.length > 0 && examples.every((v) => Number.isInteger(v as number))) return "long";
+      return "double";
+    }
+    case "boolean": return "int";
+    case "date":    return "string"; // keep as string; TDE dateTime requires strict ISO format
+    default:        return "string";
   }
 }
 
@@ -257,7 +466,8 @@ function collectFields(
     if (map.has(path)) {
       const existing = map.get(path)!;
       if (existing.type !== type) existing.type = "mixed";
-      if (existing.exampleValues.length < 3) existing.exampleValues.push(val);
+      if (val === null) existing.nullable = true;
+      if (existing.exampleValues.length < 3 && val !== null) existing.exampleValues.push(val);
     } else {
       map.set(path, {
         path,
@@ -283,7 +493,6 @@ function inferType(val: unknown): FieldDescriptor["type"] {
   if (t === "number") return "number";
   if (t === "boolean") return "boolean";
   if (t === "string") {
-    // Heuristic: ISO date strings
     if (/^\d{4}-\d{2}-\d{2}/.test(val as string)) return "date";
     return "string";
   }
@@ -297,26 +506,13 @@ function extractRangeIndexes(props: Record<string, unknown>): RangeIndex[] {
   const rangeField = (props["range-field-index"] as Array<Record<string, string>> | undefined) ?? [];
 
   for (const idx of rangeElement) {
-    indexes.push({
-      type: "range-element",
-      localname: idx.localname,
-      namespace: idx["namespace-uri"],
-      scalarType: idx["scalar-type"] ?? "string",
-    });
+    indexes.push({ type: "range-element", localname: idx.localname, namespace: idx["namespace-uri"], scalarType: idx["scalar-type"] ?? "string" });
   }
   for (const idx of rangePath) {
-    indexes.push({
-      type: "range-path",
-      pathExpression: idx["path-expression"],
-      scalarType: idx["scalar-type"] ?? "string",
-    });
+    indexes.push({ type: "range-path", pathExpression: idx["path-expression"], scalarType: idx["scalar-type"] ?? "string" });
   }
   for (const idx of rangeField) {
-    indexes.push({
-      type: "range-field",
-      localname: idx["field-name"],
-      scalarType: idx["scalar-type"] ?? "string",
-    });
+    indexes.push({ type: "range-field", localname: idx["field-name"], scalarType: idx["scalar-type"] ?? "string" });
   }
   return indexes;
 }

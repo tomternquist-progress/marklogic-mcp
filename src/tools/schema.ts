@@ -24,15 +24,33 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
 
   server.tool(
     "ml_schema_get_tde",
-    "Retrieve Template Driven Extraction (TDE) schemas registered in the MarkLogic Schemas database. TDE schemas define row views over document data.",
+    "Retrieve Template Driven Extraction (TDE) schemas registered in the MarkLogic Schemas database. TDE schemas define row views over document data. Pass schema_name as the full URI (e.g. /tde/gdelt/events.json) to retrieve the template content; omit it to list all TDE URIs.",
     {
-      schema_name: z.string().optional().describe("Specific TDE schema/template name to retrieve (optional)"),
+      schema_name: z.string().optional().describe("Full URI of the TDE template to retrieve (e.g. /tde/gdelt/events.json). Omit to list all TDE template URIs."),
       database: z.string().optional().describe("Database name (schemas are in the Schemas DB)"),
     },
     async ({ schema_name, database }) => {
       try {
         const schemas = await clients.schema.getTdeSchemas(database, schema_name);
         return { content: [{ type: "text", text: JSON.stringify(schemas, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_tde_validate",
+    "Validate a TDE template against sample documents from a collection. Runs tde.validate() on up to sample_size documents and reports which pass/fail, lists the exact error messages, and suggests which columns need nullable:true. Use this after writing a new TDE template to verify it works before importing data — TDEs apply at query time, so you never need to re-import data to fix a TDE.",
+    {
+      tde_uri: z.string().describe("URI of the TDE template in the Schemas database, e.g. /tde/gdelt/events.json"),
+      collection: z.string().describe("Collection to sample documents from, e.g. gdelt-events"),
+      sample_size: z.number().int().positive().max(20).optional().describe("Number of documents to validate against (default: 5)"),
+    },
+    async ({ tde_uri, collection, sample_size }) => {
+      try {
+        const result = await clients.schema.validateTde({ tdeUri: tde_uri, collection, sampleSize: sample_size });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }

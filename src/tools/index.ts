@@ -20,5 +20,5 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerGraphTools(server, clients);
   registerQuickSightTools(server, clients);
   registerOpticTools(server, clients);
-  registerFluxTools(server, clients.flux);
+  registerFluxTools(server, clients);
 }
