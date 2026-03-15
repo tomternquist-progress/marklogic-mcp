@@ -11,7 +11,7 @@ version: "3.9"
 
 services:
   marklogic-mcp:
-    build: .
+    image: ghcr.io/tternquist/marklogic-mcp:master
     container_name: marklogic-mcp
     restart: unless-stopped
     environment:

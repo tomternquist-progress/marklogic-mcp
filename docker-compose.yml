@@ -23,7 +23,7 @@ services:
       start_period: 60s
 
   marklogic-mcp:
-    build: .
+    image: ghcr.io/tternquist/marklogic-mcp:master
     container_name: marklogic-mcp
     environment:
       - MCP_TRANSPORT=http
