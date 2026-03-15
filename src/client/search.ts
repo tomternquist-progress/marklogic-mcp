@@ -48,7 +48,7 @@ export class SearchClient {
     const qp: Record<string, string | number> = {
       format: "json",
       start: params.start ?? 1,
-      "page-length": params.pageLength ?? 10,
+      pageLength: params.pageLength ?? 10,
     };
     if (params.q) qp.q = params.q;
     if (params.collection) qp.collection = params.collection;
@@ -76,7 +76,7 @@ export class SearchClient {
     const qp: Record<string, string | number> = {
       format: "json",
       start: params.start ?? 1,
-      "page-length": params.pageLength ?? 10,
+      pageLength: params.pageLength ?? 10,
     };
     if (params.database) qp.database = params.database;
 
