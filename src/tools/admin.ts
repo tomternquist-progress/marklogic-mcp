@@ -63,10 +63,10 @@ export function registerAdminTools(server: McpServer, clients: MarkLogicClients)
   server.tool(
     "ml_servers_list",
     "List App Servers (HTTP, XDBC, WebDAV, ODBC) in a MarkLogic group.",
-    { group: z.string().optional().describe("Server group name (e.g. apps, enode)") },
+    { group: z.string().optional().describe("Server group name — omit to list all groups") },
     async ({ group }) => {
       try {
-        const servers = await clients.admin.listServers(group ?? "apps");
+        const servers = await clients.admin.listServers(group);
         return { content: [{ type: "text", text: JSON.stringify(servers, null, 2) }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };

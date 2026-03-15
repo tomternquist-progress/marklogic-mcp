@@ -83,14 +83,16 @@ export class AdminClient {
     return items.map((i) => ({ name: i.nameref, id: i.idref, state: "unknown" }));
   }
 
-  async listServers(group = "Default"): Promise<ServerSummary[]> {
-    const data = await this.base.get<{ "server-default-list": { "list-items": { "list-item": Array<{ nameref: string; idref: string; "server-type": string }> } } }>(
+  async listServers(group?: string): Promise<ServerSummary[]> {
+    const params: Record<string, string> = { format: "json" };
+    if (group) params["group-id"] = group;
+    const data = await this.base.get<{ "server-default-list": { "list-items": { "list-item": Array<{ nameref: string; idref: string; "server-type"?: string; groupnameref?: string }> } } }>(
       this.base.mgmt,
       "/manage/v2/servers",
-      { params: { format: "json", "group-id": group } }
+      { params }
     );
     const items = data?.["server-default-list"]?.["list-items"]?.["list-item"] ?? [];
-    return items.map((i) => ({ name: i.nameref, id: i.idref, type: i["server-type"] ?? "unknown", group }));
+    return items.map((i) => ({ name: i.nameref, id: i.idref, type: i["server-type"] ?? "unknown", group: i.groupnameref ?? group ?? "" }));
   }
 
   async getServerProperties(serverName: string, group = "Default"): Promise<Record<string, unknown>> {
