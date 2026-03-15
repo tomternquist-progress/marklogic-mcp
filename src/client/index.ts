@@ -6,6 +6,7 @@ import { SearchClient } from "./search.js";
 import { EvalClient } from "./eval.js";
 import { SchemaClient } from "./schema.js";
 import { GraphsClient } from "./graphs.js";
+import { OpticClient } from "./optic.js";
 
 export interface MarkLogicClients {
   admin: AdminClient;
@@ -14,6 +15,7 @@ export interface MarkLogicClients {
   eval: EvalClient;
   schema: SchemaClient;
   graphs: GraphsClient;
+  optic: OpticClient;
 }
 
 export function createClients(
@@ -28,8 +30,9 @@ export function createClients(
   const evalClient = new EvalClient(base, allowEval);
   const schema = new SchemaClient(base, search, admin);
   const graphs = new GraphsClient(base);
+  const optic = new OpticClient(base);
 
-  return { admin, documents, search, eval: evalClient, schema, graphs };
+  return { admin, documents, search, eval: evalClient, schema, graphs, optic };
 }
 
 export {
@@ -40,4 +43,5 @@ export {
   EvalClient,
   SchemaClient,
   GraphsClient,
+  OpticClient,
 };
