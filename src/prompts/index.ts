@@ -255,6 +255,106 @@ Output only the SPARQL query.`,
     })
   );
 
+  // ── Problem-First Advisor ──────────────────────────────────────────────────
+
+  server.prompt(
+    "problem_advisor",
+    "Understand a user goal and map it to the best MarkLogic-native approach before any tools are called. Returns a structured 6-section analysis: problem classification, native approach, discovery sequence, tool sequence, pitfalls, and alternatives.",
+    {
+      goal: z.string().describe("Natural-language description of what the user wants to accomplish"),
+      database: z.string().optional().describe("Target MarkLogic database, if already known"),
+      collection: z.string().optional().describe("MarkLogic collection URI, if already known"),
+      context: z.string().optional().describe("Additional context: data format, document count, existing indexes, current state, etc."),
+    },
+    ({ goal, database, collection, context }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a MarkLogic solution architect. A user has described a goal. Produce a
+structured problem analysis that another AI agent can use to select the correct tools
+and approach. Do NOT call any tools — this is a planning step only.
+
+═══════════════════════════════════════════
+USER GOAL
+═══════════════════════════════════════════
+${goal}
+
+KNOWN CONTEXT
+  Database  : ${database ?? "(not yet known — discover with ml_databases_list)"}
+  Collection: ${collection ?? "(not yet known — discover with ml_collections_list)"}
+  Extra     : ${context ?? "(none provided)"}
+
+═══════════════════════════════════════════
+PRODUCE THE FOLLOWING ANALYSIS
+═══════════════════════════════════════════
+
+## 1. PROBLEM CLASSIFICATION
+Classify this goal into one or more of these MarkLogic problem types:
+  data-loading | full-text-search | structured-filter | analytics-aggregation |
+  graph-query | time-series | schema-discovery | export-bi | code-generation |
+  admin-health | data-transform
+
+## 2. MARKLOGIC-NATIVE APPROACH
+For each problem type, state the idiomatic MarkLogic capability:
+- Approach name (e.g. "Optic API over TDE view", "Flux import pipeline", "Universal index search")
+- Why this is preferred over alternatives for this specific goal
+- Any prerequisite (e.g. "requires a range index on DateField", "requires TDE template in Schemas DB")
+
+## 3. DISCOVERY SEQUENCE
+List the exact MCP tools to call first, before the main task, in order:
+  Step 1: <tool_name> — reason
+  Step 2: <tool_name> — reason
+  ...
+Only include steps that are genuinely needed for this goal. Skip inapplicable ones.
+
+## 4. RECOMMENDED TOOL SEQUENCE
+List the MCP tools for the main task, in order:
+  Step 1: <tool_name> — key parameters and purpose
+  Step 2: <tool_name> — key parameters and purpose
+  ...
+
+Available tools (use only these):
+  Admin:      ml_cluster_status, ml_databases_list, ml_database_properties,
+              ml_database_statistics, ml_forests_list, ml_servers_list, ml_server_properties
+  Documents:  ml_document_get, ml_document_list, ml_document_put, ml_document_delete,
+              ml_document_patch
+  Search:     ml_search, ml_search_qbe, ml_values_query, ml_suggest, ml_facets_query
+  Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_indexes_list,
+              ml_collections_list, ml_namespaces_list
+  Eval:       ml_eval_javascript, ml_eval_xquery, ml_invoke_module
+  Graph:      ml_sparql_query, ml_graphs_list
+  QuickSight: ml_aggregate_query, ml_timeseries_query, ml_export_tabular, ml_facets_query
+  Optic:      ml_optic_query
+  Flux:       flux_import, flux_export, flux_copy, flux_reprocess, flux_preview, flux_help,
+              flux_status
+  Prompts:    xquery_function_generator, sjs_module_generator, tde_schema_generator,
+              rest_extension_generator, structured_query_builder, optic_query_builder,
+              sparql_query_builder, data_import_advisor, gdelt_import,
+              quicksight_dataset_designer, quicksight_dashboard_planner
+
+## 5. PITFALLS TO AVOID
+List 2–5 specific, concrete pitfalls for this goal. Examples of good pitfalls:
+  - "ml_optic_query fails with SQL-TABLENOTFOUND if the TDE template is not in the Schemas database collection http://marklogic.com/xdmp/tde"
+  - "flux_import uses the connection from the MCP server host — http_url must be reachable from the server, not just from the user's machine"
+  - "ml_eval_javascript has a ~10 KB script payload limit — pass large arrays via the vars parameter, not inline in the script"
+  - "Range queries require a pre-existing range index — verify with ml_indexes_list before writing the query"
+  - "ml_document_put in a loop for bulk loads is 10–100x slower than flux_import for the same data"
+
+## 6. SIMPLER ALTERNATIVE (if applicable)
+If there is a faster or lower-effort path the user may have overlooked, describe it briefly.
+Example: "If the collection has fewer than 500 documents, ml_export_tabular may be faster than
+setting up a full Optic TDE view."
+If no simpler alternative exists, write: "No simpler alternative — the recommended approach is
+already the most direct path."
+
+Be specific, actionable, and refer to actual MarkLogic concepts and the actual tools above.
+Do not hedge with generic advice.`,
+        },
+      }],
+    })
+  );
+
   // ── Dataset Import Prompts ─────────────────────────────────────────────────
 
   server.prompt(
@@ -378,6 +478,89 @@ Provide:
 7. **Dashboard Layout** — Suggested layout of visuals on the QuickSight canvas
 
 Be specific and actionable.`,
+        },
+      }],
+    })
+  );
+
+  // ── Data Import Design Advisor ─────────────────────────────────────────────
+
+  server.prompt(
+    "data_import_advisor",
+    "Advise on the right tool and strategy for loading data into MarkLogic. Always evaluates flux_import first before suggesting REST API or eval-based approaches.",
+    {
+      data_description: z.string().describe("Describe the data you want to import (file format, source, size estimate)"),
+      source_location: z.enum(["local_file", "http_url", "jdbc_database", "s3"]).optional().describe("Where the data lives"),
+      target_collection: z.string().optional().describe("Intended MarkLogic collection"),
+    },
+    ({ data_description, source_location, target_collection }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a MarkLogic data-loading expert. Advise on the best import strategy for:
+
+**Data:** ${data_description}
+**Source location:** ${source_location ?? "unknown — ask the user"}
+**Target collection:** ${target_collection ?? "(to be determined)"}
+
+## Tool Selection Decision Tree
+
+**ALWAYS consider flux_import first.** It is the preferred tool for the vast majority of import tasks.
+
+### Use flux_import when:
+- Data is CSV, TSV, JSON, JSON-Lines, Parquet, Avro, ORC, or MLCP archive
+- Source is a local file, HTTP/HTTPS URL, or S3 URI (s3a://...)
+- Source is a JDBC-accessible database (PostgreSQL, MySQL, Oracle, etc.)
+- File is ZIP or gzip compressed — Flux decompresses natively
+- You want one MarkLogic document per row/record
+- You need automatic TDE view generation (set generate_tde: true)
+- Batch size, thread count, and URI templates need to be configurable
+- The file has no header row — use the column_names parameter
+
+**Key flux_import advantages over manual approaches:**
+- Parallel batch writes with configurable thread_count
+- Automatic ZIP/gzip decompression
+- HTTP URL fetch — Flux downloads the file, you don't need to
+- generate_tde: true creates a TDE Optic view from the imported collection automatically
+- column_names injects a synthetic header row for headerless delimited files (e.g. GDELT events)
+- uri_template controls document URIs with {FieldName} interpolation
+- A single tool call replaces dozens of REST API multipart requests
+
+### Use ml_document_put when:
+- Inserting a small number of individual documents (< ~10)
+- Installing a TDE template, SJS module, or config file into Schemas/Modules database
+- The content is already a complete JSON/XML string you have in hand
+
+### Use ml_eval_javascript / ml_eval_xquery when:
+- **Read-only** server-side computations or aggregations
+- You need to call MarkLogic built-ins not exposed via other tools
+- Always add \`declareUpdate();\` at the top if writing documents
+- **Avoid for bulk inserts** — 10 KB script payload limit, no parallel batching
+
+### Use the MarkLogic REST API directly (curl / requests) when:
+- flux_import is unavailable and the file cannot be served over HTTP
+- You need fine-grained per-document metadata control in multipart/mixed format
+- **This is a last resort** — requires manual chunking and auth handling
+
+## Recommended next steps for this task
+
+1. Confirm the source format and location of the data.
+2. If the data is at an HTTP URL or local file path accessible from the MCP server, call:
+   \`\`\`json
+   {
+     "subcommand": "import-delimited-files",  // or import-files for JSON
+     "http_url": "<url>",                     // or "local_file": "<path>"
+     "collections": ["${target_collection ?? "my-collection"}"],
+     "generate_tde": true,
+     "tde_schema": "myschema",
+     "tde_view": "myview"
+   }
+   \`\`\`
+3. If the file has no header row, add \`"column_names": [...]\` with the field names in order.
+4. After import, verify with ml_schema_discover or ml_optic_query to confirm the view is live.
+
+Provide a concrete flux_import call for this specific data now, or explain which alternative tool is required and why.`,
         },
       }],
     })

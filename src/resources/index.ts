@@ -2,6 +2,155 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { MarkLogicClients } from "../client/index.js";
 import { toToolError } from "../utils/errors.js";
 
+const INSTRUCTIONS_TEXT = `\
+MARKLOGIC MCP — PROBLEM-FIRST DECISION GUIDE
+============================================
+
+READ THIS BEFORE CALLING ANY TOOL.
+
+This server exposes 42+ tools across 9 domains. Reaching for the wrong tool wastes
+round-trips and produces inferior results. Use the decision principles and
+problem→solution table below to identify the MarkLogic-native approach first, then
+select the matching tools.
+
+Also invoke the "problem_advisor" prompt with a natural-language goal whenever the
+right approach is not immediately obvious. It will return a structured 6-section
+analysis (classification → native approach → discovery sequence → tool sequence →
+pitfalls → alternatives) before any tool is called.
+
+
+── DECISION PRINCIPLES (in priority order) ────────────────────────────────────
+
+1. DISCOVER BEFORE YOU QUERY
+   Never assume a collection name, field name, or index exists. Start with
+   ml_collections_list → ml_schema_discover → ml_indexes_list before writing
+   any query or import plan.
+
+2. NATIVE BEFORE EVAL
+   Every problem has a native MarkLogic API. Use ml_search, ml_optic_query,
+   ml_sparql_query, ml_values_query before reaching for ml_eval_javascript or
+   ml_eval_xquery. Eval tools are last-resort: ~10 KB payload limit, no parallel
+   batching, requires ML_ALLOW_EVAL=true.
+
+3. FLUX BEFORE REST FOR BULK LOADS
+   Any import of more than ~10 documents must use flux_import, not ml_document_put
+   in a loop. Flux gives parallel batching, ZIP/gzip decompression, HTTP URL fetch,
+   and automatic TDE generation in a single call.
+
+4. SCHEMA AFTER IMPORT, NOT BEFORE
+   TDE templates apply at query time — write and fix them after import without
+   re-importing. Use ml_tde_validate to verify; ml_schema_get_tde to inspect.
+
+5. OPTIC FOR JOINS AND AGGREGATIONS
+   For joins across collections, GROUP BY aggregates, or BI export, use Optic API
+   via ml_optic_query. Requires TDE views — check ml_schema_get_tde first.
+
+6. SPARQL FOR ENTITY RELATIONSHIPS
+   When data is modelled as subject-predicate-object triples or needs graph
+   traversal, use ml_sparql_query. Check ml_graphs_list first.
+
+7. SEARCH FOR FULL-TEXT AND FACETING
+   MarkLogic's universal index makes ml_search very fast over millions of documents.
+   Use ml_search with structured_query for precision; ml_facets_query for categories;
+   ml_suggest for autocomplete.
+
+8. TIME-SERIES VIA RANGE INDEXES
+   Bucketed time aggregations hit range indexes directly via ml_timeseries_query and
+   ml_values_query. No document scanning. Prerequisite: verify with ml_indexes_list.
+
+9. ASK problem_advisor WHEN UNSURE
+   If the goal does not map cleanly to the table below, invoke the problem_advisor
+   prompt before picking any tool.
+
+
+── PROBLEM → MARKLOGIC-NATIVE SOLUTION TABLE ──────────────────────────────────
+
+PROBLEM TYPE         NATIVE APPROACH            PRIMARY TOOLS             DISCOVER FIRST
+──────────────────────────────────────────────────────────────────────────────────────────
+Load data (bulk)     Flux import pipeline       flux_import               flux_status
+                                                flux_preview
+                                                (flux_help for flags)
+
+Load data (few docs) REST document API          ml_document_put           —
+                                                ml_document_patch
+
+Full-text search     Universal index /          ml_search                 ml_collections_list
+                     Search API                 ml_search_qbe             ml_schema_discover
+                                                ml_suggest
+                                                ml_facets_query
+
+Structured filter    Structured query /         ml_search                 ml_indexes_list
+(range/date/numeric) range index                ml_values_query           ml_schema_discover
+
+Analytics /          Optic API over TDE         ml_optic_query            ml_schema_get_tde
+aggregation          row views                  ml_aggregate_query        ml_schema_discover
+                                                (optic_query_builder)     ml_tde_validate
+
+Export for BI        Optic → tabular export     ml_export_tabular         ml_schema_get_tde
+(QuickSight etc.)                               ml_optic_query            ml_indexes_list
+                                                flux_export
+
+Graph / entity       Triple store / SPARQL      ml_sparql_query           ml_graphs_list
+relationships                                   (sparql_query_builder)
+
+Time-series          Range index / values API   ml_timeseries_query       ml_indexes_list
+                                                ml_values_query           ml_collections_list
+
+Schema discovery     TDE + schema sampling      ml_schema_discover        ml_collections_list
+                                                ml_schema_get_tde
+                                                ml_indexes_list
+                                                ml_namespaces_list
+
+Data transform /     Reprocess pipeline /       flux_reprocess            ml_document_list
+enrichment           SJS module                 ml_document_patch
+                                                ml_invoke_module
+
+Database admin /     Management API             ml_cluster_status         —
+health                                          ml_databases_list
+                                                ml_database_statistics
+                                                ml_forests_list
+                                                ml_servers_list
+
+Code generation      Prompt templates           xquery_function_generator —
+(XQuery/SJS/TDE)                                sjs_module_generator
+                                                tde_schema_generator
+                                                rest_extension_generator
+
+Data import design   Import advisor prompt      data_import_advisor       —
+                                                flux_import
+
+QuickSight design    Dataset/dashboard prompts  quicksight_dataset_designer ml_schema_discover
+                                                quicksight_dashboard_planner
+
+
+── TOOL GROUPS AT A GLANCE ─────────────────────────────────────────────────────
+
+Admin (7):     ml_cluster_status, ml_databases_list, ml_database_properties,
+               ml_database_statistics, ml_forests_list, ml_servers_list,
+               ml_server_properties
+
+Documents (2–5, config-dependent):
+               ml_document_get, ml_document_list
+               [write-enabled] ml_document_put, ml_document_delete, ml_document_patch
+
+Search (4):    ml_search, ml_search_qbe, ml_values_query, ml_suggest
+
+Schema (6):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
+               ml_indexes_list, ml_collections_list, ml_namespaces_list
+
+Eval (3, gated): ml_eval_javascript, ml_eval_xquery, ml_invoke_module
+
+Graph (2):     ml_sparql_query, ml_graphs_list
+
+QuickSight (4): ml_aggregate_query, ml_timeseries_query, ml_export_tabular,
+                ml_facets_query
+
+Optic (1):     ml_optic_query
+
+Flux (7):      flux_import, flux_export, flux_copy, flux_reprocess,
+               flux_preview, flux_help, flux_status
+`;
+
 export function registerAllResources(server: McpServer, clients: MarkLogicClients): void {
   // List of databases
   server.resource(
@@ -42,6 +191,23 @@ export function registerAllResources(server: McpServer, clients: MarkLogicClient
       contents: [{
         uri: "marklogic://documents",
         text: "Use the ml_document_get tool to retrieve a MarkLogic document by URI.\nUse ml_document_list to browse available documents by collection or directory.",
+        mimeType: "text/plain",
+      }],
+    })
+  );
+
+  // Problem-first decision guide — always-available context for AI agents
+  server.resource(
+    "marklogic_instructions",
+    "marklogic://instructions",
+    {
+      mimeType: "text/plain",
+      description: "Problem-first decision guide: maps user goals to MarkLogic-native capabilities and the correct MCP tools. Read this before calling any other tool.",
+    },
+    async () => ({
+      contents: [{
+        uri: "marklogic://instructions",
+        text: INSTRUCTIONS_TEXT,
         mimeType: "text/plain",
       }],
     })
