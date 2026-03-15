@@ -1,4 +1,4 @@
-import type { ConnectionConfig } from "../config/schema.js";
+import type { AppConfig } from "../config/index.js";
 import { MarkLogicBaseClient } from "./base.js";
 import { AdminClient } from "./admin.js";
 import { DocumentsClient } from "./documents.js";
@@ -7,6 +7,7 @@ import { EvalClient } from "./eval.js";
 import { SchemaClient } from "./schema.js";
 import { GraphsClient } from "./graphs.js";
 import { OpticClient } from "./optic.js";
+import { FluxClient } from "./flux.js";
 
 export interface MarkLogicClients {
   admin: AdminClient;
@@ -16,23 +17,22 @@ export interface MarkLogicClients {
   schema: SchemaClient;
   graphs: GraphsClient;
   optic: OpticClient;
+  flux: FluxClient;
 }
 
-export function createClients(
-  config: ConnectionConfig,
-  readonly: boolean,
-  allowEval: boolean
-): MarkLogicClients {
-  const base = new MarkLogicBaseClient(config);
+export function createClients(config: AppConfig): MarkLogicClients {
+  const { connection, safety, flux: fluxConfig } = config;
+  const base = new MarkLogicBaseClient(connection);
   const admin = new AdminClient(base);
-  const documents = new DocumentsClient(base, readonly);
+  const documents = new DocumentsClient(base, safety.readonly);
   const search = new SearchClient(base);
-  const evalClient = new EvalClient(base, allowEval);
+  const evalClient = new EvalClient(base, safety.allowEval);
   const schema = new SchemaClient(base, search, admin);
   const graphs = new GraphsClient(base);
   const optic = new OpticClient(base);
+  const flux = new FluxClient(fluxConfig.runnerUrl, connection);
 
-  return { admin, documents, search, eval: evalClient, schema, graphs, optic };
+  return { admin, documents, search, eval: evalClient, schema, graphs, optic, flux };
 }
 
 export {
@@ -44,4 +44,5 @@ export {
   SchemaClient,
   GraphsClient,
   OpticClient,
+  FluxClient,
 };

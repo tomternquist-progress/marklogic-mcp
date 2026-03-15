@@ -26,7 +26,7 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
 
   server.tool(
     "ml_eval_javascript",
-    "Execute Server-Side JavaScript (SJS) on the MarkLogic server and return results. Requires ML_ALLOW_EVAL=true.",
+    "Execute Server-Side JavaScript (SJS) on the MarkLogic server and return results. Requires ML_ALLOW_EVAL=true. Tips: use Array.from() instead of .toArray() on MarkLogic sequences; xdmp.httpGet() requires outbound network access from the MarkLogic host and may not reach external URLs; keep scripts concise to avoid payload size limits. Prefer XQuery eval for collection/metadata operations.",
     {
       javascript: z.string().describe("Server-Side JavaScript code to execute"),
       vars: z.record(z.unknown()).optional().describe("Variable bindings available in the script"),

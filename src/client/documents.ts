@@ -91,9 +91,11 @@ export class DocumentsClient {
 
   async put(uri: string, content: string, contentType: string, options: PutDocumentOptions = {}): Promise<void> {
     if (this.readonly) throw new WriteProtectedError();
-    const params: Record<string, string> = { uri };
+    const params: Record<string, string | string[]> = { uri };
     if (options.database) params.database = options.database;
-    if (options.collections?.length) params.collection = options.collections.join(",");
+    // Pass as array so axios serializes each as a separate collection= query param.
+    // Joining with "," would create a single collection named "A,B" instead of two collections.
+    if (options.collections?.length) params.collection = options.collections;
 
     await this.base.put(this.base.http, "/v1/documents", content, {
       params,

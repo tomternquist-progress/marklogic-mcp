@@ -48,13 +48,13 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
   if (!readonly) {
     server.tool(
       "ml_document_put",
-      "Create or replace a document in MarkLogic at a specific URI. Requires ML_READONLY=false.",
+      "Create or replace a document in MarkLogic at a specific URI. Requires ML_READONLY=false. NOTE: TDE templates must be stored in the 'Schemas' database (set database='Schemas') with the collection 'http://marklogic.com/xdmp/tde'.",
       {
         uri: z.string().describe("Document URI"),
         content: z.string().describe("Document content as string (JSON, XML, or plain text)"),
         content_type: z.enum(["application/json", "application/xml", "text/plain"]).describe("Content type"),
-        collections: z.array(z.string()).optional().describe("Collection URIs to add document to"),
-        database: z.string().optional().describe("Database name"),
+        collections: z.array(z.string()).optional().describe("Collection URIs to add document to. For TDE templates use 'http://marklogic.com/xdmp/tde'. Each entry becomes a separate collection."),
+        database: z.string().optional().describe("Database name. Use 'Schemas' for TDE templates."),
       },
       async ({ uri, content, content_type, collections, database }) => {
         try {

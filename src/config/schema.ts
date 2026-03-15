@@ -53,6 +53,12 @@ export const LogConfigSchema = z.object({
 
 export type LogConfig = z.infer<typeof LogConfigSchema>;
 
+export const FluxConfigSchema = z.object({
+  runnerUrl: z.string().url().optional(),
+});
+
+export type FluxConfig = z.infer<typeof FluxConfigSchema>;
+
 export const AppConfigSchema = z.object({
   transport: z.enum(["stdio", "http"]).default("stdio"),
   connection: ConnectionConfigSchema,
@@ -63,6 +69,7 @@ export const AppConfigSchema = z.object({
     region: z.string().optional(),
     quicksightAccountId: z.string().optional(),
   }),
+  flux: FluxConfigSchema,
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

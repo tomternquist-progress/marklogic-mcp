@@ -10,6 +10,24 @@ version: "3.9"
 #   ML_HOST=192.168.1.100 ML_PASSWORD=secret docker compose -f docker-compose.mcp-only.yml up
 
 services:
+  # Optional Flux sidecar — only started when the "flux" profile is active:
+  #   docker compose -f docker-compose.mcp-only.yml --profile flux up
+  flux-runner:
+    build:
+      context: ./flux-runner
+    container_name: flux-runner
+    restart: unless-stopped
+    profiles: ["flux"]
+    environment:
+      - FLUX_PORT=8080
+      - FLUX_TIMEOUT_MINUTES=${FLUX_TIMEOUT_MINUTES:-30}
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   marklogic-mcp:
     image: ghcr.io/tternquist/marklogic-mcp:master
     container_name: marklogic-mcp
@@ -35,6 +53,9 @@ services:
       # Safety (read-only by default; set to false to enable writes)
       - ML_READONLY=${ML_READONLY:-true}
       - ML_ALLOW_EVAL=${ML_ALLOW_EVAL:-false}
+
+      # Flux sidecar URL — set automatically when using the "flux" profile
+      - FLUX_RUNNER_URL=${FLUX_RUNNER_URL:-}
 
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-info}

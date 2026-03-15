@@ -9,6 +9,7 @@ import { registerEvalTools } from "./eval.js";
 import { registerGraphTools } from "./graphs.js";
 import { registerQuickSightTools } from "./quicksight.js";
 import { registerOpticTools } from "./optic.js";
+import { registerFluxTools } from "./flux.js";
 
 export function registerAllTools(server: McpServer, clients: MarkLogicClients, config: AppConfig): void {
   registerAdminTools(server, clients);
@@ -19,4 +20,5 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerGraphTools(server, clients);
   registerQuickSightTools(server, clients);
   registerOpticTools(server, clients);
+  registerFluxTools(server, clients.flux);
 }

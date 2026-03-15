@@ -18,7 +18,11 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
         const result = await clients.optic.query(plan, database);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
-        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        let msg = toToolError(err);
+        if (msg.includes("SQL-TABLENOTFOUND") || (msg.includes("Table") && msg.includes("not found"))) {
+          msg += "\nHint: TDE templates must be stored in the Schemas database with collection 'http://marklogic.com/xdmp/tde'. Use ml_document_put with database='Schemas' to register your template, then use ml_schema_get_tde to verify it was applied.";
+        }
+        return { content: [{ type: "text", text: msg }], isError: true };
       }
     }
   );

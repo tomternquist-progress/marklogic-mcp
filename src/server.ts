@@ -11,11 +11,7 @@ export function createMcpServer(config: AppConfig): McpServer {
     version: "0.1.0",
   });
 
-  const clients = createClients(
-    config.connection,
-    config.safety.readonly,
-    config.safety.allowEval
-  );
+  const clients = createClients(config);
 
   registerAllTools(server, clients, config);
   registerAllResources(server, clients);

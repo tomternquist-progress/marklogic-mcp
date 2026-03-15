@@ -3,7 +3,7 @@ version: "3.9"
 # Local MarkLogic 12 development environment + MCP server
 services:
   marklogic:
-    image: progressofficial/marklogic-db:12.0-rootless
+    image: progressofficial/marklogic-db:latest
     container_name: marklogic
     ports:
       - "8000:8000"   # REST API
@@ -22,6 +22,24 @@ services:
       retries: 10
       start_period: 60s
 
+  flux-runner:
+    build:
+      context: ./flux-runner
+    container_name: flux-runner
+    environment:
+      - FLUX_PORT=8080
+      - FLUX_TIMEOUT_MINUTES=30
+    # Not exposed externally — only reachable by marklogic-mcp on the internal network
+    depends_on:
+      marklogic:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   marklogic-mcp:
     image: ghcr.io/tternquist/marklogic-mcp:master
     container_name: marklogic-mcp
@@ -38,10 +56,13 @@ services:
       - ML_ALLOW_EVAL=false
       - LOG_LEVEL=info
       - LOG_FORMAT=pretty
+      - FLUX_RUNNER_URL=http://flux-runner:8080
     ports:
       - "3000:3000"
     depends_on:
       marklogic:
+        condition: service_healthy
+      flux-runner:
         condition: service_healthy
 
 volumes:

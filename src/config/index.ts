@@ -33,6 +33,9 @@ export function loadConfig(): AppConfig {
       region: process.env.AWS_REGION,
       quicksightAccountId: process.env.AWS_QUICKSIGHT_ACCOUNT_ID,
     },
+    flux: {
+      runnerUrl: process.env.FLUX_RUNNER_URL,
+    },
   };
 
   const result = AppConfigSchema.safeParse(raw);
