@@ -5,7 +5,14 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
@@ -16,6 +23,9 @@ import java.util.concurrent.TimeUnit;
  *
  * POST /run   { "args": ["import-delimited-files", "--path", "/data/file.csv", ...] }
  *             → { "exitCode": 0, "output": "..." }
+ *
+ * Supports --http-url <url> in place of --path: the file is downloaded to /tmp/
+ * before Flux runs, then cleaned up afterwards.
  *
  * GET  /health → { "status": "ok" }
  *
@@ -69,10 +79,20 @@ public class FluxServer {
                 return;
             }
 
+            // Resolve any --http-url flags by downloading to /tmp first
+            List<Path> tempFiles = new ArrayList<>();
+            List<String> resolvedArgs;
+            try {
+                resolvedArgs = resolveHttpUrls(userArgs, tempFiles);
+            } catch (Exception e) {
+                respond(exchange, 400, jsonObj("error", "Failed to download --http-url: " + e.getMessage()));
+                return;
+            }
+
             // Build full command: /flux/bin/flux <user args...>
             List<String> cmd = new ArrayList<>();
             cmd.add("/flux/bin/flux");
-            cmd.addAll(userArgs);
+            cmd.addAll(resolvedArgs);
 
             try {
                 ProcessBuilder pb = new ProcessBuilder(cmd);
@@ -104,7 +124,62 @@ public class FluxServer {
                 respond(exchange, 500, String.format(
                     "{\"exitCode\":-1,\"output\":%s}", jsonString("Failed to start flux: " + e.getMessage())
                 ));
+            } finally {
+                // Clean up any temp files downloaded for this run
+                for (Path p : tempFiles) {
+                    try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+                }
             }
+        }
+
+        /**
+         * Scan args for --http-url <url>. For each occurrence, download the file
+         * to /tmp/<filename> (following redirects), record it in tempFiles for cleanup,
+         * and replace --http-url <url> with --path <local-path> in the returned list.
+         */
+        private List<String> resolveHttpUrls(List<String> args, List<Path> tempFiles) throws Exception {
+            List<String> result = new ArrayList<>(args);
+            HttpClient httpClient = null; // lazy-init only if needed
+
+            for (int i = 0; i < result.size() - 1; i++) {
+                if ("--http-url".equals(result.get(i))) {
+                    String url = result.get(i + 1);
+
+                    // Derive a safe filename from the URL path
+                    String urlPath = new URI(url).getPath();
+                    String filename = Paths.get(urlPath).getFileName().toString();
+                    if (filename == null || filename.isBlank()) {
+                        filename = "flux-download-" + System.currentTimeMillis();
+                    }
+                    // Strip query/fragment chars that can appear in decoded paths
+                    filename = filename.replaceAll("[^a-zA-Z0-9._-]", "_");
+
+                    Path tmpFile = Path.of("/tmp", filename);
+
+                    if (httpClient == null) {
+                        httpClient = HttpClient.newBuilder()
+                            .followRedirects(HttpClient.Redirect.ALWAYS)
+                            .build();
+                    }
+
+                    System.out.println("Downloading " + url + " → " + tmpFile);
+                    HttpRequest req = HttpRequest.newBuilder(new URI(url)).GET().build();
+                    HttpResponse<Path> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofFile(tmpFile));
+
+                    if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
+                        throw new IOException("HTTP " + resp.statusCode() + " fetching " + url);
+                    }
+
+                    tempFiles.add(tmpFile);
+
+                    // Replace --http-url <url> with --path <local-file>
+                    result.set(i, "--path");
+                    result.set(i + 1, tmpFile.toString());
+
+                    System.out.println("Downloaded " + Files.size(tmpFile) + " bytes → " + tmpFile);
+                }
+            }
+            return result;
         }
 
         /**

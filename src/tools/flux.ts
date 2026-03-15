@@ -22,7 +22,8 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
         "import-jdbc",
         "import-mlcp-archive",
       ]).describe("Flux import subcommand"),
-      path: z.string().optional().describe("Local path or S3 URI (s3a://bucket/key) to read from. For import-jdbc, omit this."),
+      path: z.string().optional().describe("Local path or S3 URI (s3a://bucket/key) to read from. For import-jdbc, omit this. Use http_url instead to download from a URL first."),
+      http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals)."),
       collections: z.array(z.string()).optional().describe("MarkLogic collections to assign to imported documents"),
       permissions: z.string().optional().describe("Comma-separated role:capability pairs, e.g. 'rest-reader:read,rest-writer:update'"),
       uri_template: z.string().optional().describe("URI template for document naming, e.g. '/import/{filename}'"),
@@ -34,13 +35,14 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       batch_size: z.number().int().positive().optional().describe("Documents per batch (default: 100)"),
       extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim, e.g. ['--delimiter', '|', '--header-line', '1']"),
     },
-    async ({ subcommand, path, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args }) => {
+    async ({ subcommand, path, http_url, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args }) => {
       const args: string[] = [
         subcommand,
         "--connection-string", flux.connectionString(database),
       ];
 
-      if (path) args.push("--path", path);
+      if (http_url) args.push("--http-url", http_url);
+      else if (path) args.push("--path", path);
       if (collections?.length) args.push("--collections", collections.join(","));
       if (permissions) args.push("--permissions", permissions);
       if (uri_template) args.push("--uri-template", uri_template);
@@ -170,11 +172,12 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
     "flux_preview",
     "Preview what a Flux command would process without writing to MarkLogic. Uses --preview <N> to show the first N records. Pass the same args you would use for flux_import, flux_export, etc.",
     {
-      args: z.array(z.string()).describe("Full Flux CLI args, e.g. ['import-delimited-files', '--path', '/data/events.csv', '--connection-string', 'admin:admin@marklogic:8000/Documents']. --preview is added automatically."),
+      args: z.array(z.string()).describe("Full Flux CLI args, e.g. ['import-delimited-files', '--path', '/data/events.csv', '--connection-string', 'admin:admin@marklogic:8000/Documents']. --preview is added automatically. Use --http-url instead of --path to download from a URL first."),
       preview_rows: z.number().int().positive().optional().describe("Number of rows to preview (default: 10)"),
     },
     async ({ args, preview_rows }) => {
       const previewArgs = [...args, "--preview", String(preview_rows ?? 10)];
+      // --http-url is resolved by the runner sidecar, no extra handling needed here
       const result = await flux.run(previewArgs);
       return { content: [{ type: "text", text: formatResult(result) }], isError: !result.success };
     }
