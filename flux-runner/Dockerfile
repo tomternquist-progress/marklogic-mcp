@@ -28,6 +28,9 @@ RUN curl -fsSL \
 WORKDIR /app
 COPY --from=builder /build/*.class .
 
+# Bundle sample data for testing; user data should be mounted at /data
+COPY --chown=root:root sample-data/ /test-data/
+
 # Port the HTTP wrapper listens on
 EXPOSE 8080
 

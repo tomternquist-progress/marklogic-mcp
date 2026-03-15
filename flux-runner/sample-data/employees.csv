@@ -1,0 +1,9 @@
+id,name,department,title,salary,hire_date,active
+e1,Alice Johnson,Engineering,Senior Engineer,120000,2020-03-15,true
+e2,Bob Smith,Engineering,Software Engineer,95000,2021-07-01,true
+e3,Carol White,Sales,Sales Manager,110000,2019-11-20,true
+e4,David Lee,Sales,Account Executive,80000,2022-01-10,true
+e5,Eve Martinez,HR,HR Director,105000,2018-05-05,true
+e6,Frank Brown,Engineering,DevOps Engineer,100000,2021-09-15,false
+e7,Grace Kim,HR,HR Specialist,70000,2023-02-28,true
+e8,Henry Chen,Sales,Sales Rep,65000,2023-06-01,true

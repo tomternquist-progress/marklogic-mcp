@@ -20,6 +20,10 @@ services:
     environment:
       - FLUX_PORT=8080
       - FLUX_TIMEOUT_MINUTES=${FLUX_TIMEOUT_MINUTES:-30}
+    volumes:
+      # Mount a local directory as /data inside the container.
+      # Flux import/export paths should reference /data/... when using this compose file.
+      - ${FLUX_DATA_DIR:-./flux-data}:/data
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       interval: 15s

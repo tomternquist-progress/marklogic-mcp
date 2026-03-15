@@ -28,6 +28,10 @@ services:
     environment:
       - FLUX_PORT=8080
       - FLUX_TIMEOUT_MINUTES=30
+    volumes:
+      # Mount a local directory as /data inside the container.
+      # Flux import/export paths should reference /data/... when using this compose file.
+      - ${FLUX_DATA_DIR:-./flux-data}:/data
     # Not exposed externally — only reachable by marklogic-mcp on the internal network
     depends_on:
       marklogic:
