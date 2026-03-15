@@ -91,14 +91,17 @@ export class DocumentsClient {
 
   async put(uri: string, content: string, contentType: string, options: PutDocumentOptions = {}): Promise<void> {
     if (this.readonly) throw new WriteProtectedError();
-    const params: Record<string, string | string[]> = { uri };
-    if (options.database) params.database = options.database;
-    // Pass as array so axios serializes each as a separate collection= query param.
-    // Joining with "," would create a single collection named "A,B" instead of two collections.
-    if (options.collections?.length) params.collection = options.collections;
 
-    await this.base.put(this.base.http, "/v1/documents", content, {
-      params,
+    // Build query string manually so multiple collections serialize as repeated
+    // collection= params (col=A&collection=B) rather than collection[]=A&collection[]=B,
+    // which MarkLogic rejects with REST-UNSUPPORTEDPARAM.
+    const qs = new URLSearchParams({ uri });
+    if (options.database) qs.set("database", options.database);
+    if (options.collections?.length) {
+      for (const col of options.collections) qs.append("collection", col);
+    }
+
+    await this.base.put(this.base.http, `/v1/documents?${qs.toString()}`, content, {
       headers: { "Content-Type": contentType },
     });
   }
