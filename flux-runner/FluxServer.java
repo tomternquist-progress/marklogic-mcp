@@ -14,9 +14,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * Minimal HTTP sidecar that runs MarkLogic Flux CLI commands on behalf of the MCP server.
@@ -125,9 +128,17 @@ public class FluxServer {
                     "{\"exitCode\":-1,\"output\":%s}", jsonString("Failed to start flux: " + e.getMessage())
                 ));
             } finally {
-                // Clean up any temp files downloaded for this run
+                // Clean up any temp files/dirs downloaded for this run
                 for (Path p : tempFiles) {
-                    try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+                    try {
+                        if (Files.isDirectory(p)) {
+                            Files.walk(p)
+                                .sorted(Comparator.reverseOrder())
+                                .forEach(f -> { try { Files.deleteIfExists(f); } catch (Exception ignored) {} });
+                        } else {
+                            Files.deleteIfExists(p);
+                        }
+                    } catch (Exception ignored) {}
                 }
             }
         }
@@ -170,16 +181,48 @@ public class FluxServer {
                         throw new IOException("HTTP " + resp.statusCode() + " fetching " + url);
                     }
 
-                    tempFiles.add(tmpFile);
-
-                    // Replace --http-url <url> with --path <local-file>
-                    result.set(i, "--path");
-                    result.set(i + 1, tmpFile.toString());
-
                     System.out.println("Downloaded " + Files.size(tmpFile) + " bytes → " + tmpFile);
+
+                    // ZIP files: extract to a temp directory and pass the dir as --path
+                    if (filename.toLowerCase().endsWith(".zip")) {
+                        Path extractDir = Path.of("/tmp", "flux-unzip-" + System.currentTimeMillis());
+                        Files.createDirectories(extractDir);
+                        extractZip(tmpFile, extractDir);
+                        Files.deleteIfExists(tmpFile);
+                        tempFiles.add(extractDir);
+                        result.set(i, "--path");
+                        result.set(i + 1, extractDir.toString());
+                        System.out.println("Extracted ZIP → " + extractDir);
+                    } else {
+                        tempFiles.add(tmpFile);
+                        result.set(i, "--path");
+                        result.set(i + 1, tmpFile.toString());
+                    }
                 }
             }
             return result;
+        }
+
+        /**
+         * Extract all files from a ZIP archive into destDir (flat — no subdirectories).
+         */
+        private void extractZip(Path zipFile, Path destDir) throws IOException {
+            try (ZipInputStream zis = new ZipInputStream(Files.newInputStream(zipFile))) {
+                ZipEntry entry;
+                while ((entry = zis.getNextEntry()) != null) {
+                    if (entry.isDirectory()) {
+                        zis.closeEntry();
+                        continue;
+                    }
+                    // Use only the filename, stripping any directory prefix inside the ZIP
+                    String entryName = Paths.get(entry.getName()).getFileName().toString();
+                    entryName = entryName.replaceAll("[^a-zA-Z0-9._-]", "_");
+                    Path dest = destDir.resolve(entryName);
+                    Files.copy(zis, dest);
+                    System.out.println("Extracted " + entry.getName() + " → " + dest);
+                    zis.closeEntry();
+                }
+            }
         }
 
         /**
