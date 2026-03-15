@@ -43,6 +43,11 @@ export class FluxClient {
     return `${username}:${password}@${host}:${port}/${db}`;
   }
 
+  /** Auth type configured for this MarkLogic connection ("digest" or "basic"). */
+  get authType(): string {
+    return this.mlConfig.authType;
+  }
+
   async run(args: string[]): Promise<FluxRunResult> {
     if (!this.configured) {
       return {

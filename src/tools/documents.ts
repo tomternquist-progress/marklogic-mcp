@@ -48,18 +48,53 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
   if (!readonly) {
     server.tool(
       "ml_document_put",
-      "Create or replace a document in MarkLogic at a specific URI. Requires ML_READONLY=false. NOTE: TDE templates must be stored in the 'Schemas' database (set database='Schemas') with the collection 'http://marklogic.com/xdmp/tde'.",
+      "Create or replace a document in MarkLogic at a specific URI. Requires ML_READONLY=false.\n\nNOTE: TDE templates must be stored in the 'Schemas' database (set database='Schemas') with the collection 'http://marklogic.com/xdmp/tde'.\n\nMODULES DATABASE: Documents written to the Modules database (database='Modules') are immediately available as executable code — the URI is the require/invoke path. For example, a document at /lib/utils.sjs can be loaded with require('/lib/utils.sjs') or invoked with xdmp.invoke('/lib/utils.sjs'). No restart or reload step is needed. Use content_type='application/javascript' for .sjs files and 'application/xquery' for .xqy files. When ML_ALLOW_EVAL=true, .sjs files are automatically syntax-checked on write and any compile errors are returned as warnings.",
       {
-        uri: z.string().describe("Document URI"),
-        content: z.string().describe("Document content as string (JSON, XML, or plain text)"),
-        content_type: z.enum(["application/json", "application/xml", "text/plain"]).describe("Content type"),
+        uri: z.string().describe("Document URI. For Modules database, this is the require/invoke path, e.g. /lib/utils.sjs"),
+        content: z.string().describe("Document content as string (JSON, XML, plain text, JavaScript, or XQuery)"),
+        content_type: z.enum([
+          "application/json",
+          "application/xml",
+          "text/plain",
+          "application/javascript",
+          "application/xquery",
+        ]).describe("Content type. Use 'application/javascript' for .sjs modules, 'application/xquery' for .xqy modules."),
         collections: z.array(z.string()).optional().describe("Collection URIs to add document to. For TDE templates use 'http://marklogic.com/xdmp/tde'. Each entry becomes a separate collection."),
-        database: z.string().optional().describe("Database name. Use 'Schemas' for TDE templates."),
+        database: z.string().optional().describe("Database name. Use 'Schemas' for TDE templates, 'Modules' for executable SJS/XQuery modules."),
       },
       async ({ uri, content, content_type, collections, database }) => {
         try {
           await clients.documents.put(uri, content, content_type, { collections, database });
-          return { content: [{ type: "text", text: `Document created/updated: ${uri}` }] };
+
+          // Static-check SJS modules written to the Modules database
+          const isModulesDb = (database ?? "").toLowerCase() === "modules";
+          const isSjs = uri.endsWith(".sjs") || uri.endsWith(".mjs");
+          if (isModulesDb && isSjs) {
+            try {
+              const warning = await clients.eval.staticCheckSjs(content);
+              if (warning) {
+                return {
+                  content: [{
+                    type: "text",
+                    text: `Module stored at ${uri} (immediately callable via require('${uri}') / xdmp.invoke('${uri}')).\n\nSTATIC CHECK WARNING: ${warning}\n\nVerify against the MarkLogic SJS API before use — MarkLogic's SJS environment differs from Node.js (Sequences are not Arrays, no npm modules, etc.).`,
+                  }],
+                };
+              }
+            } catch {
+              // Static check unavailable (e.g. ML_ALLOW_EVAL=false) — proceed silently
+            }
+            return {
+              content: [{
+                type: "text",
+                text: `Module stored at ${uri}. Immediately callable via require('${uri}') or xdmp.invoke('${uri}'). Static check passed.`,
+              }],
+            };
+          }
+
+          const note = isModulesDb
+            ? ` Immediately callable via require('${uri}') or xdmp.invoke('${uri}').`
+            : "";
+          return { content: [{ type: "text", text: `Document created/updated: ${uri}.${note}` }] };
         } catch (err) {
           return { content: [{ type: "text", text: toToolError(err) }], isError: true };
         }

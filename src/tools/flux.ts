@@ -23,7 +23,7 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
         "import-mlcp-archive",
       ]).describe("Flux import subcommand"),
       path: z.string().optional().describe("Local path or S3 URI (s3a://bucket/key) to read from. For import-jdbc, omit this. Use http_url instead to download from a URL first."),
-      http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals)."),
+      http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals). NOTE: .gz files are decompressed automatically when the filename ends in .gz. ZIP (.zip) files are NOT supported — extract them first or use a direct link to the uncompressed file. For other compression formats use extra_args: ['--spark-prop', 'compression=<algorithm>']."),
       collections: z.array(z.string()).optional().describe("MarkLogic collections to assign to imported documents"),
       permissions: z.string().optional().describe("Comma-separated role:capability pairs, e.g. 'rest-reader:read,rest-writer:update'"),
       uri_template: z.string().optional().describe("URI template for document naming, e.g. '/import/{filename}'"),
@@ -33,7 +33,7 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
       query: z.string().optional().describe("SQL query for import-jdbc"),
       thread_count: z.number().int().positive().optional().describe("Parallel writer threads (default: 4)"),
       batch_size: z.number().int().positive().optional().describe("Documents per batch (default: 100)"),
-      extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim, e.g. ['--delimiter', '|', '--header-line', '1']"),
+      extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim. Common flags for import-delimited-files: ['--delimiter', '|'] for pipe-delimited, ['--encoding', 'ISO-8859-1'] for non-UTF-8 files. For headerless files: ['--header-line', '1'] (skip header) or supply column names via ['--spark-master', 'local', '--spark-prop', 'header=false']. To force compression: ['--spark-prop', 'compression=gzip']. Run flux_help with subcommand='import-delimited-files' to see all accepted flags."),
     },
     async ({ subcommand, path, http_url, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args }) => {
       const args: string[] = [
@@ -170,16 +170,34 @@ export function registerFluxTools(server: McpServer, flux: FluxClient): void {
   // ── flux_preview ─────────────────────────────────────────────────────────────
   server.tool(
     "flux_preview",
-    "Preview what a Flux command would process without writing to MarkLogic. Uses --preview <N> to show the first N records. Pass the same args you would use for flux_import, flux_export, etc.",
+    "Preview what a Flux import/export command would process without writing to MarkLogic. The configured MarkLogic connection (host, credentials, auth type) is injected automatically — do NOT include --connection-string or --auth-type yourself. Pass the subcommand and data-source args you would use with flux_import/flux_export.",
     {
-      args: z.array(z.string()).describe("Full Flux CLI args, e.g. ['import-delimited-files', '--path', '/data/events.csv', '--connection-string', 'admin:admin@marklogic:8000/Documents']. --preview is added automatically. Use --http-url instead of --path to download from a URL first."),
+      args: z.array(z.string()).describe("Flux CLI args WITHOUT connection flags, e.g. ['import-delimited-files', '--path', '/data/events.csv']. --connection-string, --auth-type, and --preview are added automatically. Use --http-url instead of --path to download from a URL first."),
       preview_rows: z.number().int().positive().optional().describe("Number of rows to preview (default: 10)"),
     },
     async ({ args, preview_rows }) => {
-      const previewArgs = [...args, "--preview", String(preview_rows ?? 10)];
-      // --http-url is resolved by the runner sidecar, no extra handling needed here
+      // Auto-inject connection string and auth type if not already supplied
+      const hasConn = args.some(a => a === "--connection-string" || a === "-c");
+      const connArgs = hasConn
+        ? []
+        : ["--connection-string", flux.connectionString(), "--auth-type", flux.authType];
+      const previewArgs = [...connArgs, ...args, "--preview", String(preview_rows ?? 10)];
       const result = await flux.run(previewArgs);
       return { content: [{ type: "text", text: formatResult(result) }], isError: !result.success };
+    }
+  );
+
+  // ── flux_help ────────────────────────────────────────────────────────────────
+  server.tool(
+    "flux_help",
+    "Show the help text for a Flux subcommand, listing all accepted CLI flags. Use this to discover valid options before calling flux_import or flux_export — especially for flags like --delimiter, --encoding, --header-line, or --spark-prop.",
+    {
+      subcommand: z.string().optional().describe("Flux subcommand to get help for, e.g. 'import-delimited-files', 'import-files', 'export-files'. Omit for top-level Flux help."),
+    },
+    async ({ subcommand }) => {
+      const args = subcommand ? ["help", subcommand] : ["--help"];
+      const result = await flux.run(args);
+      return { content: [{ type: "text", text: result.output || "(no output)" }] };
     }
   );
 
