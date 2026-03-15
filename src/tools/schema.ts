@@ -1,0 +1,94 @@
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import type { MarkLogicClients } from "../client/index.js";
+import { toToolError } from "../utils/errors.js";
+
+export function registerSchemaTools(server: McpServer, clients: MarkLogicClients): void {
+  server.tool(
+    "ml_schema_discover",
+    "Infer the document schema/structure of a MarkLogic collection by sampling documents. Returns field names, types, cardinality, and example values.",
+    {
+      collection: z.string().optional().describe("Collection URI to sample from"),
+      sample_size: z.number().int().positive().max(50).optional().describe("Number of documents to sample (default: 10)"),
+      database: z.string().optional().describe("Database name"),
+    },
+    async ({ collection, sample_size, database }) => {
+      try {
+        const result = await clients.schema.discoverSchema({ collection, sampleSize: sample_size, database });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_schema_get_tde",
+    "Retrieve Template Driven Extraction (TDE) schemas registered in the MarkLogic Schemas database. TDE schemas define row views over document data.",
+    {
+      schema_name: z.string().optional().describe("Specific TDE schema/template name to retrieve (optional)"),
+      database: z.string().optional().describe("Database name (schemas are in the Schemas DB)"),
+    },
+    async ({ schema_name, database }) => {
+      try {
+        const schemas = await clients.schema.getTdeSchemas(database, schema_name);
+        return { content: [{ type: "text", text: JSON.stringify(schemas, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_indexes_list",
+    "List all configured indexes for a MarkLogic database (range element, range path, range field, geospatial).",
+    {
+      database: z.string().describe("Database name to inspect"),
+      index_type: z.enum(["range-element", "range-path", "range-field", "all"]).optional().describe("Filter by index type (default: all)"),
+    },
+    async ({ database, index_type }) => {
+      try {
+        const indexes = await clients.schema.listIndexes(database);
+        const filtered = index_type && index_type !== "all"
+          ? indexes.filter((i) => i.type === index_type)
+          : indexes;
+        return { content: [{ type: "text", text: JSON.stringify(filtered, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_collections_list",
+    "List document collections in MarkLogic with their document counts.",
+    {
+      limit: z.number().int().positive().max(500).optional().describe("Maximum collections to return (default: 50)"),
+      database: z.string().optional().describe("Database name"),
+    },
+    async ({ limit, database }) => {
+      try {
+        const collections = await clients.schema.listCollections(database, limit ?? 50);
+        return { content: [{ type: "text", text: JSON.stringify(collections, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_namespaces_list",
+    "List registered XML namespaces in a MarkLogic database. Essential for writing XQuery against XML documents.",
+    {
+      database: z.string().optional().describe("Database name"),
+    },
+    async ({ database }) => {
+      try {
+        const namespaces = await clients.schema.listNamespaces(database);
+        return { content: [{ type: "text", text: JSON.stringify(namespaces, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+}
