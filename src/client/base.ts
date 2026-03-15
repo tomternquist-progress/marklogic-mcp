@@ -37,6 +37,10 @@ export class MarkLogicBaseClient {
         username: this.config.username,
         password: this.config.password,
       };
+      instance.interceptors.response.use(
+        (res) => res,
+        (error) => { throw this.mapError(error); }
+      );
     } else {
       this.attachDigestInterceptor(instance, port);
     }
