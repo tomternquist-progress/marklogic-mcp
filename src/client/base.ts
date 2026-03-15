@@ -89,15 +89,16 @@ export class MarkLogicBaseClient {
     if (!axios.isAxiosError(error)) return error as Error;
     const status = error.response?.status;
     const body = error.response?.data as Record<string, unknown> | undefined;
+    const rawBodyStr = typeof body === "string" ? body : body ? JSON.stringify(body) : undefined;
     const mlMessage =
       (body?.["error-response"] as Record<string, string> | undefined)?.["message"] ??
       (body?.message as string | undefined) ??
-      error.message;
+      (rawBodyStr ? `${error.message} — body: ${rawBodyStr.slice(0, 300)}` : error.message);
     const mlCode =
       (body?.["error-response"] as Record<string, string> | undefined)?.["status-code"] as string | undefined;
 
     if (status === 401) return new AuthenticationError(`${this.config.host}`);
-    logger.debug("MarkLogic HTTP error", { status, mlMessage, mlCode });
+    logger.debug("MarkLogic HTTP error", { status, mlMessage, mlCode, rawBody: body });
     return new MarkLogicError(mlMessage, status, mlCode);
   }
 
