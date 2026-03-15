@@ -7,7 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { HttpConfig } from "../config/schema.js";
 import { logger } from "../utils/logger.js";
 
-export async function startHttpTransport(server: McpServer, config: HttpConfig): Promise<void> {
+export async function startHttpTransport(serverFactory: () => McpServer, config: HttpConfig): Promise<void> {
   const app = express();
   app.use(express.json());
   app.use(cors());
@@ -37,6 +37,10 @@ export async function startHttpTransport(server: McpServer, config: HttpConfig):
         sessionIdGenerator: () => sessionId,
       });
       sessions.set(sessionId, transport);
+
+      // Each session gets its own McpServer instance — the SDK forbids sharing one server
+      // across multiple transports (throws "Already connected to a transport").
+      const server = serverFactory();
       await server.connect(transport);
 
       // Clean up on close

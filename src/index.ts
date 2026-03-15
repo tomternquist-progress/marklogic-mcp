@@ -18,11 +18,10 @@ async function main(): Promise<void> {
     allowEval: config.safety.allowEval,
   });
 
-  const server = createMcpServer(config);
-
   if (config.transport === "http") {
-    await startHttpTransport(server, config.http);
+    await startHttpTransport(() => createMcpServer(config), config.http);
   } else {
+    const server = createMcpServer(config);
     await startStdioTransport(server);
   }
 }
