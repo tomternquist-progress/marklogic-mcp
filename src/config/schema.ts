@@ -54,7 +54,8 @@ export const LogConfigSchema = z.object({
 export type LogConfig = z.infer<typeof LogConfigSchema>;
 
 export const FluxConfigSchema = z.object({
-  runnerUrl: z.string().url().optional(),
+  // Empty string (unset env var) is treated as "not configured" rather than a validation error
+  runnerUrl: z.preprocess(val => (val === "" ? undefined : val), z.string().url().optional()),
 });
 
 export type FluxConfig = z.infer<typeof FluxConfigSchema>;

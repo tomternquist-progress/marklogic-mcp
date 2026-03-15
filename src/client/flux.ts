@@ -52,14 +52,22 @@ export class FluxClient {
       };
     }
 
-    const res = await this.http.post<{ exitCode: number; output: string; timedOut?: boolean }>(
-      "/run",
-      { args },
-      { headers: { "Content-Type": "application/json" } }
-    );
-
-    const { exitCode, output, timedOut } = res.data;
-    return { exitCode, output, timedOut, success: exitCode === 0 };
+    try {
+      const res = await this.http.post<{ exitCode: number; output: string; timedOut?: boolean }>(
+        "/run",
+        { args },
+        { headers: { "Content-Type": "application/json" } }
+      );
+      const { exitCode, output, timedOut } = res.data;
+      return { exitCode, output, timedOut, success: exitCode === 0 };
+    } catch (err: unknown) {
+      const isConnErr = err instanceof Error && ("code" in err) &&
+        ["ECONNREFUSED", "ENOTFOUND", "ECONNRESET"].includes((err as NodeJS.ErrnoException).code ?? "");
+      const msg = isConnErr
+        ? `Flux runner is not reachable at ${this.http.defaults.baseURL}. Ensure the flux-runner service is running (use --profile flux with docker compose).`
+        : (err instanceof Error ? err.message : String(err));
+      return { exitCode: -1, output: msg, success: false };
+    }
   }
 
   async healthCheck(): Promise<boolean> {

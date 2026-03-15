@@ -53,11 +53,16 @@ services:
       - ML_READONLY=${ML_READONLY:-true}
       - ML_ALLOW_EVAL=${ML_ALLOW_EVAL:-false}
 
-      # Flux sidecar URL — set automatically when using the "flux" profile
-      - FLUX_RUNNER_URL=${FLUX_RUNNER_URL:-}
+      # Flux sidecar URL — defaults to the sidecar hostname; works automatically with --profile flux.
+      # Set to empty string to disable: FLUX_RUNNER_URL=
+      - FLUX_RUNNER_URL=${FLUX_RUNNER_URL:-http://flux-runner:8080}
 
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FORMAT=${LOG_FORMAT:-pretty}
+    depends_on:
+      flux-runner:
+        condition: service_healthy
+        required: false   # ignored when flux-runner isn't started (no --profile flux)
     ports:
       - "${MCP_HTTP_PORT:-3000}:${MCP_HTTP_PORT:-3000}"
