@@ -7,7 +7,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { HttpConfig } from "../config/schema.js";
 import { logger } from "../utils/logger.js";
 
-export async function startHttpTransport(serverFactory: () => McpServer, config: HttpConfig): Promise<void> {
+export async function startHttpTransport(serverFactory: () => McpServer, config: HttpConfig): Promise<import("http").Server> {
   const app = express();
   app.use(express.json());
   app.use(cors());
@@ -75,7 +75,10 @@ export async function startHttpTransport(serverFactory: () => McpServer, config:
     res.json({ status: "ok", sessions: sessions.size });
   });
 
-  app.listen(config.port, config.host, () => {
-    logger.info(`MarkLogic MCP HTTP server listening`, { host: config.host, port: config.port });
+  return new Promise((resolve) => {
+    const server = app.listen(config.port, config.host, () => {
+      logger.info(`MarkLogic MCP HTTP server listening`, { host: config.host, port: config.port });
+      resolve(server);
+    });
   });
 }
