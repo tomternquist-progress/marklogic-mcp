@@ -38,10 +38,21 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
         return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
       } catch (err) {
         const msg = toToolError(err);
-        // HTTP 500 with no body typically means the payload was too large for the eval endpoint
         const is500 = err instanceof Error && msg.includes("500");
         if (is500) {
           const scriptKb = Math.round(Buffer.byteLength(javascript, "utf8") / 1024);
+          // Try to extract a MarkLogic error code embedded in the response (often in an HTML body)
+          const mlCodeMatch = msg.match(/(XDMP-[A-Z][A-Z0-9]*)/);
+          const mlCode = mlCodeMatch?.[1];
+          if (mlCode) {
+            return {
+              content: [{
+                type: "text",
+                text: `${msg}\n\nError code detected: ${mlCode}. This is a server-side MarkLogic error — check your script for undefined variables, type mismatches, missing modules, or permission issues.`,
+              }],
+              isError: true,
+            };
+          }
           return {
             content: [{
               type: "text",

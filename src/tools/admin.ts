@@ -104,4 +104,20 @@ export function registerAdminTools(server: McpServer, clients: MarkLogicClients)
       }
     }
   );
+
+  server.tool(
+    "ml_reindex_status",
+    "Check whether a MarkLogic database has finished reindexing after a TDE template was installed or an index configuration was changed. Returns ready=true when it is safe to query TDE views with ml_optic_query or run ml_tde_validate. Use this after flux_import with generate_tde=true to avoid SQL-TABLEREINDEXING errors.",
+    {
+      database: z.string().describe("Database name to check, e.g. 'Documents'"),
+    },
+    async ({ database }) => {
+      try {
+        const status = await clients.admin.getReindexStatus(database);
+        return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
 }

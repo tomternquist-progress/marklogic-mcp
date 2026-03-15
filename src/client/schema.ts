@@ -53,6 +53,13 @@ export interface GeneratedTdeTemplate {
   template: Record<string, unknown>;
 }
 
+export interface ViewDescriptor {
+  schema: string;
+  view: string;
+  tde_uri: string;
+  collections: string[];
+}
+
 export class SchemaClient {
   constructor(
     private readonly base: MarkLogicBaseClient,
@@ -392,6 +399,48 @@ export class SchemaClient {
       suggestedNullableColumns: [...nullableCols],
       summary,
     };
+  }
+
+  /**
+   * List all schema.view pairs available for Optic queries by reading TDE templates
+   * from the Schemas database and extracting their row definitions.
+   */
+  async listViews(): Promise<ViewDescriptor[]> {
+    const uris = await this.getTdeSchemas() as string[];
+    const views: ViewDescriptor[] = [];
+
+    for (const uri of uris) {
+      try {
+        const res = await this.base.http.get("/v1/documents", {
+          params: { uri, database: "Schemas" },
+          responseType: "text",
+        });
+        const text = res.data as string;
+        let parsed: Record<string, unknown>;
+        try {
+          parsed = JSON.parse(text) as Record<string, unknown>;
+        } catch {
+          continue; // skip non-JSON TDEs
+        }
+        const tpl = (parsed.template ?? parsed) as Record<string, unknown>;
+        const rows = (tpl.rows as Array<Record<string, unknown>>) ?? [];
+        const collections = (tpl.collections as string[]) ?? [];
+        for (const row of rows) {
+          if (row.schemaName && row.viewName) {
+            views.push({
+              schema: row.schemaName as string,
+              view: row.viewName as string,
+              tde_uri: uri,
+              collections,
+            });
+          }
+        }
+      } catch {
+        // skip unavailable or malformed TDE documents
+      }
+    }
+
+    return views;
   }
 
   /**

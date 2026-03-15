@@ -52,7 +52,17 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
         const result = await clients.schema.validateTde({ tdeUri: tde_uri, collection, sampleSize: sample_size });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
-        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        const msg = toToolError(err);
+        if (msg.includes("reindexing") || msg.includes("TABLEREINDEXING")) {
+          return {
+            content: [{
+              type: "text",
+              text: `REINDEXING_IN_PROGRESS: The TDE view is not yet queryable — MarkLogic is still reindexing documents against the new template.\n\nRetry ml_tde_validate in a few seconds. Use ml_reindex_status (database="Documents") to check when reindex-count reaches 0 before retrying.`,
+            }],
+            isError: true,
+          };
+        }
+        return { content: [{ type: "text", text: msg }], isError: true };
       }
     }
   );

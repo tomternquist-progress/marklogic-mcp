@@ -12,17 +12,40 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
         "Serialized Optic plan as a JSON object. Must be the $optic plan format, e.g. {\"$optic\":{\"ns\":\"op\",\"fn\":\"operators\",\"args\":[...]}}"
       ),
       database: z.string().optional().describe("Target database (uses server default if omitted)"),
+      strip_schema_prefix: z.boolean().optional().describe("Strip the 'schema.view.' prefix from result column names. Useful when querying a single view and the fully-qualified names are too verbose. Default: false."),
     },
-    async ({ plan, database }) => {
+    async ({ plan, database, strip_schema_prefix }) => {
       try {
-        const result = await clients.optic.query(plan, database);
+        const result = await clients.optic.query(plan, database, strip_schema_prefix);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         let msg = toToolError(err);
         if (msg.includes("SQL-TABLENOTFOUND") || (msg.includes("Table") && msg.includes("not found"))) {
           msg += "\nHint: TDE templates must be stored in the Schemas database with collection 'http://marklogic.com/xdmp/tde'. Use ml_document_put with database='Schemas' to register your template, then use ml_schema_get_tde to verify it was applied.";
         }
+        if (msg.includes("TABLEREINDEXING") || msg.includes("reindexing")) {
+          msg += "\nHint: The TDE view is still being built. Use ml_reindex_status (database=\"Documents\") to check when reindex-count reaches 0, then retry.";
+        }
         return { content: [{ type: "text", text: msg }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_views_list",
+    "List all Optic row views available in MarkLogic — the schema.view pairs you can query with ml_optic_query. Each entry shows the schema name, view name, TDE template URI, and the document collections it covers. Use this to discover queryable views after importing data with generate_tde=true.",
+    {
+      database: z.string().optional().describe("Database name (schemas are always read from the Schemas DB)"),
+    },
+    async () => {
+      try {
+        const views = await clients.schema.listViews();
+        if (views.length === 0) {
+          return { content: [{ type: "text", text: "No TDE views found. Import data with generate_tde=true or install a TDE template via ml_document_put (database='Schemas', collection='http://marklogic.com/xdmp/tde')." }] };
+        }
+        return { content: [{ type: "text", text: JSON.stringify(views, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
     }
   );

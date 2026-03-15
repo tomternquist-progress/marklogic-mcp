@@ -42,6 +42,14 @@ export interface ClusterStatus {
   [key: string]: unknown;
 }
 
+export interface ReindexStatus {
+  database: string;
+  ready: boolean;
+  indexing: boolean;
+  reindexCount: number;
+  message: string;
+}
+
 export class AdminClient {
   constructor(private readonly base: MarkLogicBaseClient) {}
 
@@ -110,5 +118,29 @@ export class AdminClient {
       { params: { format: "json" } }
     );
     return (data?.["local-cluster-status"] as ClusterStatus) ?? (data as unknown as ClusterStatus);
+  }
+
+  async getReindexStatus(database: string): Promise<ReindexStatus> {
+    const data = await this.base.get<Record<string, unknown>>(
+      this.base.mgmt,
+      `/manage/v2/databases/${encodeURIComponent(database)}`,
+      { params: { format: "json", view: "status" } }
+    );
+    const dbStatus = (data?.["database-status"] as Record<string, unknown>) ?? data;
+    const props = (dbStatus?.["status-properties"] as Record<string, unknown>) ?? {};
+
+    // status-properties values may be wrapped as { units, value } objects
+    const unwrap = (v: unknown): unknown =>
+      v && typeof v === "object" && "value" in (v as object) ? (v as { value: unknown }).value : v;
+
+    const indexing = String(unwrap(props["indexing-state"])) === "true";
+    const reindexCount = Number(unwrap(props["reindex-count"]) ?? 0);
+
+    const ready = !indexing && reindexCount === 0;
+    const message = ready
+      ? `Database "${database}" is ready — no reindexing in progress. TDE views are safe to query.`
+      : `Database "${database}" is reindexing (reindex-count: ${reindexCount}). TDE views may be unavailable until complete — retry in a few seconds.`;
+
+    return { database, ready, indexing, reindexCount, message };
   }
 }
