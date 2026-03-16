@@ -255,6 +255,134 @@ Output only the SPARQL query.`,
     })
   );
 
+  // ── Query Approach Advisor ─────────────────────────────────────────────────
+
+  server.prompt(
+    "query_approach_advisor",
+    "Choose between cts.search (ml_search), Optic (ml_optic_query), or a hybrid approach for a given query goal. Returns a structured 6-section plan: query classification, recommended approach with justification, prerequisite checks, query construction guide, performance notes, and pitfalls.",
+    {
+      goal: z.string().describe("What you want to query or retrieve — be specific about whether you need documents, counts, aggregates, or joins"),
+      collection: z.string().optional().describe("MarkLogic collection to query, if already known"),
+      available_views: z.string().optional().describe("Comma-separated TDE schema.view names already discovered via ml_views_list"),
+      available_indexes: z.string().optional().describe("Comma-separated range index field names already discovered via ml_indexes_list"),
+      database: z.string().optional().describe("Target MarkLogic database, if known"),
+    },
+    ({ goal, collection, available_views, available_indexes, database }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a MarkLogic query architect. A user has described a query goal. Produce a structured
+analysis that guides construction of the correct query using the right MarkLogic tool.
+Do NOT call any tools — this is a planning step only.
+
+═══════════════════════════════════════════
+QUERY GOAL
+═══════════════════════════════════════════
+${goal}
+
+KNOWN CONTEXT
+  Database        : ${database ?? "(not yet known)"}
+  Collection      : ${collection ?? "(not yet known — discover with ml_collections_list)"}
+  TDE views       : ${available_views ?? "(not yet checked — use ml_views_list)"}
+  Range indexes   : ${available_indexes ?? "(not yet checked — use ml_indexes_list)"}
+
+═══════════════════════════════════════════
+PRODUCE THE FOLLOWING ANALYSIS
+═══════════════════════════════════════════
+
+## 1. QUERY CLASSIFICATION
+Classify this goal into one or more of these types (pick all that apply):
+  full-text-search | structured-filter | aggregation | join |
+  hybrid-search-aggregate | value-count | document-retrieval
+
+For each type selected, give a one-sentence justification.
+
+## 2. RECOMMENDED APPROACH
+State ONE of:
+  A) cts.search via ml_search  — for document retrieval, full-text ranking, or simple filters
+  B) Optic via ml_optic_query  — for GROUP BY, aggregates, joins, or row-level filtering over a TDE view
+  C) Hybrid: fromSearch + Optic — for full-text scoping FOLLOWED BY aggregation or joining
+
+Provide:
+- The specific Optic source operator if Optic is involved:
+    fromView(schema, view)    → when querying TDE row data
+    fromSearch(cts.query)     → when full-text scoping is needed before Optic operators
+    fromLexicons(...)         → when using range index values directly
+- Why this approach is preferred over the alternatives for THIS specific goal
+- What prerequisite must exist: none | range index on [field] | TDE view [schema.view]
+
+## 3. PREREQUISITE CHECKS
+List in order the MCP tools to call BEFORE running the main query:
+  Step 1: <tool_name> — what to look for
+  Step 2: <tool_name> — what to look for
+Only include steps genuinely needed. Skip inapplicable ones.
+
+## 4. QUERY CONSTRUCTION GUIDE
+Provide a concrete, ready-to-adapt query.
+
+If approach is ml_search, show the structured_query JSON:
+\`\`\`json
+{
+  "query": {
+    "and-query": {
+      "queries": [
+        { "collection-query": { "uri": ["<collection>"] } },
+        { "word-query": { "text": ["<search term>"] } }
+      ]
+    }
+  }
+}
+\`\`\`
+
+If approach is ml_optic_query, show the $optic plan JSON:
+\`\`\`json
+{
+  "$optic": {
+    "ns": "op", "fn": "operators", "args": [
+      { "ns": "op", "fn": "from-view", "args": ["<schema>", "<view>"] },
+      { "ns": "op", "fn": "where", "args": [{ "ns": "op", "fn": "eq", "args": [{ "ns": "op", "fn": "col", "args": ["<field>"] }, "<value>"] }] },
+      { "ns": "op", "fn": "group-by", "args": [
+        { "ns": "op", "fn": "col", "args": ["<dimension>"] },
+        [{ "ns": "op", "fn": "count", "args": ["count", { "ns": "op", "fn": "col", "args": ["<any-col>"] }] }]
+      ]},
+      { "ns": "op", "fn": "order-by", "args": [{ "ns": "op", "fn": "desc", "args": [{ "ns": "op", "fn": "col", "args": ["count"] }] }] },
+      { "ns": "op", "fn": "limit", "args": [20] }
+    ]
+  }
+}
+\`\`\`
+
+If approach is hybrid (fromSearch + Optic), show the fromSearch operator as the source
+with a cts query inline, then the Optic pipeline operators.
+
+Fill in the placeholders using the context provided. Where context is unknown, use
+<schema>, <view>, <field>, <value> as placeholders and explain what to substitute.
+
+## 5. PERFORMANCE NOTES
+Give 2–4 specific, concrete performance notes for this query type. Examples:
+  - "word-query uses the universal index — no range index needed, constant-time lookup"
+  - "range-query on an unindexed field falls back to a full document scan — always verify with ml_indexes_list"
+  - "groupBy() reduces the row set; always put where() before groupBy() to minimize rows processed"
+  - "fromSearch with a cts.collectionQuery scoping is much faster than scanning all documents in fromView"
+  - "strip_schema_prefix=true in ml_optic_query reduces response size when querying a single view"
+
+## 6. PITFALLS TO AVOID
+List 3–5 concrete, specific pitfalls for this exact query goal:
+  - Optic: "SQL-TABLENOTFOUND if TDE template not in Schemas DB collection http://marklogic.com/xdmp/tde"
+  - Optic: "op.orderBy() takes exactly 1 argument — wrap multiple sort keys in a nested array"
+  - Optic: "Column names in groupBy/where must exactly match TDE view column names (case-sensitive)"
+  - cts.search: "range-query silently falls back to full scan if no range index exists — check ml_indexes_list first"
+  - cts.search: "structured_query field names must match element/attribute names exactly as indexed"
+  - hybrid: "fromSearch cts query must be serialized as a cts query node, not a structured search query object"
+
+Be specific, use actual MarkLogic operator names, and reference the actual MCP tools.
+Do not give generic advice.`,
+        },
+      }],
+    })
+  );
+
   // ── Problem-First Advisor ──────────────────────────────────────────────────
 
   server.prompt(
@@ -330,8 +458,8 @@ Available tools (use only these):
               flux_status
   Prompts:    xquery_function_generator, sjs_module_generator, tde_schema_generator,
               rest_extension_generator, structured_query_builder, optic_query_builder,
-              sparql_query_builder, data_import_advisor, gdelt_import,
-              quicksight_dataset_designer, quicksight_dashboard_planner
+              sparql_query_builder, query_approach_advisor, data_import_advisor,
+              gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner
 
 ## 5. PITFALLS TO AVOID
 List 2–5 specific, concrete pitfalls for this goal. Examples of good pitfalls:

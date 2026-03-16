@@ -164,6 +164,70 @@ function classify(task: string): ToolRecipe[] {
     });
   }
 
+  // ── Hybrid: full-text search + aggregation ──────────────────────────────────
+  // Detect goals that combine content scoping with aggregation — these need
+  // Optic fromSearch, not a choice between ml_search OR ml_optic_query.
+  const isHybrid =
+    isSearch && isAnalytics && !isTimeSeries;
+
+  if (isHybrid) {
+    // Remove the standalone ml_search suggestion added above — the hybrid plan supersedes it
+    const searchIdx = results.findIndex(r => r.tool === "ml_search");
+    if (searchIdx !== -1) results.splice(searchIdx, 1);
+    // Remove any standalone ml_optic_query suggestion too
+    const opticIdx = results.findIndex(r => r.tool === "ml_optic_query");
+    if (opticIdx !== -1) results.splice(opticIdx, 1);
+
+    results.unshift({
+      tool: "ml_optic_query (fromSearch + Optic pipeline)",
+      description: "Hybrid: full-text content scoping followed by aggregation or GROUP BY",
+      use_when: ["hybrid-search-aggregate", "search-then-count", "search-then-group"],
+      recipe: {
+        plan: {
+          $optic: {
+            ns: "op", fn: "operators", args: [
+              {
+                ns: "op", fn: "from-search",
+                args: [{ ns: "cts", fn: "word-query", args: ["<search term>"] }],
+              },
+              {
+                ns: "op", fn: "join-inner",
+                args: [
+                  { ns: "op", fn: "from-view", args: ["<schema>", "<view>"] },
+                  { ns: "op", fn: "on", args: [
+                    { ns: "op", fn: "fragment-id-col", args: [] },
+                    { ns: "op", fn: "fragment-id-col", args: [] },
+                  ]},
+                ],
+              },
+              { ns: "op", fn: "group-by", args: [
+                { ns: "op", fn: "col", args: ["<dimension-column>"] },
+                [{ ns: "op", fn: "count", args: ["count", { ns: "op", fn: "col", args: ["<any-col>"] }] }],
+              ]},
+              { ns: "op", fn: "order-by", args: [{ ns: "op", fn: "desc", args: [{ ns: "op", fn: "col", args: ["count"] }] }] },
+              { ns: "op", fn: "limit", args: [20] },
+            ],
+          },
+        },
+        strip_schema_prefix: true,
+      },
+      rationale:
+        "When you need to BOTH filter by document content (full-text) AND aggregate/group results, " +
+        "use Optic fromSearch as the source with a cts query for scoping, then join to a TDE view to access " +
+        "structured columns for GROUP BY. This is faster than fetching all search results and post-processing them. " +
+        "Requires a TDE view — verify with ml_views_list.",
+      not_this_tool:
+        "Do NOT use ml_search for aggregation (returns documents, not counts). " +
+        "Do NOT use ml_optic_query fromView alone if you need content-based filtering.",
+      warnings: [
+        "Requires a TDE view in the Schemas database — use flux_import with generate_tde=true or ml_schema_get_tde to verify.",
+        "fromSearch joins via fragment IDs — the TDE view must cover the same documents as the search collection.",
+        "Run ml_views_list and ml_indexes_list before building this query.",
+        "Use the query_approach_advisor prompt to get a complete, filled-in plan for your specific goal.",
+      ],
+    });
+  }
+
   // ── Schema / TDE discovery ──────────────────────────────────────────────────
   const isSchemaDiscovery =
     /schema|tde|view|template|what.*fields|what.*columns|structure|discover|indexes?/.test(t) &&

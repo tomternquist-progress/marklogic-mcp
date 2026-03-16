@@ -111,6 +111,9 @@ health                                          ml_databases_list
                                                 ml_forests_list
                                                 ml_servers_list
 
+Query planning       Query approach advisor     query_approach_advisor    ml_views_list
+(cts.search/Optic)                                                         ml_indexes_list
+
 Code generation      Prompt templates           xquery_function_generator —
 (XQuery/SJS/TDE)                                sjs_module_generator
                                                 tde_schema_generator
@@ -121,6 +124,57 @@ Data import design   Import advisor prompt      data_import_advisor       —
 
 QuickSight design    Dataset/dashboard prompts  quicksight_dataset_designer ml_schema_discover
                                                 quicksight_dashboard_planner
+
+
+── OPTIC vs CTS.SEARCH SELECTION GUIDE ────────────────────────────────────────
+
+Use this when your goal involves querying data that already exists in MarkLogic.
+Choose based on WHAT you need, not what you already know how to write.
+
+QUERY GOAL                     BEST TOOL            INDEX REQUIREMENT
+────────────────────────────────────────────────────────────────────────────────
+Find documents by content /    ml_search            None (universal index)
+keyword / ranked relevance     (cts.search)         Always available
+
+Filter documents by exact      ml_search            Range index recommended
+field value or date range      structured_query     (verify: ml_indexes_list)
+
+Count / sum / average /        ml_optic_query       TDE view in Schemas DB
+GROUP BY over a field          (Optic fromView)     (verify: ml_views_list)
+
+Join two collections by key    ml_optic_query       TDE views for both
+                               (join-inner)         collections required
+
+Search content THEN aggregate  ml_optic_query       TDE view + cts query
+results (hybrid)               (Optic fromSearch)   composable in plan
+
+Count distinct field values    ml_values_query      Range index or element
+/ faceted navigation           ml_facets_query      word index required
+
+OPTIC RULES OF THUMB:
+• fromView → use for SQL-like filtering, GROUP BY, joins over TDE row views
+• fromSearch → use when you need full-text relevance to scope an Optic pipeline
+• select() every column you actually need — avoids scanning unused columns
+• push where() before groupBy() to reduce the row set early
+• orderBy() takes exactly ONE argument; wrap multiple sort keys in an array:
+    single: {"fn":"order-by","args":{"fn":"desc","args":["col"]}}
+    multi:  {"fn":"order-by","args":[[{"fn":"asc","args":["col1"]},{"fn":"desc","args":["col2"]}]]}
+• TDE template MUST be in Schemas DB, collection http://marklogic.com/xdmp/tde
+• Reindex takes time after TDE install — check ml_reindex_status before querying
+
+CTS.SEARCH RULES OF THUMB (via ml_search):
+• word-query uses the universal index — always safe, no prerequisite
+• range-query requires a pre-existing range index — check ml_indexes_list first
+• structured_query is more precise than the q string for field-level filters
+• For counting by category, ml_values_query is faster than paging result sets
+• Use collection parameter to scope search to one collection before filtering
+• Never use full-scan queries (no cts predicates) against large collections
+
+WHEN TO COMBINE THEM (hybrid):
+  Goal: "Find documents about X, then count by category Y"
+  → Optic fromSearch with a cts.wordQuery scoping, then groupBy on a TDE column
+  → Requires both a TDE view AND the content to be indexed (always true)
+  → Use the query_approach_advisor prompt to build the plan
 
 
 ── TOOL GROUPS AT A GLANCE ─────────────────────────────────────────────────────
