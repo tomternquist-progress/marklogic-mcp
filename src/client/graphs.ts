@@ -84,20 +84,19 @@ export class GraphsClient {
       database?: string;
     } = {}
   ): Promise<{ graphs: string[]; total: number }> {
-    const params: Record<string, string | number> = {
-      format: "json",
-      start: options.start ?? 1,
-      "page-length": options.pageLength ?? 20,
-    };
-    if (options.database) params.database = options.database;
+    // The SPARQL Graph Store /v1/graphs endpoint does not accept listing params
+    // (format, start, page-length) — it only supports per-graph GET/PUT/PATCH/DELETE.
+    // List named graphs via SPARQL instead: SELECT DISTINCT ?g over all graphs.
+    const sparql = "SELECT DISTINCT ?g WHERE { GRAPH ?g { ?s ?p ?o } }";
+    const raw = await this.sparqlQuery(sparql, { database: options.database }) as SparqlSelectResult;
+    const allGraphs = (raw.results?.bindings ?? [])
+      .map(b => b["g"]?.value)
+      .filter((v): v is string => typeof v === "string");
 
-    const raw = await this.base.get<Record<string, unknown>>(
-      this.base.http,
-      "/v1/graphs",
-      { params }
-    );
-
-    const uris = (raw?.["graph-uris"] as string[]) ?? [];
-    return { graphs: uris, total: (raw?.total as number) ?? uris.length };
+    // Apply pagination in-memory (named graph counts are typically small)
+    const pageStart = Math.max(0, (options.start ?? 1) - 1);
+    const pageLen   = options.pageLength ?? 20;
+    const page      = allGraphs.slice(pageStart, pageStart + pageLen);
+    return { graphs: page, total: allGraphs.length };
   }
 }

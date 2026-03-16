@@ -28,7 +28,10 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
     "  • In select/as, use p.schemaCol() for view cols and p.col() for SPARQL cols.\n" +
     "  • Do NOT alias a column to the same name as the underlying view column — e.g. p.as('identifier',...)\n" +
     "    when the view already has 'identifier' causes SQL-AMBCOLUMN. Use a distinct alias like 'fmt_id'.\n" +
-    "  • For chained joins (fromView + riskVocab + catVocab), the second p.on() must also use p.schemaCol().",
+    "  • For chained joins (fromView + riskVocab + catVocab), the second p.on() must also use p.schemaCol().\n" +
+    "  • IRI TYPE MISMATCH (silent zero rows): op.fromSPARQL returns IRI-typed variables as sem.iri, NOT\n" +
+    "    xsd:string. Joining a SPARQL IRI column directly against a TDE string column produces 0 rows with\n" +
+    "    no error. Fix: add BIND(STR(?iriVar) AS ?strVar) in the SPARQL and join on ?strVar instead.",
     {
       sparql: z.string().describe("SPARQL query string (SELECT, CONSTRUCT, ASK, or DESCRIBE)"),
       default_graph: z.string().optional().describe("Default named graph URI"),

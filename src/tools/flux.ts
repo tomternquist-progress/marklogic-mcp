@@ -150,6 +150,27 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         fluxPermissions = parts.join(",");
       }
 
+      // ── RDF import guard: generate_tde is not applicable for import-rdf-files ──
+      if (subcommand === "import-rdf-files" && generate_tde) {
+        return {
+          content: [{
+            type: "text",
+            text:
+              "WARNING: generate_tde=true has no effect for import-rdf-files.\n\n" +
+              "RDF imports create managed triple store documents, not JSON/CSV entity documents with " +
+              "named fields — there is nothing for the TDE generator to sample.\n\n" +
+              "To get a TDE view over RDF data, use the hybrid model:\n" +
+              "  1. Import RDF into a named graph (this import — remove generate_tde).\n" +
+              "  2. Write an SJS module (ml_document_put, database='Modules') that queries the graph " +
+              "with sem.sparql() and inserts one JSON entity document per subject.\n" +
+              "  3. Run ml_invoke_module or flux_reprocess to build the entity docs into a collection.\n" +
+              "  4. Call flux_import with generate_tde=true on that collection, OR write the TDE manually.\n\n" +
+              "See the flux_reprocess tool description for the module contract.",
+          }],
+          isError: true,
+        };
+      }
+
       // ── TDE pre-flight: warn if existing TDE templates scope to these collections ──
       let preflightNote = "";
       if (collections?.length) {
@@ -319,7 +340,28 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         }
       }
 
-      const finalOutput = condensedOutput + colNote + tdeGenNote;
+      // ── RDF import post-note: explain success count and next steps ──
+      let rdfNote = "";
+      if (subcommand === "import-rdf-files" && result.success) {
+        const graphArg = extra_args
+          ? extra_args[extra_args.indexOf("--graph") + 1]
+          : undefined;
+        const graphHint = graphArg
+          ? `\n  Count triples: ml_sparql_query → SELECT (COUNT(*) AS ?n) WHERE { GRAPH <${graphArg}> { ?s ?p ?o } }`
+          : `\n  Count triples: ml_sparql_query → SELECT (COUNT(*) AS ?n) WHERE { GRAPH ?g { ?s ?p ?o } }`;
+        rdfNote =
+          `\n\nRDF IMPORT NOTE: "Success count" above is the number of managed triple store documents ` +
+          `(batches), not the number of individual triples.` +
+          graphHint +
+          `\n  List loaded graphs: ml_graphs_list` +
+          `\n  Next steps for TDE/Optic access — use the hybrid model:` +
+          `\n    1. Write a module (ml_document_put, database='Modules') that reads triples via sem.sparql()` +
+          `\n       and inserts one JSON entity doc per subject into a collection.` +
+          `\n    2. Run flux_reprocess to execute the module over the managed triple docs.` +
+          `\n    3. Generate a TDE over that collection (flux_import generate_tde=true or ml_document_put to Schemas).`;
+      }
+
+      const finalOutput = condensedOutput + colNote + tdeGenNote + rdfNote;
       return {
         content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: finalOutput }) }],
         isError: !result.success,
