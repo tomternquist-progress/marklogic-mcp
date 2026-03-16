@@ -120,8 +120,16 @@ export class FluxClient {
           return;
         }
         if (res.statusCode !== 200) {
-          res.resume();
-          reject(new Error(`Flux runner returned HTTP ${res.statusCode} from /run-stream`));
+          // Read the body before rejecting — the runner puts error details there
+          const chunks: string[] = [];
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => chunks.push(chunk));
+          res.on("end", () => {
+            const body = chunks.join("").trim();
+            const detail = body ? `: ${body.slice(0, 500)}` : "";
+            reject(new Error(`Flux runner returned HTTP ${res.statusCode} from /run-stream${detail}`));
+          });
+          res.on("error", reject);
           return;
         }
 
