@@ -46,6 +46,37 @@ export class GraphsClient {
     return res.data as SparqlSelectResult;
   }
 
+  /**
+   * PUT RDF content into a named graph via /v1/graphs.
+   * content_type controls the RDF serialization format:
+   *   "text/turtle"              — Turtle (.ttl)
+   *   "application/n-triples"    — N-Triples (.nt)
+   *   "application/ld+json"      — JSON-LD (.jsonld)
+   *   "application/rdf+xml"      — RDF/XML (.rdf)
+   * An HTTP PUT replaces the entire graph; PATCH would merge — using PUT here for simplicity.
+   */
+  async putGraph(
+    graphUri: string,
+    content: string,
+    contentType: string,
+    options: { database?: string; merge?: boolean } = {}
+  ): Promise<{ graph: string; created: boolean }> {
+    const params: Record<string, string> = { graph: graphUri };
+    if (options.database) params.database = options.database;
+
+    const method = options.merge ? "patch" : "put";
+    const res = await this.base.http.request({
+      method,
+      url: "/v1/graphs",
+      params,
+      data: content,
+      headers: { "Content-Type": contentType },
+      validateStatus: (s) => s === 200 || s === 201 || s === 204,
+    });
+
+    return { graph: graphUri, created: res.status === 201 };
+  }
+
   async listGraphs(
     options: {
       start?: number;
