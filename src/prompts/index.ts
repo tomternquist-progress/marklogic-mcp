@@ -41,10 +41,10 @@ Generate the XQuery code now.`,
 
   server.prompt(
     "sjs_module_generator",
-    "Generate MarkLogic Server-Side JavaScript (SJS) modules including transforms, REST extensions, and library modules.",
+    "Generate MarkLogic Server-Side JavaScript (SJS) modules including transforms, REST extensions, library modules, and Flux reprocessing module pairs (reader + transform).",
     {
       module_purpose: z.string().describe("What this SJS module should do"),
-      module_type: z.enum(["transform", "extension", "library", "scheduled-task"]).optional().describe("Type of MarkLogic module"),
+      module_type: z.enum(["transform", "extension", "library", "scheduled-task", "flux-reader", "flux-transform"]).optional().describe("Type of MarkLogic module. Use 'flux-reader' for the Phase 1 URI collector and 'flux-transform' for the Phase 2 per-URI processor in a flux_reprocess pipeline. Use 'transform' only for MarkLogic REST API transforms (Content Transformation Framework)."),
       database: z.string().optional().describe("Target database name"),
     },
     ({ module_purpose, module_type, database }) => ({
@@ -60,10 +60,34 @@ Generate the XQuery code now.`,
 
 Requirements:
 - Use 'use strict'; at the top
-- For transforms: export transform function with (content, context) signature
+- For flux-reader (Phase 1 — URI collector for flux_reprocess --read-documents-javascript):
+  - NO declareUpdate() — this is a read-only module
+  - Use sem.sparql() or cts.uris() to collect the full set of URIs/IRIs to process
+  - Return a Sequence or Array of URI strings as the last expression — do NOT forEach/iterate
+  - Keep the query lightweight: SELECT DISTINCT ?subject only, no optional predicates
+  - Example structure:
+      'use strict';
+      var GRAPH = 'http://...';
+      var rows = sem.sparql('SELECT DISTINCT ?s FROM NAMED <' + GRAPH + '> WHERE { GRAPH <' + GRAPH + '> { ?s a ?type } }');
+      Array.from(rows).map(function(r) { return String(r.s); });
+- For flux-transform (Phase 2 — per-URI processor for flux_reprocess --invoke):
+  - declareUpdate() must be the FIRST statement after 'use strict'
+  - var URI; declares the Flux-injected variable (one URI per invocation — do NOT query all)
+  - Scope all SPARQL queries to this single URI: WHERE { ... FILTER(?subject = sem.iri(URI)) ... }
+  - Write exactly one output document per invocation
+  - Example structure:
+      'use strict';
+      declareUpdate();
+      var URI; // injected by Flux
+      var rows = Array.from(sem.sparql('SELECT ... WHERE { GRAPH <' + GRAPH + '> { <' + URI + '> ... } }'));
+      var row = rows[0];
+      if (!row) { xdmp.log('No data for URI: ' + URI, 'warning'); } else {
+        xdmp.documentInsert(outputUri, doc, { permissions: perms, collections: [...] });
+      }
+- For REST transforms (Content Transformation Framework): export transform function with (content, context) signature
 - For REST extensions: export get/put/post/delete functions with (context, params, input) signatures
 - For library modules: use module.exports or exports.functionName pattern
-- Use declareUpdate() when writing to the database
+- For scheduled-task modules: write a self-contained script with declareUpdate() if writing
 - Use xdmp.log() for server-side logging
 - Use cts.search() not fn.doc() for document retrieval
 - Handle errors with try/catch blocks
@@ -71,6 +95,12 @@ Requirements:
 - When building entity documents from RDF/SPARQL results, NEVER assign empty string ""
   for unbound optional variables. Either omit the field (if (row.broader) doc.broaderUri = row.broader)
   or assign null (broaderUri: row.broader ?? null). Empty strings pollute indexes and mislead queries.
+
+FLUX REPROCESSING — DESIGN FOR SCALE:
+When the task involves bulk RDF-to-entity transformation or any bulk transform over a large set,
+ALWAYS generate TWO modules (flux-reader + flux-transform), not one monolithic script.
+A single script iterating all results in one transaction will time out on > ~1 000 documents and
+cannot use Flux's parallel threads. The two-module split is the only approach that scales.
 
 Generate the SJS module now.`,
         },
