@@ -342,7 +342,8 @@ export class SchemaClient {
     // returns actual row counts, and surfaces SQL-TABLENOTFOUND / TABLEREINDEXING errors directly.
     const javascript = `
       const op = require('/MarkLogic/optic');
-      const docCount = xdmp.estimate(cts.collectionQuery(collection));
+      // xdmp.estimate() was removed in MarkLogic 12 SJS; cts.estimate() is the replacement
+      const docCount = cts.estimate(cts.collectionQuery(collection));
       const results = [];
       for (const {schema, view} of viewPairs) {
         try {
