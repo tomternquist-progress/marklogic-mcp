@@ -18,6 +18,16 @@ right approach is not immediately obvious. It will return a structured 6-section
 analysis (classification → native approach → discovery sequence → tool sequence →
 pitfalls → alternatives) before any tool is called.
 
+★ STARTING A NEW PROJECT? Read this first ★
+   Call ml_suggest_approach or invoke the "project_setup_advisor" prompt BEFORE writing
+   any code or running any tools. Key principle: MCP tools are for exploration and
+   prototyping; the canonical, repeatable pipeline uses Gradle + Flux CLI, not MCP calls:
+     • Indexes → src/main/ml-config/databases/content-database.json → gradle mlDeploy
+     • TDE     → src/main/ml-schemas/tde/                           → gradle mlLoadSchemas
+     • Modules → src/main/ml-modules/root/                          → gradle mlLoadModules
+     • Data    → Gradle Exec tasks calling: flux import-files / flux import-rdf-files
+   See the PROJECT SETUP / DEPLOYMENT (ml-gradle) section below for the full layout.
+
 
 ── DECISION PRINCIPLES (in priority order) ────────────────────────────────────
 
@@ -125,6 +135,13 @@ Schema discovery     TDE + schema sampling      ml_schema_discover        ml_col
 Data transform /     Reprocess pipeline /       flux_reprocess            ml_document_list
 enrichment           SJS module                 ml_document_patch
                                                 ml_invoke_module
+
+Content              Semaphore Classification   semaphore_classify        semaphore_status
+classification /     Server (Progress Data      semaphore_publish_sets          semaphore_publish_sets
+auto-tagging         Platform) via Flux or      flux_import (extra_args:  semaphore_classes
+(taxonomy /          SJS reprocess transform    --classifier-host etc.)
+concept extraction)                             flux_reprocess
+                                                semaphore_integration_advisor (prompt)
 
 Database admin /     Management API             ml_cluster_status         —
 health                                          ml_databases_list
@@ -361,6 +378,59 @@ KEY RULES:
     or structure a new ml-gradle / DHF project
 
 
+── PROGRESS DATA PLATFORM — SEMAPHORE + MARKLOGIC ──────────────────────────
+
+MarkLogic and Semaphore together form the Progress Data Platform. Semaphore is
+an AI-powered taxonomy management and auto-classification platform. Together:
+  • Semaphore classifies and enriches content with taxonomy concepts/categories.
+  • MarkLogic stores, searches, and serves the enriched documents at scale.
+
+SEMAPHORE INTEGRATION PATTERNS (in recommended order):
+
+1. INGEST + CLASSIFY IN ONE STEP (Flux native — preferred for new data)
+   Flux has built-in Semaphore support via extra_args on flux_import:
+     extra_args: ["--classifier-host", "<host>", "--classifier-port", "<port>",
+                  "--classifier-path", "/api/v1/classify"]
+   Semaphore categories are attached to each MarkLogic document at ingest time.
+   → Use when loading new content from URL, file, JDBC, or S3.
+
+2. REPROCESS EXISTING DOCUMENTS (post-ingest enrichment)
+   Use flux_reprocess with an SJS transform module that:
+     a. Reads each document URI (via collections or a SPARQL reader)
+     b. Calls Semaphore via xdmp.httpPost() with the document body
+     c. Patches the document with returned categories (ml_document_patch)
+   → Use when Semaphore is added after data is already in MarkLogic.
+
+3. TRANSFORM ON INGEST (canonical model + classification together)
+   Write an SJS REST transform (database=Modules) that:
+     a. Maps the raw source record to your canonical JSON/XML model
+     b. Calls Semaphore for classification in the same transaction
+     c. Stores categories in a dedicated "classification" property
+   Pass the transform name via flux_import extra_args: ["--transform", "<name>"]
+   → Use when raw-to-canonical mapping and classification must happen together.
+
+4. DATA HUB FRAMEWORK PIPELINE (DHF — for complex scenarios)
+   Use when you need: staging/final split, mastering, multiple source systems.
+   DHF flows: Ingestion step (raw) → Mapping step (canonical) → Custom step
+   (Semaphore enrichment via xdmp.httpPost) → Mastering step (dedup).
+   Semaphore enrichment is a custom DHF step: reads STAGING, calls Semaphore,
+   writes enriched entity to FINAL with classification metadata attached.
+   → Use the semaphore_integration_advisor prompt for full DHF design.
+
+SURFACING SEMAPHORE CATEGORIES IN MARKLOGIC SEARCH:
+  • Store categories as a JSON array: "categories": [{"id":"...","label":"...","score":0.9}]
+  • Add a range index on categories[].label (or a path range index) via ml-gradle
+  • Use ml_search_options_put to define a constraint for faceted navigation
+  • FastTrack FacetFilters can surface category facets directly from range indexes
+
+TOOLS FOR SEMAPHORE:
+  semaphore_status          — check connectivity
+  semaphore_publish_sets          — list available taxonomies/models
+  semaphore_classify        — classify sample text (exploratory / small scale)
+  semaphore_classes — browse taxonomy concepts (design facets, understand hierarchy)
+  semaphore_integration_advisor (prompt) — full architectural design guidance
+
+
 ── TOOL GROUPS AT A GLANCE ─────────────────────────────────────────────────────
 
 Admin (7):     ml_cluster_status, ml_databases_list, ml_database_properties,
@@ -393,6 +463,9 @@ FastTrack (2–4, config-dependent):
                ml_search_options_list, ml_search_options_get
                [write-enabled] ml_search_options_put, ml_search_options_delete
 
+Semaphore (4): semaphore_status, semaphore_publish_sets, semaphore_classes,
+               semaphore_classify
+
 Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                tde_schema_generator, rest_extension_generator,
                structured_query_builder, optic_query_builder, sparql_query_builder,
@@ -400,6 +473,7 @@ Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                project_setup_advisor,
                gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
                fasttrack_search_designer, fasttrack_app_scaffold,
+               semaphore_integration_advisor,
                problem_advisor
 `;
 

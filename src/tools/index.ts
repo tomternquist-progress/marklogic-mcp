@@ -12,6 +12,7 @@ import { registerOpticTools } from "./optic.js";
 import { registerFluxTools } from "./flux.js";
 import { registerSuggestApproachTool } from "./suggest-approach.js";
 import { registerFastTrackTools } from "./fasttrack.js";
+import { registerSemaphoreTools } from "./semaphore.js";
 
 export function registerAllTools(server: McpServer, clients: MarkLogicClients, config: AppConfig): void {
   registerSuggestApproachTool(server);
@@ -25,4 +26,5 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerOpticTools(server, clients);
   registerFluxTools(server, clients);
   registerFastTrackTools(server, clients, config.safety.readonly);
+  registerSemaphoreTools(server, clients);
 }

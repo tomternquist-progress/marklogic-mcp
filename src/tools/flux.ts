@@ -94,7 +94,7 @@ function buildTdeNote(output: string, collections?: string[]): string | null {
 }
 
 export function registerFluxTools(server: McpServer, clients: MarkLogicClients): void {
-  const { flux, schema, documents } = clients;
+  const { flux, schema, documents, semaphore } = clients;
 
   // ── flux_import ──────────────────────────────────────────────────────────────
   server.tool(
@@ -123,14 +123,21 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       thread_count: z.number().int().positive().optional().describe("Parallel writer threads (default: 4)"),
       batch_size: z.number().int().positive().optional().describe("Documents per batch (default: 100)"),
       column_names: z.array(z.string()).optional().describe("Column names for headerless delimited files. When set, the runner prepends these as a header row before importing — so each document gets proper field names instead of _c0, _c1, etc. Use with import-delimited-files when the source has no header (e.g. GDELT events, many government open-data exports)."),
-      local_file: z.string().optional().describe("Absolute path to a file on the host where the MCP server process is running — NOT the flux runner container and NOT your local development machine if you are connecting remotely. The MCP server reads this path and uploads it to the flux runner over HTTP. If the file lives on your laptop or a machine other than the MCP server host, use http_url instead (serve the file over HTTP or use a public URL). Cannot be combined with http_url or path."),
+      local_file: z.string().optional().describe("⚠ HOST RESTRICTION: Absolute path to a file that exists on the MCP SERVER HOST — NOT your local development machine and NOT the flux runner container. If you are connecting to a remote MCP server, this path must be on that remote host; files on your laptop will cause 'File not found' errors. FALLBACK when files are local-only: use ml_eval_javascript with the vars parameter to pass data inline (avoids the host restriction entirely). Cannot be combined with http_url or path."),
       extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim. Common flags for import-delimited-files: ['--delimiter', '|'] for pipe-delimited, ['--encoding', 'ISO-8859-1'] for non-UTF-8 files. To force compression: ['--spark-prop', 'compression=gzip']. Run flux_help with subcommand='import-delimited-files' to see all accepted flags."),
       generate_tde: z.boolean().optional().describe("After a successful import, auto-generate a TDE template by sampling the imported collection and writing it to the Schemas database. Requires collections to be set. The template is written to /tde/<tde_schema>/<tde_view>.json."),
       tde_schema: z.string().optional().describe("Schema name for the auto-generated TDE view (used with generate_tde). Defaults to the first collection name with non-alphanumeric chars replaced by underscores."),
       tde_view: z.string().optional().describe("View name for the auto-generated TDE view (used with generate_tde). Defaults to the last segment of the first collection name."),
       skip_preview: z.boolean().optional().describe("Deprecated — previews no longer run automatically. Kept for backwards compatibility; has no effect."),
+      classify_with_semaphore: z.boolean().optional().describe(
+        "When true, automatically injects Semaphore Classification Server flags into the Flux command " +
+        "(--classifier-host, --classifier-port, --classifier-path /) so that every imported document " +
+        "is classified at ingest time. Requires SEMAPHORE_HOST (and optionally SEMAPHORE_SCS_PORT) " +
+        "to be configured in the MCP server .env. For bulk classification this is the most efficient " +
+        "approach — Flux calls the SCS inline without a separate reprocess step."
+      ),
     },
-    async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview }) => {
+    async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore }) => {
       // Validate and convert permissions
       let fluxPermissions: string | undefined;
       if (permissions) {
@@ -231,6 +238,29 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         } else {
           args.push(...extra_args);
         }
+      }
+
+      // ── Semaphore inline classification ──────────────────────────────────────
+      if (classify_with_semaphore) {
+        if (!semaphore.configured || !semaphore.scsHost) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                "classify_with_semaphore=true requires SEMAPHORE_HOST to be set in the MCP server .env.\n\n" +
+                "Example:\n" +
+                "  SEMAPHORE_HOST=semaphore.example.com\n" +
+                "  SEMAPHORE_SCS_PORT=5058    # default\n\n" +
+                "Run semaphore_status to verify connectivity before using this option.",
+            }],
+            isError: true,
+          };
+        }
+        args.push(
+          "--classifier-host", semaphore.scsHost,
+          "--classifier-port", String(semaphore.scsPort),
+          "--classifier-path", "/"
+        );
       }
 
       const result = await flux.run(args);
@@ -501,8 +531,13 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       thread_count: z.number().int().positive().optional().describe("Parallel threads — set to 4–16 for large datasets; each thread processes batch_size URIs per transaction"),
       batch_size: z.number().int().positive().optional().describe("URIs per transaction per thread — keep ≤ 100 for transforms that write large documents"),
       extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim"),
+      classify_with_semaphore: z.boolean().optional().describe(
+        "When true, automatically injects Semaphore Classification Server flags " +
+        "(--classifier-host, --classifier-port, --classifier-path /) so that every reprocessed document " +
+        "is classified as part of the reprocess pipeline. Requires SEMAPHORE_HOST to be configured."
+      ),
     },
-    async ({ invoke_module, read_module, collections, query, database, thread_count, batch_size, extra_args }) => {
+    async ({ invoke_module, read_module, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore }) => {
       const args: string[] = [
         "reprocess",
         "--connection-string", flux.connectionString(database),
@@ -516,6 +551,29 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       if (thread_count) args.push("--thread-count", String(thread_count));
       if (batch_size) args.push("--batch-size", String(batch_size));
       if (extra_args?.length) args.push(...extra_args);
+
+      // ── Semaphore inline classification ──────────────────────────────────────
+      if (classify_with_semaphore) {
+        if (!semaphore.configured || !semaphore.scsHost) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                "classify_with_semaphore=true requires SEMAPHORE_HOST to be set in the MCP server .env.\n\n" +
+                "Example:\n" +
+                "  SEMAPHORE_HOST=semaphore.example.com\n" +
+                "  SEMAPHORE_SCS_PORT=5058    # default\n\n" +
+                "Run semaphore_status to verify connectivity before using this option.",
+            }],
+            isError: true,
+          };
+        }
+        args.push(
+          "--classifier-host", semaphore.scsHost,
+          "--classifier-port", String(semaphore.scsPort),
+          "--classifier-path", "/"
+        );
+      }
 
       const result = await flux.run(args);
       return { content: [{ type: "text", text: formatResult(result) }], isError: !result.success };

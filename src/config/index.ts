@@ -36,6 +36,16 @@ export function loadConfig(): AppConfig {
     flux: {
       runnerUrl: process.env.FLUX_RUNNER_URL,
     },
+    semaphore: {
+      host: process.env.SEMAPHORE_HOST,
+      scsPort: process.env.SEMAPHORE_SCS_PORT,
+      kmmPort: process.env.SEMAPHORE_KMM_PORT,
+      username: process.env.SEMAPHORE_USERNAME,
+      password: process.env.SEMAPHORE_PASSWORD,
+      ssl: process.env.SEMAPHORE_SSL,
+      timeoutMs: process.env.SEMAPHORE_TIMEOUT_MS,
+      url: process.env.SEMAPHORE_URL,  // backward compat
+    },
   };
 
   const result = AppConfigSchema.safeParse(raw);

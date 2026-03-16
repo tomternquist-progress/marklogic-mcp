@@ -60,6 +60,39 @@ export const FluxConfigSchema = z.object({
 
 export type FluxConfig = z.infer<typeof FluxConfigSchema>;
 
+const optionalUrl = z.preprocess(val => (val === "" ? undefined : val), z.string().url().optional());
+const optionalString = z.preprocess(val => (val === "" ? undefined : val), z.string().optional());
+
+export const SemaphoreConfigSchema = z.object({
+  /**
+   * Semaphore host (mirrors ML_HOST pattern).
+   * Used to construct SCS and KMM URLs automatically.
+   */
+  host: optionalString,
+  /** Classification Server (SCS) port — default 5058 */
+  scsPort: z.coerce.number().int().min(1).max(65535).default(5058),
+  /** Semaphore Studio / KMM port — default 5080 */
+  kmmPort: z.coerce.number().int().min(1).max(65535).default(5080),
+  /** KMM username (for Semaphore Studio REST API authentication) */
+  username: optionalString,
+  /** KMM password */
+  password: optionalString,
+  ssl: z
+    .string()
+    .transform((v) => v === "true")
+    .or(z.boolean())
+    .default(false),
+  timeoutMs: z.coerce.number().int().positive().default(30000),
+  /**
+   * Explicit SCS base URL override (backward compatibility with SEMAPHORE_URL).
+   * When set, takes precedence over host:scsPort for the Classification Server.
+   * Typically http://<host>:5058
+   */
+  url: optionalUrl,
+});
+
+export type SemaphoreConfig = z.infer<typeof SemaphoreConfigSchema>;
+
 export const AppConfigSchema = z.object({
   transport: z.enum(["stdio", "http"]).default("stdio"),
   connection: ConnectionConfigSchema,
@@ -71,6 +104,7 @@ export const AppConfigSchema = z.object({
     quicksightAccountId: z.string().optional(),
   }),
   flux: FluxConfigSchema,
+  semaphore: SemaphoreConfigSchema,
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

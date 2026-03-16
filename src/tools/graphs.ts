@@ -99,6 +99,12 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
     "NOTE: PUT replaces the entire graph. Set merge=true to add triples to an existing graph (PATCH).\n" +
     "For very large RDF files (> ~1 MB), use flux_import with subcommand='import-rdf-files' instead,\n" +
     "which handles batching and multi-threaded writes via the Flux runner.\n\n" +
+    "TURTLE PREFIX SYNTAX — prefixed local names CANNOT contain '/'. This is a frequent mistake:\n" +
+    "  WRONG: @prefix e: <http://example.org/entity/> .  → e:movie/godfather  (slash rejected by parser)\n" +
+    "  RIGHT: use one prefix per entity type so local names are slash-free:\n" +
+    "    @prefix movie:  <http://example.org/entity/movie/> .\n" +
+    "    @prefix person: <http://example.org/entity/person/> .\n" +
+    "    movie:godfather mov:directedBy person:coppola .\n\n" +
     "After loading, query with ml_sparql_query or list loaded graphs with ml_graphs_list.",
     {
       graph_uri: z.string().describe("Named graph URI, e.g. 'http://example.org/mygraph'"),

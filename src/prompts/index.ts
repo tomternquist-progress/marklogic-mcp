@@ -1430,4 +1430,271 @@ Provide a concrete flux_import call for this specific data now, or explain which
       }],
     })
   );
+
+  // ── Semaphore Integration Advisor ──────────────────────────────────────────
+
+  server.prompt(
+    "semaphore_integration_advisor",
+    "Design a complete Semaphore + MarkLogic integration architecture (the Progress Data Platform). " +
+    "Returns a step-by-step plan covering ingest strategy, classification pipeline, canonical model design, " +
+    "MarkLogic storage patterns, search facet configuration, and optional Data Hub Framework guidance.",
+    {
+      pattern: z.enum([
+        "ingest-and-classify",
+        "reprocess-enrich",
+        "dhf-pipeline",
+        "explore",
+      ]).optional().describe(
+        "Integration pattern: " +
+        "'ingest-and-classify' = classify new content via Flux at load time; " +
+        "'reprocess-enrich' = enrich documents already in MarkLogic via flux_reprocess; " +
+        "'dhf-pipeline' = full Data Hub Framework pipeline with Semaphore enrichment step; " +
+        "'explore' = help me choose the right pattern. Default: explore."
+      ),
+      content_type: z.string().describe(
+        "Describe the content to classify. E.g. 'news articles in JSON', 'PDF contracts as plain text', " +
+        "'product descriptions scraped from a website', 'government regulatory documents'."
+      ),
+      taxonomy: z.string().optional().describe(
+        "Describe the Semaphore taxonomy or classification model. E.g. 'a 3-level industry taxonomy', " +
+        "'IPTC NewsML subject codes', 'internal product category tree with ~500 concepts'."
+      ),
+      volume: z.string().optional().describe(
+        "Approximate document volume and growth rate. E.g. '500k documents, 10k new/day'. " +
+        "Affects thread/batch sizing recommendations."
+      ),
+      existing_ml_setup: z.string().optional().describe(
+        "Describe existing MarkLogic setup if any. E.g. 'fresh install', 'existing DHF project with staging/final DBs', " +
+        "'REST API app server on port 8010 with range indexes on date and source fields'."
+      ),
+    },
+    ({ pattern, content_type, taxonomy, volume, existing_ml_setup }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a Progress Data Platform architect specialising in Semaphore + MarkLogic integrations.
+Design a complete, actionable integration architecture for the scenario below.
+
+═══════════════════════════════════════════
+SCENARIO
+═══════════════════════════════════════════
+Pattern requested : ${pattern ?? "explore (help me choose)"}
+Content type      : ${content_type}
+Taxonomy/model    : ${taxonomy ?? "(not specified — include guidance on model selection)"}
+Volume            : ${volume ?? "(not specified — provide sizing guidance)"}
+Existing ML setup : ${existing_ml_setup ?? "(not specified — assume fresh MarkLogic install)"}
+
+═══════════════════════════════════════════
+PRODUCE THE FOLLOWING DESIGN
+═══════════════════════════════════════════
+
+## 1. PATTERN SELECTION (skip if pattern is not "explore")
+Compare the four patterns and recommend the best fit:
+
+  A. INGEST + CLASSIFY (Flux native — preferred for new pipelines)
+     Flux imports documents and calls Semaphore Classification Server inline via
+     --classifier-host/port/path extra_args. Categories stored in MarkLogic metadata
+     or document body at write time.
+     BEST FOR: new data pipelines; clean separation of raw and enriched not required.
+
+  B. REPROCESS + ENRICH (post-ingest via flux_reprocess)
+     Documents already exist in MarkLogic. An SJS transform module calls Semaphore
+     via xdmp.httpPost(), receives scored categories, and patches each document.
+     Flux handles parallelism (thread_count, batch_size).
+     BEST FOR: legacy data already loaded; adding Semaphore to an existing MarkLogic deployment.
+
+  C. TRANSFORM ON INGEST (SJS REST transform + Flux)
+     A MarkLogic REST transform (stored in Modules DB) receives raw content, maps it
+     to a canonical model, and calls Semaphore in the same step. Flux passes
+     --transform <name> at import time.
+     BEST FOR: simultaneous raw→canonical mapping AND classification; no separate reprocess needed.
+
+  D. DATA HUB FRAMEWORK PIPELINE (DHF)
+     Full DHF flows: Ingestion (raw → STAGING) → Mapping (STAGING → canonical entity in FINAL)
+     → Custom Semaphore step (calls Semaphore, writes categories onto entity in FINAL)
+     → optional Mastering step (entity resolution / dedup).
+     BEST FOR: multiple source systems; need for STAGING/FINAL split; entity mastering required.
+
+State which pattern you recommend and why for this scenario.
+
+## 2. SEMAPHORE CONFIGURATION
+  - Confirm required env var: SEMAPHORE_URL=http://<host>:<scs-port>  (default SCS port: 5058)
+  - No authentication required for the Classification Server by default
+  - Run semaphore_status to verify connectivity and confirm version
+  - Run semaphore_publish_sets to see which taxonomy publish sets are loaded and active
+  - Run semaphore_classes to see the classification class names (taxonomy domain names)
+  - Run semaphore_classify with a sample document snippet (threshold=0) to validate category output
+
+## 3. INGEST PIPELINE DESIGN
+Provide the exact flux_import (or flux_reprocess) call for this scenario.
+
+For PATTERN A (ingest-and-classify):
+\`\`\`json
+{
+  "tool": "flux_import",
+  "subcommand": "import-files",
+  "http_url": "<source-url>",
+  "collections": ["<content-type>-raw"],
+  "extra_args": [
+    "--classifier-host", "<semaphore-host>",
+    "--classifier-port", "<semaphore-port>",
+    "--classifier-path", "/api/v1/classify"
+  ]
+}
+\`\`\`
+
+For PATTERN B (reprocess-enrich):
+\`\`\`json
+{
+  "tool": "flux_reprocess",
+  "collections": ["<existing-collection>"],
+  "invoke_module": "/transforms/enrich-with-semaphore.sjs",
+  "thread_count": 4,
+  "batch_size": 50
+}
+\`\`\`
+
+Provide the concrete recipe for the recommended pattern, with correct parameter values.
+
+## 4. CANONICAL DOCUMENT MODEL
+Design the MarkLogic document structure that stores both the source content and
+Semaphore classification results. Include:
+
+a. Document URI pattern (follow uri_designer rules: /type/id.json)
+b. JSON structure showing where classification data lives, e.g.:
+   \`\`\`json
+   {
+     "id": "<source-id>",
+     "title": "...",
+     "body": "...",
+     "source": "<source-system>",
+     "publishedAt": "2024-01-15T10:00:00Z",
+     "classification": {
+       "model": "<semaphore-model-id>",
+       "classifiedAt": "<timestamp>",
+       "categories": [
+         { "id": "...", "label": "...", "score": 0.92, "uri": "..." },
+         { "id": "...", "label": "...", "score": 0.78, "uri": "..." }
+       ],
+       "topCategory": { "id": "...", "label": "..." }
+     }
+   }
+   \`\`\`
+c. Collections: recommend at least one collection per content type PLUS
+   a "semaphore-classified" collection after enrichment, to scope queries.
+d. Permissions: rest-reader:read, rest-writer:update minimum.
+
+## 5. TRANSFORM MODULE (SJS) — for PATTERN B/C/D
+Write a complete, production-ready SJS transform module for the Semaphore enrichment step.
+
+For PATTERN B (flux_reprocess invoke module):
+\`\`\`javascript
+'use strict';
+declareUpdate();
+var URI; // injected by Flux — one document URI per invocation
+
+var SEMAPHORE_HOST = '<semaphore-host>';
+var SEMAPHORE_PORT = <semaphore-port>;
+var SEMAPHORE_PATH = '/api/v1/classify';
+var MODEL_ID       = '<semaphore-model-id>';
+
+var doc = cts.doc(URI);
+if (!doc) { xdmp.log('Document not found: ' + URI, 'warning'); }
+else {
+  var obj = doc.toObject();
+  var textToClassify = obj.body || obj.title || obj.content || '';
+
+  var request = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    data: JSON.stringify({ body: textToClassify, modelID: MODEL_ID }),
+  };
+  var response = xdmp.httpPost(
+    'http://' + SEMAPHORE_HOST + ':' + SEMAPHORE_PORT + SEMAPHORE_PATH,
+    request
+  );
+  var result = JSON.parse(String(response[1]));
+  var categories = result.categories || [];
+
+  obj.classification = {
+    model: MODEL_ID,
+    classifiedAt: (new Date()).toISOString(),
+    categories: categories.map(function(c) {
+      return { id: c.id, label: c.label, score: c.score, uri: c.uri };
+    }),
+    topCategory: categories.length > 0 ? { id: categories[0].id, label: categories[0].label } : null,
+  };
+
+  xdmp.documentInsert(URI, obj, {
+    permissions: xdmp.documentGetPermissions(URI),
+    collections: xdmp.documentGetCollections(URI).concat(['semaphore-classified']),
+  });
+  xdmp.log('Classified: ' + URI + ' → ' + (categories[0] ? categories[0].label : 'no categories'), 'info');
+}
+\`\`\`
+
+Note: xdmp.httpPost() requires outbound network access from MarkLogic to Semaphore.
+If blocked, call Semaphore from outside MarkLogic and use ml_document_patch to write results back.
+
+## 6. MARKLOGIC INDEXING FOR CLASSIFICATION FACETS
+To expose Semaphore categories as search facets and range-query targets:
+
+a. Path range index (add to content-database.json via ml-gradle):
+   \`\`\`json
+   {
+     "path-namespace": [],
+     "path-range-index": [
+       {
+         "scalar-type": "string",
+         "path-expression": "classification/categories/label",
+         "collation": "http://marklogic.com/collation/codepoint",
+         "range-value-positions": false,
+         "invalid-values": "ignore"
+       },
+       {
+         "scalar-type": "string",
+         "path-expression": "classification/topCategory/label",
+         "collation": "http://marklogic.com/collation/codepoint",
+         "range-value-positions": false,
+         "invalid-values": "ignore"
+       }
+     ]
+   }
+   \`\`\`
+
+b. After deploying the index, verify with: ml_indexes_list (filter for path-range-index)
+
+c. FastTrack / search options constraint:
+   Use ml_search_options_put to add a constraint on classification/categories/label.
+   This powers FacetFilters in a FastTrack UI with Semaphore categories as facets.
+
+d. Verify with: ml_values_query on the classification/categories/label range index
+   to see the top category distribution across the collection.
+
+## 7. DATA HUB FRAMEWORK DETAILS (PATTERN D only)
+If DHF is the recommended pattern, describe:
+  a. Flow structure: Ingestion → Mapping → Custom (Semaphore) → Mastering
+  b. Entity model (.entity.json) showing classification as a nested type
+  c. Custom step configuration pointing at the SJS module above
+  d. How DHF's built-in provenance tracks when and how a document was classified
+  e. ml-gradle deployment: "gradle mlDeploy" deploys all flows, entity models, and indexes
+
+## 8. OPERATIONAL CHECKLIST
+Before going to production:
+  □ semaphore_status — confirm reachability from the Flux runner host
+  □ semaphore_publish_sets — confirm taxonomy publish sets are loaded and active
+  □ semaphore_classes — confirm classification class names match your taxonomy
+  □ semaphore_classify (threshold=0) — spot-check 3–5 sample documents
+  □ flux_preview before flux_import / flux_reprocess — verify document structure
+  □ ml_indexes_list after deploying indexes — confirm path range indexes are active
+  □ ml_reindex_status — wait for background reindex to complete before facet queries
+  □ ml_values_query on classification/topCategory/label — verify category distribution
+  □ ml_tde_validate (if using TDE over classification fields) — confirm view is correct
+
+Be specific, practical, and reference actual MCP tool names and Zod parameter names throughout.`,
+        },
+      }],
+    })
+  );
 }

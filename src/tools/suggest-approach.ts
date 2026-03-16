@@ -272,6 +272,50 @@ function classify(task: string): ToolRecipe[] {
     });
   }
 
+  // ── Project setup / ml-gradle / DHF ────────────────────────────────────────
+  // Detect intent to CREATE a new project, set up infrastructure, add indexes, or deploy config.
+  const isProjectSetup =
+    /\b(new|create|set.?up|scaffold|bootstrap|build.out|structure|initializ|start).*project\b|\bml.?gradle\b|\bdhf\b|\bdata.hub\b|\bproject.structure\b|\bdeploy.*index|\badd.*index|\bcontent-database\.json\b|\brange.index\b|\bgeopatial.index/.test(t) &&
+    !/query|search|sparql|find|import|load/.test(t);
+
+  if (isProjectSetup) {
+    results.push({
+      tool: "project_setup_advisor (prompt)",
+      description: "ml-gradle project layout, database config, TDE deployment, index setup",
+      use_when: ["new-project", "ml-gradle", "deploy-indexes", "project-structure", "dhf"],
+      recipe: {
+        step1: "Read marklogic://instructions resource — project setup section covers the standard ml-gradle layout",
+        step2: "Invoke the project_setup_advisor prompt with your domain and requirements",
+        standard_layout: {
+          "src/main/ml-config/databases/content-database.json": "range/geospatial indexes, triple-index, collection-lexicon",
+          "src/main/ml-schemas/tde/": "TDE templates — deploy via 'gradle mlLoadSchemas'",
+          "src/main/ml-modules/root/": "SJS/XQuery application modules",
+          "gradle.properties": "mlHost, mlRestPort, mlUsername, mlPassword, mlAppName",
+          "gradle-{env}.properties": "per-environment overrides (e.g. gradle-dev.properties)",
+          "build.gradle": "ml-gradle plugin + Flux Exec tasks for data loading",
+        },
+        load_data_via_flux: {
+          rdf_graphs: "flux import-rdf-files --path data/ontology/*.ttl --graph <uri> --connection-string user:pass@host:port",
+          entity_docs: "flux import-files --path data/seed/{type}/ --collections kg-entity,kg-{type} --uri-template /kg/{type}/{id}.json",
+          gradle_task: "tasks.create('loadMovies', Exec) { commandLine([fluxBin, 'import-files', '--path', ...] + connArgs) }",
+        },
+      },
+      rationale:
+        "MarkLogic projects are configured as code via ml-gradle. Indexes live in content-database.json " +
+        "and require a reindex after deployment (check ml_reindex_status). TDE templates in ml-schemas/tde/ " +
+        "are deployed via 'gradle mlLoadSchemas' and are immediately queryable without reimporting data. " +
+        "Data loading belongs in Gradle Exec tasks invoking Flux CLI — not in the MCP session — so the " +
+        "pipeline is reproducible in CI/CD without the MCP server.",
+      warnings: [
+        "MCP tools (flux_import, ml_document_put) are for exploration and prototyping. " +
+          "For a repeatable project pipeline, wire Flux CLI commands into Gradle Exec tasks in build.gradle.",
+        "TDE deployment via ml_document_put works for prototyping, but 'gradle mlLoadSchemas' is the " +
+          "canonical deploy path — it picks up all templates in src/main/ml-schemas/tde/ automatically.",
+        "Never manually edit hub-internal-config/ in DHF projects — it is managed by DHF tooling.",
+      ],
+    });
+  }
+
   // ── Graph / semantic / SPARQL ───────────────────────────────────────────────
   const isGraph =
     /sparql|triple|graph|semantic|rdf|owl|ontolog|subject|predicate|object/.test(t);
@@ -443,6 +487,95 @@ function classify(task: string): ToolRecipe[] {
         "~10 KB script payload limit — pass large arrays/strings via the vars parameter.",
         "xdmp.httpGet() requires outbound network access from the MarkLogic host — may be blocked.",
       ],
+    });
+  }
+
+  // ── Semaphore classification / content enrichment ───────────────────────────
+  const isClassification =
+    /classif|semaphore|categori|tag|taxonom|concept|label|automat.*tag|enrichment|metadata.*enrich|nlp|named.entity|annotation/.test(t);
+  const isBulkClassification =
+    isClassification && (isBulkImport || /bulk|all docs|collection|reprocess|pipeline/.test(t));
+
+  if (isClassification) {
+    if (isBulkClassification) {
+      // Bulk path: use Flux's built-in classification support
+      results.push({
+        tool: "flux_import / flux_reprocess (with Semaphore classification)",
+        description: "Bulk classification via Flux + Semaphore at ingest or reprocess time",
+        use_when: ["bulk-classify", "classify-on-ingest", "semaphore", "taxonomy-tagging"],
+        recipe: {
+          // Inline classification during import
+          option_A_ingest_time: {
+            tool: "flux_import",
+            subcommand: "import-files",
+            http_url: "<source-url>",
+            collections: ["raw-content"],
+            extra_args: [
+              "--classifier-host", "<semaphore-host>",
+              "--classifier-port", "<semaphore-port>",
+              "--classifier-path", "/api/v1/classify",
+            ],
+          },
+          // OR: reprocess existing documents through Semaphore
+          option_B_reprocess: {
+            tool: "flux_reprocess",
+            collections: ["raw-content"],
+            invoke_module: "/transforms/enrich-with-semaphore.sjs",
+            thread_count: 4,
+          },
+        },
+        rationale:
+          "Flux has built-in Semaphore Classification Server support via --classifier-host/port/path flags. " +
+          "Pass these via extra_args on flux_import to classify every document at ingest time. " +
+          "For documents already in MarkLogic, use flux_reprocess with an SJS module that calls " +
+          "Semaphore's REST API (xdmp.httpPost) and patches each document with the returned categories. " +
+          "This is the Progress Data Platform pattern: Flux handles scale, Semaphore handles classification.",
+        warnings: [
+          "Semaphore must be reachable from the flux-runner host (not just the MCP server host).",
+          "Run semaphore_status to confirm connectivity before designing the pipeline.",
+          "Use semaphore_classify to test category output on sample text before running bulk classification.",
+          "Run semaphore_publish_sets and semaphore_classes to confirm what taxonomies and rules are active.",
+        ],
+      });
+    } else {
+      // Single-document / exploratory classification
+      results.push({
+        tool: "semaphore_classify",
+        description: "Classify text content against a Semaphore taxonomy",
+        use_when: ["classify-text", "semaphore", "taxonomy", "concept-extraction"],
+        recipe: {
+          content: "<text to classify>",
+          threshold: 0,
+        },
+        rationale:
+          "semaphore_classify sends text to the Semaphore Classification Server and returns scored taxonomy categories. " +
+          "Use threshold=0 to see all candidate categories regardless of confidence. " +
+          "Run semaphore_publish_sets and semaphore_classes first to understand the loaded taxonomies.",
+        not_this_tool:
+          "For bulk classification of an existing collection, use flux_reprocess with an SJS transform instead — " +
+          "semaphore_classify is for interactive/exploratory use only.",
+        warnings: [
+          "Requires SEMAPHORE_URL to be set in the MCP server .env.",
+          "Run semaphore_status first to confirm connectivity.",
+        ],
+      });
+    }
+
+    // Always add the integration advisor prompt when classification intent is detected
+    results.push({
+      tool: "semaphore_integration_advisor (prompt)",
+      description: "Architectural guidance for Semaphore + MarkLogic integration patterns",
+      use_when: ["integration-design", "semaphore-architecture", "progress-data-platform"],
+      recipe: {
+        prompt: "semaphore_integration_advisor",
+        pattern: "<ingest-and-classify | reprocess-enrich | dhf-pipeline>",
+        content_type: "<describe your content: news articles, contracts, product descriptions, etc.>",
+        taxonomy: "<describe your taxonomy/classification model>",
+      },
+      rationale:
+        "Use the semaphore_integration_advisor prompt to get a full architectural plan for combining " +
+        "Semaphore and MarkLogic — covering ingest strategy, transform design, canonical model mapping, " +
+        "Data Hub Framework considerations, and how to surface Semaphore categories as MarkLogic search facets.",
     });
   }
 

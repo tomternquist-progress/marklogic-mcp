@@ -9,6 +9,7 @@ import { GraphsClient } from "./graphs.js";
 import { OpticClient } from "./optic.js";
 import { FluxClient } from "./flux.js";
 import { FastTrackClient } from "./fasttrack.js";
+import { SemaphoreClient } from "./semaphore.js";
 
 export interface MarkLogicClients {
   admin: AdminClient;
@@ -20,10 +21,11 @@ export interface MarkLogicClients {
   optic: OpticClient;
   flux: FluxClient;
   fasttrack: FastTrackClient;
+  semaphore: SemaphoreClient;
 }
 
 export function createClients(config: AppConfig): MarkLogicClients {
-  const { connection, safety, flux: fluxConfig } = config;
+  const { connection, safety, flux: fluxConfig, semaphore: semaphoreConfig } = config;
   const base = new MarkLogicBaseClient(connection);
   const admin = new AdminClient(base);
   const documents = new DocumentsClient(base, safety.readonly);
@@ -34,8 +36,9 @@ export function createClients(config: AppConfig): MarkLogicClients {
   const optic = new OpticClient(base);
   const flux = new FluxClient(fluxConfig.runnerUrl, connection);
   const fasttrack = new FastTrackClient(base, safety.readonly);
+  const semaphore = new SemaphoreClient(semaphoreConfig);
 
-  return { admin, documents, search, eval: evalClient, schema, graphs, optic, flux, fasttrack };
+  return { admin, documents, search, eval: evalClient, schema, graphs, optic, flux, fasttrack, semaphore };
 }
 
 export {
@@ -49,4 +52,5 @@ export {
   OpticClient,
   FluxClient,
   FastTrackClient,
+  SemaphoreClient,
 };
