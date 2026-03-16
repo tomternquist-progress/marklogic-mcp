@@ -261,6 +261,10 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
           "--classifier-port", String(semaphore.scsPort),
           "--classifier-path", "/"
         );
+        // --classifier-http is required when the CLS endpoint is plain HTTP (not HTTPS)
+        if (!semaphore.baseUrl.startsWith("https")) {
+          args.push("--classifier-http");
+        }
       }
 
       const result = await flux.run(args);
@@ -573,6 +577,10 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
           "--classifier-port", String(semaphore.scsPort),
           "--classifier-path", "/"
         );
+        // --classifier-http is required when the CLS endpoint is plain HTTP (not HTTPS)
+        if (!semaphore.baseUrl.startsWith("https")) {
+          args.push("--classifier-http");
+        }
       }
 
       const result = await flux.run(args);

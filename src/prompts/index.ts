@@ -1519,12 +1519,23 @@ Compare the four patterns and recommend the best fit:
 State which pattern you recommend and why for this scenario.
 
 ## 2. SEMAPHORE CONFIGURATION
-  - Confirm required env var: SEMAPHORE_URL=http://<host>:<scs-port>  (default SCS port: 5058)
-  - No authentication required for the Classification Server by default
-  - Run semaphore_status to verify connectivity and confirm version
-  - Run semaphore_publish_sets to see which taxonomy publish sets are loaded and active
+  CLS (Classification Server) — required for classification:
+  - Set SEMAPHORE_HOST (and optionally SEMAPHORE_SCS_PORT, default 5058) in the MCP server .env
+  - Or use SEMAPHORE_URL=http://<host>:<port> for an explicit override
+  - No authentication required for the CLS by default
+  - Run semaphore_status to verify CLS connectivity and confirm version
+
+  KMM (Knowledge Model Manager / Studio) — required for taxonomy authoring:
+  - Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD (KMM uses Java EE form auth, not Basic auth)
+  - Set SEMAPHORE_KMM_PORT (default 5080) for the Studio/KMM port
+  - Run semaphore_studio_status to verify KMM connectivity
+
+  Taxonomy discovery:
+  - Run semaphore_publish_sets to see which taxonomy rule sets are loaded and active in CLS
   - Run semaphore_classes to see the classification class names (taxonomy domain names)
-  - Run semaphore_classify with a sample document snippet (threshold=0) to validate category output
+  - Run semaphore_classify with a sample document snippet (threshold=0) to validate output
+  - If no rule sets are loaded: use semaphore_kmm_model_create + semaphore_kmm_skos_load to
+    import a public SKOS vocabulary, then publish from Semaphore Studio UI
 
 ## 3. INGEST PIPELINE DESIGN
 Provide the exact flux_import (or flux_reprocess) call for this scenario.
@@ -1538,8 +1549,9 @@ For PATTERN A (ingest-and-classify):
   "collections": ["<content-type>-raw"],
   "extra_args": [
     "--classifier-host", "<semaphore-host>",
-    "--classifier-port", "<semaphore-port>",
-    "--classifier-path", "/api/v1/classify"
+    "--classifier-port", "<semaphore-scs-port>",
+    "--classifier-path", "/",
+    "--classifier-http"
   ]
 }
 \`\`\`
@@ -1570,14 +1582,17 @@ b. JSON structure showing where classification data lives, e.g.:
      "body": "...",
      "source": "<source-system>",
      "publishedAt": "2024-01-15T10:00:00Z",
-     "classification": {
-       "model": "<semaphore-model-id>",
+     "semaphore": {
        "classifiedAt": "<timestamp>",
+       "classifiedBy": "flux-import",
+       "clsHost": "<semaphore-host>",
+       "threshold": 48,
+       "categoryCount": 3,
        "categories": [
-         { "id": "...", "label": "...", "score": 0.92, "uri": "..." },
-         { "id": "...", "label": "...", "score": 0.78, "uri": "..." }
+         { "className": "IPTC-MediaTopics", "label": "Sport", "id": "...", "score": 87.5 },
+         { "className": "IPTC-MediaTopics", "label": "Football", "id": "...", "score": 72.1 }
        ],
-       "topCategory": { "id": "...", "label": "..." }
+       "topCategory": { "className": "IPTC-MediaTopics", "label": "Sport", "id": "..." }
      }
    }
    \`\`\`
@@ -1595,9 +1610,8 @@ declareUpdate();
 var URI; // injected by Flux — one document URI per invocation
 
 var SEMAPHORE_HOST = '<semaphore-host>';
-var SEMAPHORE_PORT = <semaphore-port>;
-var SEMAPHORE_PATH = '/api/v1/classify';
-var MODEL_ID       = '<semaphore-model-id>';
+var SEMAPHORE_PORT = <semaphore-scs-port>;   // default: 5058
+var THRESHOLD      = 48;
 
 var doc = cts.doc(URI);
 if (!doc) { xdmp.log('Document not found: ' + URI, 'warning'); }
@@ -1605,37 +1619,54 @@ else {
   var obj = doc.toObject();
   var textToClassify = obj.body || obj.title || obj.content || '';
 
-  var request = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    data: JSON.stringify({ body: textToClassify, modelID: MODEL_ID }),
-  };
-  var response = xdmp.httpPost(
-    'http://' + SEMAPHORE_HOST + ':' + SEMAPHORE_PORT + SEMAPHORE_PATH,
-    request
-  );
-  var result = JSON.parse(String(response[1]));
-  var categories = result.categories || [];
+  // CLS uses URL-encoded form POST to /, not JSON.
+  // IMPORTANT: xdmp.httpPost() arg3 must be a Node, not a plain string.
+  // Wrap the body string with fn.head(xdmp.unquote(...)) to convert.
+  var bodyStr = 'body=' + encodeURIComponent(textToClassify) +
+                '&threshold=' + THRESHOLD + '&singlearticle=1';
+  var bodyNode = fn.head(xdmp.unquote(bodyStr, null, ['format-text']));
+  var resp = Array.from(xdmp.httpPost(
+    'http://' + SEMAPHORE_HOST + ':' + SEMAPHORE_PORT + '/',
+    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+    bodyNode
+  ));
+  var xml = String(resp[1]);
 
-  obj.classification = {
-    model: MODEL_ID,
+  // Parse <META name="ClassName" value="Label" id="uuid" score="float"/>
+  var categories = [];
+  var re = /<META\s+[^>]*name="([^"]+)"[^>]*value="([^"]+)"[^>]*id="([^"]+)"[^>]*score="([^"]+)"[^>]*\/>/g;
+  var m;
+  while ((m = re.exec(xml)) !== null) {
+    if (m[1] !== 'Type' && m[1] !== 'Template') {
+      categories.push({ className: m[1], label: m[2], id: m[3], score: parseFloat(m[4]) });
+    }
+  }
+
+  var sorted = categories.slice().sort(function(a, b) { return b.score - a.score; });
+  obj.semaphore = {
     classifiedAt: (new Date()).toISOString(),
-    categories: categories.map(function(c) {
-      return { id: c.id, label: c.label, score: c.score, uri: c.uri };
+    classifiedBy: 'flux-reprocess',
+    clsHost: SEMAPHORE_HOST,
+    threshold: THRESHOLD,
+    categoryCount: sorted.length,
+    categories: sorted.map(function(c) {
+      return { className: c.className, label: c.label, id: c.id, score: c.score };
     }),
-    topCategory: categories.length > 0 ? { id: categories[0].id, label: categories[0].label } : null,
+    topCategory: sorted.length > 0 ? { className: sorted[0].className, label: sorted[0].label, id: sorted[0].id } : null,
   };
 
   xdmp.documentInsert(URI, obj, {
     permissions: xdmp.documentGetPermissions(URI),
     collections: xdmp.documentGetCollections(URI).concat(['semaphore-classified']),
   });
-  xdmp.log('Classified: ' + URI + ' → ' + (categories[0] ? categories[0].label : 'no categories'), 'info');
+  xdmp.log('Classified: ' + URI + ' → ' + (sorted[0] ? sorted[0].label : 'no categories'), 'info');
 }
 \`\`\`
 
-Note: xdmp.httpPost() requires outbound network access from MarkLogic to Semaphore.
-If blocked, call Semaphore from outside MarkLogic and use ml_document_patch to write results back.
+NETWORK NOTE (Kubernetes):
+xdmp.httpPost() from MarkLogic pods may be blocked by K8s network policy from reaching the CLS.
+If you get SVC-SOCCONN errors, switch to Pattern A (Flux classifier flags) which runs outside MarkLogic,
+or pre-classify from the application/MCP tier and use ml_document_patch to write results back.
 
 ## 6. MARKLOGIC INDEXING FOR CLASSIFICATION FACETS
 To expose Semaphore categories as search facets and range-query targets:
@@ -1647,14 +1678,21 @@ a. Path range index (add to content-database.json via ml-gradle):
      "path-range-index": [
        {
          "scalar-type": "string",
-         "path-expression": "classification/categories/label",
+         "path-expression": "semaphore/categories/label",
          "collation": "http://marklogic.com/collation/codepoint",
          "range-value-positions": false,
          "invalid-values": "ignore"
        },
        {
          "scalar-type": "string",
-         "path-expression": "classification/topCategory/label",
+         "path-expression": "semaphore/topCategory/label",
+         "collation": "http://marklogic.com/collation/codepoint",
+         "range-value-positions": false,
+         "invalid-values": "ignore"
+       },
+       {
+         "scalar-type": "string",
+         "path-expression": "semaphore/categories/className",
          "collation": "http://marklogic.com/collation/codepoint",
          "range-value-positions": false,
          "invalid-values": "ignore"
@@ -1666,10 +1704,10 @@ a. Path range index (add to content-database.json via ml-gradle):
 b. After deploying the index, verify with: ml_indexes_list (filter for path-range-index)
 
 c. FastTrack / search options constraint:
-   Use ml_search_options_put to add a constraint on classification/categories/label.
+   Use ml_search_options_put to add a constraint on semaphore/categories/label.
    This powers FacetFilters in a FastTrack UI with Semaphore categories as facets.
 
-d. Verify with: ml_values_query on the classification/categories/label range index
+d. Verify with: ml_values_query on the semaphore/categories/label range index
    to see the top category distribution across the collection.
 
 ## 7. DATA HUB FRAMEWORK DETAILS (PATTERN D only)
@@ -1682,14 +1720,25 @@ If DHF is the recommended pattern, describe:
 
 ## 8. OPERATIONAL CHECKLIST
 Before going to production:
-  □ semaphore_status — confirm reachability from the Flux runner host
+  Taxonomy setup (if rule sets are not yet loaded):
+  □ semaphore_kmm_models_list — list existing taxonomy models in KMM
+  □ semaphore_kmm_model_create — create a new model if needed
+  □ semaphore_kmm_skos_load — load SKOS from a public URL (IPTC, EuroVoc, AGROVOC …)
+  □ semaphore_kmm_sparql — verify concept count and spot-check labels
+  □ Semaphore Studio UI — publish model as a CLS rule set (required before CLS can classify)
+
+  CLS classification validation:
+  □ semaphore_status — confirm CLS reachability from the Flux runner host
   □ semaphore_publish_sets — confirm taxonomy publish sets are loaded and active
   □ semaphore_classes — confirm classification class names match your taxonomy
   □ semaphore_classify (threshold=0) — spot-check 3–5 sample documents
+  □ If all scores are 0: wait for Publisher service to finish indexing after publish
+
+  Pipeline and indexing:
   □ flux_preview before flux_import / flux_reprocess — verify document structure
   □ ml_indexes_list after deploying indexes — confirm path range indexes are active
   □ ml_reindex_status — wait for background reindex to complete before facet queries
-  □ ml_values_query on classification/topCategory/label — verify category distribution
+  □ ml_values_query on semaphore/topCategory/label — verify category distribution
   □ ml_tde_validate (if using TDE over classification fields) — confirm view is correct
 
 Be specific, practical, and reference actual MCP tool names and Zod parameter names throughout.`,

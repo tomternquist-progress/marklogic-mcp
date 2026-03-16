@@ -1,16 +1,17 @@
 /**
- * Semaphore Classification Server (SCS) MCP tools.
+ * Semaphore Classification Server (CLS) + KMM MCP tools.
  *
- * The SCS API is XML-based over HTTP. Key configuration:
- *   SEMAPHORE_URL = http://<host>:<port>   (default SCS port: 5058)
+ * The CLS API is XML-based over HTTP. Key configuration:
+ *   SEMAPHORE_URL = http://<host>:<port>   (default CLS port: 5058)
  *
  * Architecture:
- *   Port 5058 — Classification Server (SCS): classifies text via XML API.
- *   Port 5080 — Semaphore Studio (KMM): taxonomy authoring web UI.
+ *   Port 5058 — Classification Server (CLS): classifies text via XML API.
+ *   Port 5080 — Semaphore Studio (KMM): taxonomy authoring web UI + REST API.
  *
  * For bulk classification, use Flux's built-in Semaphore support:
  *   flux_import extra_args: ["--classifier-host", "<host>", "--classifier-port", "5058",
- *                            "--classifier-path", "/"]
+ *                            "--classifier-path", "/", "--classifier-http"]
+ *   Note: --classifier-http is required when the CLS endpoint is plain HTTP (not HTTPS).
  */
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -214,12 +215,270 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     }
   );
 
+  // ── semaphore_kmm_models_list ─────────────────────────────────────────────────
+  server.tool(
+    "semaphore_kmm_models_list",
+    "List all taxonomy models (ontologies) registered in Semaphore Studio / KMM (Knowledge Model Manager). " +
+    "Each model corresponds to a taxonomy that can be published to the Classification Server (CLS) as a rule set. " +
+    "Use this to discover existing models before creating a new one or loading SKOS content.\n\n" +
+    "CONFIGURATION: Requires SEMAPHORE_HOST, SEMAPHORE_USERNAME, and SEMAPHORE_PASSWORD in the MCP server .env. " +
+    "KMM runs on a separate port from CLS (default: SEMAPHORE_KMM_PORT=5080). " +
+    "Authentication uses a two-step Java EE form login — Basic auth is NOT supported by KMM.",
+    {},
+    async () => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      try {
+        const models = await semaphore.listKmmModels();
+        if (models.length === 0) {
+          return {
+            content: [{ type: "text", text: "No models found in KMM. Use semaphore_kmm_model_create to create a new taxonomy model." }],
+          };
+        }
+        const lines = [
+          "KMM TAXONOMY MODELS",
+          "─".repeat(50),
+          "",
+          ...models.map((m, i) => `  ${i + 1}. ${m.id}`),
+          "",
+          `Total: ${models.length} model(s)`,
+          "",
+          "Use semaphore_kmm_skos_load to load a SKOS vocabulary into an existing model.",
+          "Use semaphore_kmm_sparql to query model content.",
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_kmm_model_create ────────────────────────────────────────────────
+  server.tool(
+    "semaphore_kmm_model_create",
+    "Create a new taxonomy model in Semaphore Studio / KMM. " +
+    "A model is the container for a taxonomy or ontology — it must exist before loading any SKOS content. " +
+    "After creation, use semaphore_kmm_skos_load to populate it with concepts from a public RDF/SKOS URL.\n\n" +
+    "Returns the new model URI (e.g. 'model:IPTCMediaTopics') which is required for semaphore_kmm_skos_load and semaphore_kmm_sparql.\n\n" +
+    "NEXT STEP: After creating a model, load taxonomy content with semaphore_kmm_skos_load, " +
+    "then publish it from Semaphore Studio UI so it becomes a CLS rule set available to semaphore_classify.",
+    {
+      name: z.string().describe(
+        "Short identifier used as the model name and URI suffix. " +
+        "Must be a single word or CamelCase with no spaces (e.g. 'IPTCMediaTopics', 'EuroVoc')."
+      ),
+      default_namespace: z.string().describe(
+        "Base namespace URI for concepts in this model " +
+        "(e.g. 'http://cv.iptc.org/newscodes/mediatopic/', 'http://eurovoc.europa.eu/')."
+      ),
+      description: z.string().optional().describe("Human-readable description of this taxonomy model."),
+    },
+    async ({ name, default_namespace, description }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      try {
+        const modelUri = await semaphore.createKmmModel(name, default_namespace, description);
+        const lines = [
+          "KMM MODEL CREATED",
+          "─".repeat(50),
+          "",
+          `  Name:              ${name}`,
+          `  Model URI:         ${modelUri}`,
+          `  Default namespace: ${default_namespace}`,
+          description ? `  Description:       ${description}` : "",
+          "",
+          "NEXT STEPS:",
+          `  1. Load SKOS content:   semaphore_kmm_skos_load  modelUri="${modelUri}"  skos_url="<rdf-url>"`,
+          `  2. Verify concepts:     semaphore_kmm_sparql     modelUri="${modelUri}"  query="SELECT ?s ?label WHERE { ?s a skos:Concept ; skos:prefLabel ?label } LIMIT 10"`,
+          "  3. Publish to CLS:      Open Semaphore Studio → Publish tab → publish the new model",
+          "  4. Verify in CLS:       semaphore_publish_sets (after publish completes)",
+        ].filter(Boolean);
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_kmm_skos_load ───────────────────────────────────────────────────
+  server.tool(
+    "semaphore_kmm_skos_load",
+    "Load a SKOS taxonomy into an existing KMM model via SPARQL LOAD. " +
+    "This is the standard way to import a public vocabulary (IPTC Media Topics, EuroVoc, AGROVOC, etc.) " +
+    "into Semaphore — the KMM server fetches the RDF file directly from the given URL.\n\n" +
+    "IMPORTANT — CONSTRAINT BYPASS:\n" +
+    "  Third-party SKOS vocabularies routinely use properties (e.g. ikos:hasFacet) that fail " +
+    "  Semaphore's built-in SHACL validation, returning HTTP 409 Conflict. This tool always passes " +
+    "  checkConstraints=false&runEditRules=false to bypass this — required for all external SKOS.\n\n" +
+    "AFTER LOADING:\n" +
+    "  Use semaphore_kmm_sparql to verify concept count and spot-check labels.\n" +
+    "  Then open Semaphore Studio UI to publish the model as a CLS rule set.\n\n" +
+    "SKOS URL EXAMPLES:\n" +
+    "  IPTC Media Topics: https://cv.iptc.org/newscodes/mediatopic/?lang=x-all&format=rdfxml\n" +
+    "  Note: always check the vocabulary's API for the correct RDF/XML URL — HTML endpoints return HTML.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI to load into, e.g. 'model:IPTCMediaTopics'. " +
+        "Get from semaphore_kmm_models_list or use the URI returned by semaphore_kmm_model_create."
+      ),
+      skos_url: z.string().url().describe(
+        "Public HTTP/HTTPS URL of the SKOS RDF file. " +
+        "Must be accessible from the KMM server — the server fetches this URL directly. " +
+        "Use RDF/XML format (not HTML or Turtle) for best compatibility."
+      ),
+    },
+    async ({ model_uri, skos_url }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      try {
+        await semaphore.kmmLoadSkos(model_uri, skos_url);
+        const lines = [
+          "SKOS LOAD COMPLETE",
+          "─".repeat(50),
+          "",
+          `  Model:    ${model_uri}`,
+          `  Source:   ${skos_url}`,
+          "",
+          "NEXT STEPS:",
+          `  1. Verify concept count: semaphore_kmm_sparql  modelUri="${model_uri}"`,
+          `     query: SELECT (COUNT(?s) AS ?n) WHERE { ?s a <http://www.w3.org/2004/02/skos/core#Concept> }`,
+          "  2. Spot-check labels:    semaphore_kmm_sparql with LIMIT 20 SELECT ?s ?label",
+          "  3. Publish to CLS:       Open Semaphore Studio → publish the model as a rule set",
+          "  4. Verify in CLS:        semaphore_publish_sets → confirm new rule set is active",
+          "  5. Test classification:  semaphore_classify with sample text (threshold=0 to see all results)",
+          "",
+          "NOTE: After publishing, CLS scores may be 0 for newly loaded models until the Semaphore",
+          "Publisher service finishes indexing. Re-run semaphore_classify after publish completes.",
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_kmm_sparql ──────────────────────────────────────────────────────
+  server.tool(
+    "semaphore_kmm_sparql",
+    "Run a SPARQL SELECT query against a KMM model graph to inspect taxonomy content. " +
+    "Use this to verify concept counts after loading SKOS, browse hierarchy, or extract concept URIs and labels " +
+    "for use in classification workflows.\n\n" +
+    "COMMON QUERIES:\n" +
+    "  Count concepts:    SELECT (COUNT(?s) AS ?n) WHERE { ?s a skos:Concept }\n" +
+    "  Top concepts:      SELECT ?s ?label WHERE { ?s a skos:Concept ; skos:topConceptOf ?scheme ; skos:prefLabel ?label } LIMIT 20\n" +
+    "  Narrow concepts:   SELECT ?parent ?child ?label WHERE { ?parent skos:narrower ?child . ?child skos:prefLabel ?label } LIMIT 30\n" +
+    "  By keyword:        SELECT ?s ?label WHERE { ?s skos:prefLabel ?label FILTER(CONTAINS(LCASE(STR(?label)), 'sport')) }\n\n" +
+    "NOTE: SPARQL prefixes are NOT pre-declared — use full URIs or declare prefixes inline:\n" +
+    "  PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n" +
+    "  PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI to query, e.g. 'model:IPTCMediaTopics'. " +
+        "Get from semaphore_kmm_models_list."
+      ),
+      query: z.string().describe(
+        "SPARQL SELECT query. Always declare prefixes inline (PREFIX skos: ...). " +
+        "Use LIMIT to avoid large result sets."
+      ),
+    },
+    async ({ model_uri, query }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      try {
+        const result = await semaphore.kmmSparqlQuery(model_uri, query);
+        const { rows } = result;
+
+        if (rows.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                "SPARQL query returned 0 results.\n\n" +
+                "Possible causes:\n" +
+                "  • The model may be empty — run semaphore_kmm_skos_load first\n" +
+                "  • Prefixes may not be declared — add PREFIX skos: <http://www.w3.org/2004/02/skos/core#> etc.\n" +
+                "  • The model URI may be wrong — check semaphore_kmm_models_list\n\n" +
+                `Model: ${model_uri}\nQuery: ${query}`,
+            }],
+          };
+        }
+
+        const headers = Object.keys(rows[0]);
+        const lines = [
+          `SPARQL RESULTS — ${model_uri}`,
+          "─".repeat(50),
+          `Columns: ${headers.join(", ")}  |  Rows: ${rows.length}`,
+          "",
+        ];
+
+        // Table output
+        const colWidths = headers.map(h =>
+          Math.min(50, Math.max(h.length, ...rows.slice(0, 100).map(r => (r[h] ?? "").length)))
+        );
+        const header = headers.map((h, i) => h.padEnd(colWidths[i])).join("  ");
+        const divider = colWidths.map(w => "─".repeat(w)).join("  ");
+        lines.push(header);
+        lines.push(divider);
+        for (const row of rows.slice(0, 100)) {
+          lines.push(headers.map((h, i) => (row[h] ?? "").slice(0, colWidths[i]).padEnd(colWidths[i])).join("  "));
+        }
+        if (rows.length > 100) {
+          lines.push(`… ${rows.length - 100} more rows omitted`);
+        }
+
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
   // ── semaphore_classify ────────────────────────────────────────────────────────
   server.tool(
     "semaphore_classify",
-    "Classify text content using the Semaphore Classification Server. Returns scored taxonomy categories.\n\n" +
+    "Classify text content using the Semaphore Classification Server (CLS). Returns scored taxonomy categories.\n\n" +
     "HOW IT WORKS:\n" +
-    "  The SCS parses your text, matches it against the loaded classification rules (publish sets),\n" +
+    "  The CLS parses your text, matches it against the loaded classification rules (publish sets),\n" +
     "  and returns categories above the threshold score. Each category has a class name (taxonomy domain),\n" +
     "  a label (concept name), a stable UUID, and a score (0–100).\n\n" +
     "USE THIS TOOL WHEN:\n" +
@@ -230,12 +489,20 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "FOR BULK CLASSIFICATION (preferred for production):\n" +
     "  Use flux_import with extra_args to classify every document at ingest time:\n" +
     "    extra_args: [\"--classifier-host\", \"<host>\", \"--classifier-port\", \"<port>\",\n" +
-    "                 \"--classifier-path\", \"/\"]\n" +
-    "  Or use flux_reprocess with an SJS transform that calls xdmp.httpPost() to Semaphore.\n\n" +
+    "                 \"--classifier-path\", \"/\", \"--classifier-http\"]\n" +
+    "  Add --classifier-http when the CLS endpoint is plain HTTP (not HTTPS).\n" +
+    "  Or use flux_reprocess with an SJS transform — but note that xdmp.httpPost() from MarkLogic\n" +
+    "  pods may be blocked by Kubernetes network policy from reaching the CLS. Prefer Flux or\n" +
+    "  pre-classify from the application tier.\n\n" +
     "THRESHOLD GUIDANCE:\n" +
     "  Default threshold is 48. Score range is 0–100.\n" +
     "  Use threshold=0 to see all candidate categories regardless of confidence.\n" +
-    "  Production pipelines typically use 48–70 depending on precision requirements.",
+    "  Production pipelines typically use 48–70 depending on precision requirements.\n\n" +
+    "SCORE=0 NOTE:\n" +
+    "  A freshly published rule set may return score=0 for all categories while the\n" +
+    "  Semaphore Publisher service finishes building the rulenet index. If every category\n" +
+    "  scores 0, use threshold=0 to see them, then re-run classification after the Publisher\n" +
+    "  service has completed indexing (check Semaphore Studio → Publish tab for status).",
     {
       content: z.string().describe("Plain text or HTML content to classify"),
       threshold: z.number().int().min(0).max(100).optional().describe(
@@ -261,10 +528,15 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
               text:
                 "SEMAPHORE CLASSIFICATION: No categories returned.\n\n" +
                 "Possible causes:\n" +
-                "  • No publish sets are loaded on the server (run semaphore_publish_sets to check)\n" +
-                "  • The content does not match any classification rules\n" +
-                "  • Try with threshold=0 to see all candidates\n\n" +
-                "Debug: run semaphore_classes to confirm classification rules are active.",
+                "  • Threshold is too high — all category scores are below the threshold value.\n" +
+                "    Retry with threshold=0 to see every candidate regardless of score.\n" +
+                "  • Score=0 for all matches — a freshly published rule set may score 0 while\n" +
+                "    the Semaphore Publisher service is still building the rulenet index.\n" +
+                "    Check Semaphore Studio → Publish tab for Publisher status, then retry.\n" +
+                "  • No publish sets are loaded — run semaphore_publish_sets to check.\n" +
+                "    If no sets are active, publish a model from Semaphore Studio first.\n" +
+                "  • The content does not match any classification rules in the active rulenet.\n\n" +
+                "Debug: run semaphore_classes to confirm classification classes are active.",
             }],
           };
         }

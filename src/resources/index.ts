@@ -8,7 +8,7 @@ MARKLOGIC MCP — PROBLEM-FIRST DECISION GUIDE
 
 READ THIS BEFORE CALLING ANY TOOL.
 
-This server exposes 46+ tools across 10 domains. Reaching for the wrong tool wastes
+This server exposes 50+ tools across 10 domains. Reaching for the wrong tool wastes
 round-trips and produces inferior results. Use the decision principles and
 problem→solution table below to identify the MarkLogic-native approach first, then
 select the matching tools.
@@ -137,10 +137,18 @@ enrichment           SJS module                 ml_document_patch
                                                 ml_invoke_module
 
 Content              Semaphore Classification   semaphore_classify        semaphore_status
-classification /     Server (Progress Data      semaphore_publish_sets          semaphore_publish_sets
-auto-tagging         Platform) via Flux or      flux_import (extra_args:  semaphore_classes
-(taxonomy /          SJS reprocess transform    --classifier-host etc.)
-concept extraction)                             flux_reprocess
+classification /     Server (CLS) + KMM         semaphore_publish_sets    semaphore_publish_sets
+auto-tagging         taxonomy authoring         semaphore_classes         semaphore_classes
+(taxonomy /          (Progress Data Platform)   semaphore_kmm_models_list semaphore_kmm_models_list
+concept extraction)  Classify via Flux or       semaphore_kmm_model_create
+                     pre-classify app-side      semaphore_kmm_skos_load
+                                                semaphore_kmm_sparql
+                                                flux_import (extra_args:
+                                                  --classifier-host,
+                                                  --classifier-port,
+                                                  --classifier-path /,
+                                                  --classifier-http)
+                                                flux_reprocess
                                                 semaphore_integration_advisor (prompt)
 
 Database admin /     Management API             ml_cluster_status         —
@@ -424,11 +432,30 @@ SURFACING SEMAPHORE CATEGORIES IN MARKLOGIC SEARCH:
   • FastTrack FacetFilters can surface category facets directly from range indexes
 
 TOOLS FOR SEMAPHORE:
-  semaphore_status          — check connectivity
-  semaphore_publish_sets          — list available taxonomies/models
-  semaphore_classify        — classify sample text (exploratory / small scale)
-  semaphore_classes — browse taxonomy concepts (design facets, understand hierarchy)
+  semaphore_status              — check CLS connectivity and version
+  semaphore_publish_sets        — list active taxonomy rule sets in CLS
+  semaphore_classes             — browse classification class names in active rulenet
+  semaphore_classify            — classify sample text (exploratory / small scale)
+  semaphore_kmm_models_list     — list all taxonomy models in KMM/Studio
+  semaphore_kmm_model_create    — create a new model container in KMM
+  semaphore_kmm_skos_load       — load a SKOS vocabulary from a public URL into KMM
+  semaphore_kmm_sparql          — query model content via SPARQL SELECT
   semaphore_integration_advisor (prompt) — full architectural design guidance
+
+KMM AUTHENTICATION NOTE:
+  KMM uses Java EE form auth (not Basic auth). The MCP server handles the two-step
+  login automatically (POST /j_security_check → JSESSIONID → GET /api/token).
+  Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD in the MCP server .env.
+
+FLUX CLASSIFIER FLAGS:
+  --classifier-host <host>  --classifier-port <port>  --classifier-path /
+  Add --classifier-http for plain-HTTP CLS endpoints (required unless SEMAPHORE_SSL=true).
+  The correct path is /  (not /api/v1/classify).
+
+KUBERNETES NETWORK NOTE:
+  xdmp.httpPost() from MarkLogic pods may be blocked by network policy from reaching
+  the CLS. Prefer Flux (which runs outside MarkLogic) for inline classification, or
+  pre-classify from the application/MCP tier before document insertion.
 
 
 ── TOOL GROUPS AT A GLANCE ─────────────────────────────────────────────────────
@@ -463,8 +490,10 @@ FastTrack (2–4, config-dependent):
                ml_search_options_list, ml_search_options_get
                [write-enabled] ml_search_options_put, ml_search_options_delete
 
-Semaphore (4): semaphore_status, semaphore_publish_sets, semaphore_classes,
-               semaphore_classify
+Semaphore (8): semaphore_status, semaphore_publish_sets, semaphore_classes,
+               semaphore_classify,
+               semaphore_kmm_models_list, semaphore_kmm_model_create,
+               semaphore_kmm_skos_load, semaphore_kmm_sparql
 
 Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                tde_schema_generator, rest_extension_generator,
