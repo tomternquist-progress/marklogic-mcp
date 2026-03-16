@@ -325,7 +325,7 @@ function classify(task: string): ToolRecipe[] {
       },
       rationale:
         "MarkLogic's preferred pattern is entity-oriented: one document per entity, " +
-        "with subject IRI = document URI, and triples embedded inside the document as 'sem:triples'. " +
+        "with subject IRI = document URI, and triples embedded inside the document using the 'triple' JSON key (unmanaged format). " +
         "This co-locates structured properties and graph edges in one fragment — cts.search and SPARQL " +
         "both find the entity. Raw RDF files are best imported as managed triples first (fast, lossless), " +
         "then reprocessed into entity documents grouped by subject IRI.",

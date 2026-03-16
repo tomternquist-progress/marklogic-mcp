@@ -195,9 +195,35 @@ Vectors     float[] field in doc        ml_vector_search        TDE view +
 TRIPLE DESIGN — ENTITY-ORIENTED PATTERN (preferred):
   Goal: one document per entity; document URI = entity IRI; triples embedded inside.
   /entities/person/12345.json  ← document holds all entity properties + triples
-  "sem:triples": [{ "subject":"http://example.org/person/12345",
-                    "predicate":"http://schema.org/knows",
-                    "object":"http://example.org/person/67890" }]
+
+  JSON UNMANAGED TRIPLE FORMAT — "triples" (plural) for the array key; each element wrapped in "triple":
+  {
+    "id": "12345", "name": "Alice",
+    "triples": [
+      { "triple": { "subject":   "http://example.org/person/12345",
+                    "predicate": "http://schema.org/knows",
+                    "object":    "http://example.org/person/67890" } },
+      { "triple": { "subject":   "http://example.org/person/12345",
+                    "predicate": "http://schema.org/name",
+                    "object":    { "datatype": "http://www.w3.org/2001/XMLSchema#string",
+                                   "value": "Alice" } } }
+    ]
+  }
+  IRI objects → plain URI string. Literal objects → {"datatype":"...","value":"..."}.
+  CAUTION: "sem:triples" as the JSON root key = MANAGED triples (raw RDF doc), not embedded.
+
+  XML UNMANAGED TRIPLE FORMAT — sem:triple element (namespace http://marklogic.com/semantics):
+  <doc xmlns:sem="http://marklogic.com/semantics">
+    <id>12345</id>
+    <sem:triple>
+      <sem:subject>http://example.org/person/12345</sem:subject>
+      <sem:predicate>http://schema.org/knows</sem:predicate>
+      <sem:object>http://example.org/person/67890</sem:object>
+    </sem:triple>
+  </doc>
+  Outer <sem:triples> wrapper is optional; <sem:triple> elements are required.
+  CAUTION: a document whose ROOT element is <sem:triples> = MANAGED triples, not embedded.
+
   Benefits: one fragment holds structured data AND graph edges. cts.search and
   SPARQL both find it. TDE can expose both as Optic rows.
 
@@ -207,7 +233,7 @@ TRIPLE DESIGN — MANAGED TRIPLES THEN REPROCESS (import-first path):
           named graphs (one graph per source file). Fast initial load.
   Step 2: ml_sparql_query to GROUP triples by subject IRI and inspect structure.
   Step 3: flux_reprocess → SJS transform groups triples by IRI and writes one
-          entity document per subject with embedded sem:triples. Group by IRI
+          entity document per subject with embedded triples ("triple" key). Group by IRI
           where reasonable — avoid docs with thousands of unrelated triples.
   Step 4: ml_sparql_query continues to work; embedded triples are found automatically.
   Rule: one entity = one document = one IRI.

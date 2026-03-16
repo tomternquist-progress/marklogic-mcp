@@ -427,7 +427,7 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
     "RDF USE CASE — building hybrid entity documents from a named graph:\n" +
     "  Load RDF into a named graph via ml_graph_put or flux_import (import-rdf-files), then reprocess\n" +
     "  the managed triplestore documents. The module reads triples via sem.sparql() and writes JSON\n" +
-    "  entity documents with embedded sem:triples for TDE indexing.",
+    "  entity documents with embedded triples (JSON 'triple' key, unmanaged format) for TDE indexing.",
     {
       invoke_module: z.string().describe("URI of the transformation module in the Modules database, e.g. /transforms/enrich.sjs"),
       collections: z.array(z.string()).optional().describe("Reprocess documents in these collections"),

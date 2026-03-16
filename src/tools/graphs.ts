@@ -8,8 +8,12 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
     "ml_sparql_query",
     "Execute a SPARQL 1.1 SELECT, CONSTRUCT, ASK, or DESCRIBE query against the MarkLogic triple store.\n\n" +
     "TRIPLE STORAGE PATTERNS — MarkLogic supports three layouts, all queryable by this tool:\n" +
-    "  Embedded (co-location): triples live inside the source document as sem:triple elements (XML)\n" +
-    "  or a 'sem:triples' JSON array. SPARQL finds them automatically — no separate load step.\n" +
+    "  Embedded / unmanaged: triples live inside the source document as <sem:triple> elements (XML,\n" +
+    "  namespace http://marklogic.com/semantics) or as a JSON 'triples' array (plural key) where each\n" +
+    "  element is wrapped in a 'triple' key: {\"triples\":[{\"triple\":{\"subject\":\"...\",\"predicate\":\"...\",\n" +
+    "  \"object\":\"...\"}}]}. IRI objects are plain URI strings; literals use {\"datatype\":\"...\",\"value\":\"...\"}.\n" +
+    "  CAUTION: 'sem:triples' (plural) as the JSON root key creates MANAGED triples, not embedded ones.\n" +
+    "  SPARQL finds embedded triples automatically — no separate load step.\n" +
     "  Named graphs: standalone RDF documents loaded via flux_import (subcommand: import-rdf-files)\n" +
     "  or ml_document_put. Query with FROM NAMED <graph-uri>. Use for ontologies and taxonomies.\n" +
     "  Hybrid: document holds entity properties + named graph holds cross-entity relationships,\n" +
