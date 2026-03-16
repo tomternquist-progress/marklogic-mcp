@@ -91,7 +91,16 @@ Export for BI        Optic → tabular export     ml_export_tabular         ml_s
                                                 flux_export
 
 Graph / entity       Triple store / SPARQL      ml_sparql_query           ml_graphs_list
-relationships                                   (sparql_query_builder)
+relationships        + entity-oriented docs     (sparql_query_builder)
+                                                data_modeling_advisor
+
+Vector similarity    Optic vec:cosine-sim       ml_vector_search          ml_views_list
+/ RAG / embeddings   over TDE vec:vector col    ml_optic_query            ml_schema_get_tde
+(ML 12+)                                        data_modeling_advisor
+
+Multi-model design   Document + Triple +        data_modeling_advisor     ml_collections_list
+(combined)           Vector architecture        ml_vector_search          ml_graphs_list
+                                                ml_sparql_query
 
 Time-series          Range index / values API   ml_timeseries_query       ml_indexes_list
                                                 ml_values_query           ml_collections_list
@@ -124,6 +133,59 @@ Data import design   Import advisor prompt      data_import_advisor       —
 
 QuickSight design    Dataset/dashboard prompts  quicksight_dataset_designer ml_schema_discover
                                                 quicksight_dashboard_planner
+
+
+── MULTI-MODEL DATA DESIGN ─────────────────────────────────────────────────────
+
+MarkLogic stores Documents, Triples (RDF), and Vectors in the same database, all
+query-able together. Choose the model(s) that match your data's structure.
+Use the data_modeling_advisor prompt for a full design plan.
+
+MODEL       STORE AS                    PRIMARY QUERY           PREREQUISITE
+────────────────────────────────────────────────────────────────────────────────
+Documents   JSON / XML in collections   ml_search               None
+                                        ml_optic_query          TDE view
+
+Triples     Embedded in entity docs     ml_sparql_query         None (embedded)
+(RDF)       OR managed named graphs     ml_sparql_query         Named graph
+
+Vectors     float[] field in doc        ml_vector_search        TDE view +
+(ML 12+)    → TDE maps to vec:vector    ml_optic_query          vec:vector col
+
+
+TRIPLE DESIGN — ENTITY-ORIENTED PATTERN (preferred):
+  Goal: one document per entity; document URI = entity IRI; triples embedded inside.
+  /entities/person/12345.json  ← document holds all entity properties + triples
+  "sem:triples": [{ "subject":"http://example.org/person/12345",
+                    "predicate":"http://schema.org/knows",
+                    "object":"http://example.org/person/67890" }]
+  Benefits: one fragment holds structured data AND graph edges. cts.search and
+  SPARQL both find it. TDE can expose both as Optic rows.
+
+TRIPLE DESIGN — MANAGED TRIPLES THEN REPROCESS (import-first path):
+  When you have raw RDF files (Turtle, N-Triples, RDF/XML):
+  Step 1: flux_import subcommand=import-rdf-files → loads as managed triples in
+          named graphs (one graph per source file). Fast initial load.
+  Step 2: ml_sparql_query to GROUP triples by subject IRI and inspect structure.
+  Step 3: flux_reprocess → SJS transform groups triples by IRI and writes one
+          entity document per subject with embedded sem:triples. Group by IRI
+          where reasonable — avoid docs with thousands of unrelated triples.
+  Step 4: ml_sparql_query continues to work; embedded triples are found automatically.
+  Rule: one entity = one document = one IRI.
+
+VECTOR DESIGN (MarkLogic 12+, no eval required):
+  Step 1: Add "embedding": [float, ...] to documents when inserting.
+  Step 2: TDE template column: {"name":"embedding","scalar":"vec:vector","val":"embedding"}
+  Step 3: ml_vector_search(schema, view, vector_column, query_vector, k)
+  Step 4: For hybrid (filter + vector): ml_optic_query with
+          bind(as("score", vec:cosine-similarity(col("embedding"), vec:vector([...]))))
+          + where() pre-filter + order-by(desc("score")) + limit(k)
+
+MULTI-MODEL QUERY COMBINATIONS:
+  Documents + Triples  → ml_search for text, ml_sparql_query for graph traversal
+  Documents + Vectors  → ml_vector_search for similarity, ml_document_get for content
+  Triples + Vectors    → ml_vector_search finds similar entities; SPARQL traverses edges
+  All three (RAG)      → ml_vector_search → retrieve entity docs → SPARQL for context
 
 
 ── OPTIC vs CTS.SEARCH SELECTION GUIDE ────────────────────────────────────────
@@ -199,7 +261,7 @@ Graph (2):     ml_sparql_query, ml_graphs_list
 QuickSight (4): ml_aggregate_query, ml_timeseries_query, ml_export_tabular,
                 ml_facets_query
 
-Optic (1):     ml_optic_query
+Optic (3):     ml_optic_query, ml_views_list, ml_vector_search
 
 Flux (7):      flux_import, flux_export, flux_copy, flux_reprocess,
                flux_preview, flux_help, flux_status

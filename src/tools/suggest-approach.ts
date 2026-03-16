@@ -286,7 +286,115 @@ function classify(task: string): ToolRecipe[] {
         database: "<database>",
       },
       rationale: "ml_sparql_query executes SPARQL 1.1 against MarkLogic's built-in triple store.",
-      warnings: ["Run ml_graphs_list first to discover named graph URIs."],
+      warnings: [
+        "Run ml_graphs_list first to discover named graph URIs.",
+        "For raw RDF file imports, use flux_import (subcommand=import-rdf-files) then flux_reprocess " +
+          "to convert managed triples into entity-oriented documents (one doc per subject IRI).",
+      ],
+    });
+  }
+
+  // ── RDF / knowledge graph modelling ─────────────────────────────────────────
+  // Detect goals about DESIGNING or LOADING entity/relationship data, not just querying.
+  const isRdfModeling =
+    /knowledge.?graph|entity.*relation|ontolog|link.*data|rdf.*import|turtle|n.?triple|rdf.*model|load.*rdf|import.*rdf/.test(t) &&
+    !/sparql|select|where|query/.test(t);
+
+  if (isRdfModeling) {
+    results.push({
+      tool: "data_modeling_advisor (prompt) + flux_import + flux_reprocess",
+      description: "Design and load entity-oriented RDF data into MarkLogic",
+      use_when: ["rdf-modeling", "knowledge-graph-design", "entity-oriented-documents"],
+      recipe: {
+        step1_design: "Call data_modeling_advisor prompt with your domain description",
+        step2_import: {
+          tool: "flux_import",
+          subcommand: "import-rdf-files",
+          path: "<local-path-or-url-to-turtle-or-ntriples>",
+          collections: ["managed-triples"],
+        },
+        step3_inspect: {
+          tool: "ml_sparql_query",
+          sparql: "SELECT DISTINCT ?type (COUNT(?s) AS ?count) WHERE { ?s a ?type } GROUP BY ?type ORDER BY DESC(?count)",
+        },
+        step4_reprocess: {
+          tool: "flux_reprocess",
+          collections: ["managed-triples"],
+          javascript_transform: "// Group triples by IRI, write one entity doc per subject",
+        },
+      },
+      rationale:
+        "MarkLogic's preferred pattern is entity-oriented: one document per entity, " +
+        "with subject IRI = document URI, and triples embedded inside the document as 'sem:triples'. " +
+        "This co-locates structured properties and graph edges in one fragment — cts.search and SPARQL " +
+        "both find the entity. Raw RDF files are best imported as managed triples first (fast, lossless), " +
+        "then reprocessed into entity documents grouped by subject IRI.",
+      warnings: [
+        "Do NOT import raw RDF and leave it as managed triples — cts.search will not find entity documents.",
+        "Group triples by IRI where reasonable. Do not create documents with thousands of triples from unrelated subjects.",
+        "Use the data_modeling_advisor prompt to design the entity document structure before importing.",
+      ],
+    });
+  }
+
+  // ── Vector similarity search / embeddings / RAG ─────────────────────────────
+  const isVector =
+    /vector|embedding|similar|nearest.neighbor|knn\b|semantic.search|rag\b|cosine|retrieval.augment|recommend.*based.*on|find.*like/.test(t);
+
+  if (isVector) {
+    results.push({
+      tool: "ml_vector_search",
+      description: "Find k nearest neighbours by cosine similarity over a TDE vec:vector column",
+      use_when: ["vector-search", "knn", "rag", "embeddings", "semantic-similarity"],
+      recipe: {
+        schema: "<schema>",
+        view: "<view>",
+        vector_column: "<embedding-column-name>",
+        query_vector: ["<float>", "..."],
+        k: 10,
+      },
+      rationale:
+        "ml_vector_search uses Optic vec:cosine-similarity over a TDE view — no eval required. " +
+        "Store your embeddings as a JSON float array in each document, then define a TDE column " +
+        "with scalar type 'vec:vector'. For hybrid queries (filter by category THEN find similar), " +
+        "use ml_optic_query directly with bind(vec:cosine-similarity(...)) + where() + order-by. " +
+        "MarkLogic 12+ required.",
+      not_this_tool:
+        "Do NOT use ml_eval_javascript for vector search — use ml_vector_search (Optic path) instead.",
+      warnings: [
+        "Requires a TDE view with a vec:vector column — use ml_views_list to verify.",
+        "query_vector dimensions must match stored vector dimensions exactly.",
+        "Use the data_modeling_advisor prompt to design the embedding storage and TDE schema.",
+        "For large collections, add a where() pre-filter before the cosine similarity computation.",
+      ],
+    });
+  }
+
+  // ── Multi-model design (Documents + Triples + Vectors) ───────────────────────
+  const isMultiModel =
+    (isGraph || isRdfModeling || isVector) &&
+    (isBulkImport || isSearch || isAnalytics) &&
+    !isHybrid;
+
+  if (isMultiModel) {
+    results.push({
+      tool: "data_modeling_advisor (prompt)",
+      description: "Multi-model architecture design for Documents + Triples + Vectors",
+      use_when: ["multi-model", "knowledge-graph", "rag-architecture", "combined-models"],
+      recipe: {
+        prompt: "data_modeling_advisor",
+        domain: "<describe your entities, relationships, and query goals>",
+        models: ["documents", "triples", "vectors"],
+        query_goals: "<search, graph traversal, similarity search, aggregation>",
+      },
+      rationale:
+        "When your problem combines full-text search, entity graph traversal, and vector similarity, " +
+        "start with data_modeling_advisor to design the combined architecture before importing any data. " +
+        "This prevents costly re-imports caused by a mismatched data model.",
+      warnings: [
+        "Design the entity document structure before importing — the reprocess step is avoidable with upfront design.",
+        "Vectors require MarkLogic 12+; triples and documents work on all ML versions.",
+      ],
     });
   }
 

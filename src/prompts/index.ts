@@ -255,6 +255,152 @@ Output only the SPARQL query.`,
     })
   );
 
+  // ── Multi-Model Data Modeling Advisor ─────────────────────────────────────
+
+  server.prompt(
+    "data_modeling_advisor",
+    "Design a MarkLogic multi-model data architecture covering Documents, Triples (RDF), and Vectors. " +
+    "Returns a structured plan: model selection, storage layout, TDE design, query approach per model, " +
+    "import sequence, and pitfalls. Emphasises the entity-oriented document pattern for RDF data.",
+    {
+      domain: z.string().describe("What business data you are modelling — describe entities, relationships, and the kinds of queries the data must support"),
+      models: z.array(z.enum(["documents", "triples", "vectors", "all"])).optional().describe("Which MarkLogic model types are involved (omit to let the advisor choose)"),
+      data_sources: z.string().optional().describe("Where data comes from: JSON/CSV feeds, RDF/Turtle files, relational tables, embedding APIs, etc."),
+      query_goals: z.string().optional().describe("Key query patterns: full-text search, similarity search, graph traversal, aggregation, RAG, etc."),
+      database: z.string().optional().describe("Target MarkLogic database, if known"),
+    },
+    ({ domain, models, data_sources, query_goals, database }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a MarkLogic multi-model data architect. Design a MarkLogic data model for the
+following domain. Do NOT call any tools — this is a design planning step only.
+
+═══════════════════════════════════════════
+DOMAIN
+═══════════════════════════════════════════
+${domain}
+
+KNOWN CONTEXT
+  Database     : ${database ?? "(not yet known)"}
+  Models in use: ${models ? models.join(", ") : "(advisor to recommend)"}
+  Data sources : ${data_sources ?? "(not specified)"}
+  Query goals  : ${query_goals ?? "(not specified — infer from domain)"}
+
+═══════════════════════════════════════════
+PRODUCE THE FOLLOWING DESIGN
+═══════════════════════════════════════════
+
+## 1. MODEL SELECTION
+Recommend which MarkLogic models to use (Documents / Triples / Vectors / combination).
+For each model selected:
+- State WHY it fits this domain
+- State what data or relationships it will hold
+- State what query capability it unlocks
+
+If models are NOT needed, explain what to use instead:
+- No need for Triples if relationships are simple parent-child (use document nesting)
+- No need for Vectors if similarity search is not a requirement
+- No need for Optic/TDE if analytical aggregation is not required
+
+## 2. DOCUMENT DESIGN
+Describe the document structure:
+- Collection strategy: which collections, URI patterns (/entities/{type}/{id}.json)
+- JSON field structure for each major entity type
+- Which fields should be indexed (range index candidates for ml_values_query / ml_search filters)
+- TDE view candidates (which fields need GROUP BY or JOIN)
+
+## 3. TRIPLE DESIGN (if applicable)
+MarkLogic's preferred pattern is entity-oriented: one document per entity, with triples
+embedded inside the document. The document URI equals the entity's IRI.
+
+### 3a. Entity-Oriented Pattern (preferred)
+Describe:
+- How to assign one document per entity (URI = IRI)
+- Which relationships to model as embedded sem:triple objects in a "sem:triples" array
+- Example JSON structure with both entity properties AND embedded triples in the same doc
+- How cts.search and ml_sparql_query both find the entity via this co-located layout
+
+### 3b. Managed Triples → Reprocess (when raw RDF files are the source)
+If the data source is Turtle, N-Triples, or RDF/XML files, describe the two-step path:
+  Step 1: flux_import with subcommand=import-rdf-files → loads as managed triples in
+          named graphs. Fast, lossless initial load. Inspectable with ml_sparql_query.
+  Step 2: flux_reprocess with an SJS transform that:
+    - Groups triples by subject IRI (SELECT ?s WHERE { ?s ?p ?o } GROUP BY ?s)
+    - Writes one JSON document per IRI at /entities/{type}/{localname}.json
+    - Embeds the triples as "sem:triples" in the document
+    - Assigns the document to an entity collection
+  Rule: group by IRI where reasonable. Avoid creating documents that aggregate
+  thousands of triples from unrelated subjects.
+
+### 3c. SPARQL Query Patterns
+Show example SPARQL for the key relationship queries in this domain.
+
+## 4. VECTOR DESIGN (if applicable, MarkLogic 12+)
+Describe:
+- Which entity type needs embeddings and why (semantic search, RAG, recommendations)
+- Which text fields to embed (title, description, full content, combined)
+- Recommended embedding dimensionality and model (e.g. 768d BERT, 1536d OpenAI)
+- Where to store the embedding in the document ("embedding": [float, ...] JSON array)
+- TDE column mapping: {"name":"embedding","scalar":"vec:vector","val":"embedding"}
+- How to query: ml_vector_search(schema, view, "embedding", queryVector, k)
+- How to combine with structured filters: ml_optic_query with bind(vec:cosine-similarity)
+  + where() for pre-filtering (e.g. filter by category before computing similarity)
+
+## 5. TDE SCHEMA DESIGN
+Design the TDE view(s) needed:
+- Schema name and view name(s)
+- Columns per view: name, scalar type, val (JSON path)
+- Flag any vec:vector columns for vector search
+- Collection context for each template
+- How to install: ml_document_put (database='Schemas', collection='http://marklogic.com/xdmp/tde')
+- Validation: ml_tde_validate before installing
+
+Show the TDE JSON template structure (not full, but key sections).
+
+## 6. IMPORT SEQUENCE
+Step-by-step import plan using MCP tools:
+  Step 1: <tool> — purpose and key parameters
+  Step 2: <tool> — purpose and key parameters
+  ...
+Consider:
+- flux_import for bulk document loads (subcommand based on format)
+- flux_import subcommand=import-rdf-files for raw RDF
+- flux_reprocess for the managed-triples → entity-doc transform
+- ml_document_put for TDE template installation
+- ml_tde_validate to verify the schema before querying
+- ml_reindex_status to wait for TDE indexing to complete
+
+## 7. QUERY PLAN
+For each stated query goal, show which MCP tool to use and why:
+  Goal: "..."
+    Tool: ml_vector_search / ml_sparql_query / ml_search / ml_optic_query
+    Why: ...
+    Key parameters: ...
+
+Highlight any multi-model query combinations (e.g. vector similarity → SPARQL traversal).
+
+## 8. PITFALLS TO AVOID
+List 4–6 specific, concrete pitfalls for this domain:
+- Triple: "Importing raw RDF without reprocessing leaves triples as managed triples in named
+  graphs — cts.search will NOT find them as entity documents"
+- Triple: "Grouping unrelated subjects into one document creates oversized documents that
+  are slow to update and hard to secure with per-entity permissions"
+- Vector: "TDE vec:vector column requires scalar type 'vec:vector' — not 'string' or 'double'"
+- Vector: "Dimensionality of query_vector must match stored vectors exactly or Optic will error"
+- Vector: "Computing cosine similarity over millions of rows without pre-filtering is slow —
+  always add a where() clause before the bind(vec:cosine-similarity(...)) step"
+- General: "Never assume collection names — always run ml_collections_list first"
+
+Be specific, use actual MarkLogic function names (sem:triple, vec:vector, vec:cosine-similarity,
+op:from-sparql, flux_reprocess), and reference actual MCP tools throughout.
+Do not give generic database design advice.`,
+        },
+      }],
+    })
+  );
+
   // ── Query Approach Advisor ─────────────────────────────────────────────────
 
   server.prompt(
@@ -420,8 +566,8 @@ PRODUCE THE FOLLOWING ANALYSIS
 ## 1. PROBLEM CLASSIFICATION
 Classify this goal into one or more of these MarkLogic problem types:
   data-loading | full-text-search | structured-filter | analytics-aggregation |
-  graph-query | time-series | schema-discovery | export-bi | code-generation |
-  admin-health | data-transform
+  graph-query | vector-similarity | multi-model-design | time-series |
+  schema-discovery | export-bi | code-generation | admin-health | data-transform
 
 ## 2. MARKLOGIC-NATIVE APPROACH
 For each problem type, state the idiomatic MarkLogic capability:
@@ -453,13 +599,14 @@ Available tools (use only these):
   Eval:       ml_eval_javascript, ml_eval_xquery, ml_invoke_module
   Graph:      ml_sparql_query, ml_graphs_list
   QuickSight: ml_aggregate_query, ml_timeseries_query, ml_export_tabular, ml_facets_query
-  Optic:      ml_optic_query
+  Optic:      ml_optic_query, ml_views_list, ml_vector_search
   Flux:       flux_import, flux_export, flux_copy, flux_reprocess, flux_preview, flux_help,
               flux_status
   Prompts:    xquery_function_generator, sjs_module_generator, tde_schema_generator,
               rest_extension_generator, structured_query_builder, optic_query_builder,
-              sparql_query_builder, query_approach_advisor, data_import_advisor,
-              gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner
+              sparql_query_builder, query_approach_advisor, data_modeling_advisor,
+              data_import_advisor, gdelt_import, quicksight_dataset_designer,
+              quicksight_dashboard_planner
 
 ## 5. PITFALLS TO AVOID
 List 2–5 specific, concrete pitfalls for this goal. Examples of good pitfalls:

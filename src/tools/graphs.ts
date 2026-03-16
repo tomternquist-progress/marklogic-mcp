@@ -6,7 +6,18 @@ import { toToolError } from "../utils/errors.js";
 export function registerGraphTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
     "ml_sparql_query",
-    "Execute a SPARQL SELECT or CONSTRUCT query against the MarkLogic triple store (semantic graph database).",
+    "Execute a SPARQL 1.1 SELECT, CONSTRUCT, ASK, or DESCRIBE query against the MarkLogic triple store.\n\n" +
+    "TRIPLE STORAGE PATTERNS — MarkLogic supports three layouts, all queryable by this tool:\n" +
+    "  Embedded (co-location): triples live inside the source document as sem:triple elements (XML)\n" +
+    "  or a 'sem:triples' JSON array. SPARQL finds them automatically — no separate load step.\n" +
+    "  Named graphs: standalone RDF documents loaded via flux_import (subcommand: import-rdf-files)\n" +
+    "  or ml_document_put. Query with FROM NAMED <graph-uri>. Use for ontologies and taxonomies.\n" +
+    "  Hybrid: document holds entity properties + named graph holds cross-entity relationships,\n" +
+    "  linked via subject URI = document URI. Most powerful pattern for knowledge graphs.\n\n" +
+    "DISCOVERY: Use ml_graphs_list to find named graph URIs before writing your query.\n\n" +
+    "COMBINING WITH DOCUMENTS (multi-model): For joining SPARQL results with TDE row views\n" +
+    "(e.g. enrich graph results with document fields), use ml_optic_query with op:from-sparql\n" +
+    "as the source, joined to op:from-view via a shared URI column.",
     {
       sparql: z.string().describe("SPARQL query string (SELECT, CONSTRUCT, ASK, or DESCRIBE)"),
       default_graph: z.string().optional().describe("Default named graph URI"),
@@ -25,7 +36,10 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
 
   server.tool(
     "ml_graphs_list",
-    "List named graphs stored in the MarkLogic triple store.",
+    "List named graphs stored in the MarkLogic triple store. Use this to discover named graph URIs " +
+    "before querying with ml_sparql_query. Each URI typically corresponds to an imported RDF file or " +
+    "a group of related triples. Also reveals managed-triple graphs (loaded as raw RDF) that may " +
+    "be candidates for reprocessing into entity-oriented documents via flux_reprocess.",
     {
       start: z.number().int().positive().optional().describe("Pagination start (default: 1)"),
       page_length: z.number().int().positive().max(200).optional().describe("Results per page (default: 20)"),
