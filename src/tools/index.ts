@@ -11,6 +11,7 @@ import { registerQuickSightTools } from "./quicksight.js";
 import { registerOpticTools } from "./optic.js";
 import { registerFluxTools } from "./flux.js";
 import { registerSuggestApproachTool } from "./suggest-approach.js";
+import { registerFastTrackTools } from "./fasttrack.js";
 
 export function registerAllTools(server: McpServer, clients: MarkLogicClients, config: AppConfig): void {
   registerSuggestApproachTool(server);
@@ -23,4 +24,5 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerQuickSightTools(server, clients);
   registerOpticTools(server, clients);
   registerFluxTools(server, clients);
+  registerFastTrackTools(server, clients, config.safety.readonly);
 }

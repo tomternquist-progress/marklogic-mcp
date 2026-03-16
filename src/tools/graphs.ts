@@ -34,7 +34,11 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
     "  • For chained joins (fromView + riskVocab + catVocab), the second p.on() must also use p.schemaCol().\n" +
     "  • IRI TYPE MISMATCH (silent zero rows): op.fromSPARQL returns IRI-typed variables as sem.iri, NOT\n" +
     "    xsd:string. Joining a SPARQL IRI column directly against a TDE string column produces 0 rows with\n" +
-    "    no error. Fix: add BIND(STR(?iriVar) AS ?strVar) in the SPARQL and join on ?strVar instead.",
+    "    no error. Fix: add BIND(STR(?iriVar) AS ?strVar) in the SPARQL and join on ?strVar instead.\n" +
+    "  • BIND PLACEMENT: BIND(STR(?iriVar) AS ?strVar) must be placed OUTSIDE the GRAPH {} block, not\n" +
+    "    inside it. Variables bound inside a GRAPH pattern are scoped to that pattern and do NOT appear\n" +
+    "    as top-level SELECT columns — op.fromSPARQL will throw SQL-NOCOLUMN on the join. Correct form:\n" +
+    "    GRAPH <g> { ?s ?p ?o } BIND(STR(?s) AS ?sStr)   ← BIND after the closing brace of GRAPH.",
     {
       sparql: z.string().describe("SPARQL query string (SELECT, CONSTRUCT, ASK, or DESCRIBE)"),
       default_graph: z.string().optional().describe("Default named graph URI"),

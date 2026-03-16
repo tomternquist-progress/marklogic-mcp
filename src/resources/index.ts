@@ -8,7 +8,7 @@ MARKLOGIC MCP — PROBLEM-FIRST DECISION GUIDE
 
 READ THIS BEFORE CALLING ANY TOOL.
 
-This server exposes 42+ tools across 9 domains. Reaching for the wrong tool wastes
+This server exposes 46+ tools across 10 domains. Reaching for the wrong tool wastes
 round-trips and produces inferior results. Use the decision principles and
 problem→solution table below to identify the MarkLogic-native approach first, then
 select the matching tools.
@@ -61,6 +61,14 @@ pitfalls → alternatives) before any tool is called.
 9. ASK problem_advisor WHEN UNSURE
    If the goal does not map cleanly to the table below, invoke the problem_advisor
    prompt before picking any tool.
+
+10. FASTTRACK APPS START WITH SEARCH OPTIONS
+    FastTrack UI widgets (SearchBar, FacetFilters, Geospatial Map, Timeline) are
+    configured entirely through named search-options sets stored in MarkLogic.
+    Use ml_search_options_list to see existing configs, ml_search_options_get to
+    inspect them, and the fasttrack_search_designer prompt to generate a new one.
+    Constraints in the options require pre-existing range or geospatial indexes —
+    always call ml_indexes_list before designing constraints.
 
 
 ── PROBLEM → MARKLOGIC-NATIVE SOLUTION TABLE ──────────────────────────────────
@@ -141,6 +149,13 @@ URI design           URI designer prompt        uri_designer              —
 
 QuickSight design    Dataset/dashboard prompts  quicksight_dataset_designer ml_schema_discover
                                                 quicksight_dashboard_planner
+
+FastTrack UI         Named search-options       ml_search_options_list    ml_indexes_list
+(SearchBar,          (constraints = facets;     ml_search_options_get     ml_collections_list
+ FacetFilters,       extract-document-data =    ml_search_options_put     ml_schema_discover
+ Map, Timeline)      result card fields;        fasttrack_search_designer
+                     geo/date constraints =     fasttrack_app_scaffold
+                     map/timeline widgets)
 
 
 ── URI DESIGN — ALWAYS CALL uri_designer BEFORE WRITING DOCUMENTS ─────────────
@@ -308,6 +323,40 @@ WHEN TO COMBINE THEM (hybrid):
   → Use the query_approach_advisor prompt to build the plan
 
 
+── PROJECT SETUP / DEPLOYMENT (ml-gradle) ──────────────────────────────────────
+
+MarkLogic projects are configured as code via ml-gradle. When advising on adding
+indexes, deploying TDE templates, or structuring a new project, use the
+project_setup_advisor prompt. Key concepts:
+
+STANDARD ml-gradle LAYOUT (src/main/):
+  ml-config/databases/content-database.json  ← range/geospatial indexes, lexicons
+  ml-config/security/{roles,users,privileges} ← app security
+  ml-config/servers/                          ← REST/XDBC server config
+  ml-schemas/tde/                             ← TDE templates; auto-assigned to
+                                                http://marklogic.com/xdmp/tde collection
+  ml-modules/root/                            ← XQuery/SJS application modules
+  gradle.properties                           ← mlHost, mlRestPort, mlUsername, etc.
+  gradle-{env}.properties                     ← per-environment overrides
+
+DATA HUB FRAMEWORK (DHF) ADDITIONS:
+  entities/            ← .entity.json descriptors; DHF auto-generates TDE from these
+  flows/               ← ingestion / mapping / mastering orchestration
+  mappings/            ← field-to-entity-model mappings
+  hub-internal-config/ ← SYSTEM-MANAGED — do not edit (staging/jobs DBs, data-hub-* roles)
+  ml-config/           ← editable final-database.json and custom security
+
+KEY RULES:
+  • Indexes live in content-database.json — adding one requires a reindex
+    (check ml_reindex_status after deployment)
+  • TDE templates in ml-schemas/tde/ deploy via "gradle mlLoadSchemas" and are
+    immediately queryable without reimporting data
+  • DHF has two content DBs: data-hub-STAGING (raw) and data-hub-FINAL (mastered)
+  • Never manually edit hub-internal-config/ — it is managed by DHF tooling
+  • Use project_setup_advisor when the user asks to add indexes, set up a new DB,
+    or structure a new ml-gradle / DHF project
+
+
 ── TOOL GROUPS AT A GLANCE ─────────────────────────────────────────────────────
 
 Admin (7):     ml_cluster_status, ml_databases_list, ml_database_properties,
@@ -336,11 +385,16 @@ Optic (3):     ml_optic_query, ml_views_list, ml_vector_search
 Flux (7):      flux_import, flux_export, flux_copy, flux_reprocess,
                flux_preview, flux_help, flux_status
 
+FastTrack (2–4, config-dependent):
+               ml_search_options_list, ml_search_options_get
+               [write-enabled] ml_search_options_put, ml_search_options_delete
+
 Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                tde_schema_generator, rest_extension_generator,
                structured_query_builder, optic_query_builder, sparql_query_builder,
                query_approach_advisor, data_modeling_advisor, data_import_advisor,
                gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
+               fasttrack_search_designer, fasttrack_app_scaffold,
                problem_advisor
 `;
 

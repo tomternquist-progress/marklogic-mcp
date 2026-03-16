@@ -957,6 +957,244 @@ Be specific and actionable.`,
     })
   );
 
+  // ── FastTrack UI Prompts ───────────────────────────────────────────────────
+
+  server.prompt(
+    "fasttrack_search_designer",
+    "Design a MarkLogic search-options configuration and FastTrack React component scaffold " +
+    "for SearchBar, FacetFilters, Geospatial Map, and Timeline widgets. " +
+    "Given a collection and schema, generates the search options JSON and React component code.",
+    {
+      collection: z.string().describe("MarkLogic collection to build the FastTrack app for"),
+      schema: z.string().describe("JSON object describing fields: {fieldName: {type, indexed, sample}} — output of ml_schema_discover or ml_document_sample"),
+      indexes: z.string().optional().describe("JSON array of available indexes from ml_indexes_list — used to decide which constraints are safe to add"),
+      widgets: z.enum(["search-only", "search-facets", "search-facets-map", "search-facets-map-timeline", "full"]).optional().describe("Which FastTrack widgets to configure (default: search-facets)"),
+      options_name: z.string().optional().describe("Name to give the search options configuration (default: derived from collection)"),
+    },
+    ({ collection, schema, indexes, widgets, options_name }) => {
+      const optName = options_name ?? collection.replace(/[^a-zA-Z0-9-_]/g, "-").toLowerCase();
+      const widgetSet = widgets ?? "search-facets";
+      const includeMap = widgetSet === "search-facets-map" || widgetSet === "search-facets-map-timeline" || widgetSet === "full";
+      const includeTimeline = widgetSet === "search-facets-map-timeline" || widgetSet === "full";
+      return {
+        messages: [{
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `You are a MarkLogic FastTrack expert. Design a complete FastTrack search configuration for the following collection.
+
+**Collection:** ${collection}
+**Schema (fields):** ${schema}
+**Available indexes:** ${indexes ?? "(not provided — be conservative: only add range constraints for fields confirmed to have range indexes)"}
+**Widgets to configure:** ${widgetSet}
+**Search options name:** ${optName}
+
+## Your deliverables
+
+### 1. PREREQUISITES CHECKLIST
+List every index required by the constraints you plan to add. For each:
+- Field name and constraint type (range xs:string, range xs:date, geo-elem-pair, etc.)
+- Whether the index is confirmed in the provided indexes data or assumed
+- The ml_indexes_list filter to verify it (e.g., index_type='range-element')
+- If the index is MISSING: provide the ml_eval_javascript call to create it via the Admin module
+
+### 2. SEARCH OPTIONS JSON
+Generate the complete search options JSON to pass to ml_search_options_put:
+\`\`\`json
+{
+  "options": {
+    "return-results": true,
+    "return-facets": true,
+    "return-metrics": false,
+    "extract-document-data": {
+      "selected": "include",
+      "extract-path": ["/<field1>", "/<field2>", "..."]
+    },
+    "constraint": [
+      // one entry per FacetFilters facet — only string/numeric range constraints with confirmed indexes
+      // one geo-elem-pair entry if includeMap and geo fields exist
+      // one date/dateTime range entry if includeTimeline and date field exists
+    ]
+  }
+}
+\`\`\`
+
+Rules for constraints:
+- String facets: range type xs:string, facet=true, json-property=fieldName
+- Numeric facets: range type xs:decimal or xs:integer, facet=true, json-property=fieldName
+- Date range (timeline): range type xs:dateTime or xs:date, facet=true, json-property=fieldName, include 3–5 meaningful buckets
+- Geospatial (map): geo-elem-pair with parent/lat/lon — only if schema shows geo fields${includeMap ? "\n- INCLUDE a geo-elem-pair constraint for the map widget" : ""}${includeTimeline ? "\n- INCLUDE a date range constraint with buckets for the timeline widget" : ""}
+
+### 3. ml_search_options_put CALL
+The exact tool call parameters:
+\`\`\`json
+{
+  "name": "${optName}",
+  "options": { ... }
+}
+\`\`\`
+
+### 4. VERIFICATION CALL
+The ml_search call to verify facets and result fields work:
+\`\`\`json
+{
+  "q": "",
+  "options": "${optName}",
+  "collection": "${collection}",
+  "page_length": 3
+}
+\`\`\`
+
+### 5. FASTTRACK REACT COMPONENT SCAFFOLD
+Generate a complete React component that uses the FastTrack library. Include:
+- package.json dependency: "@progress/marklogic-fasttrack": "^1.0.0"
+- MarkLogicContext setup with connection props
+- SearchBar component with optionsName="${optName}"
+- FacetFilters component with the constraint names from section 2
+- Results component with the extracted fields from section 2${includeMap ? "\n- GeospatialMap component (if geo constraint was added)" : ""}${includeTimeline ? "\n- Timeline component (if date constraint was added)" : ""}
+
+Component structure example:
+\`\`\`tsx
+import { MarkLogicContext, SearchBar, FacetFilters, Results${includeMap ? ", GeospatialMap" : ""}${includeTimeline ? ", Timeline" : ""} } from "@progress/marklogic-fasttrack";
+
+export function ${collection.replace(/[^a-zA-Z0-9]/g, "")}SearchApp() {
+  return (
+    <MarkLogicContext
+      host={process.env.REACT_APP_ML_HOST ?? "localhost"}
+      port={Number(process.env.REACT_APP_ML_PORT ?? 8000)}
+      database="${collection}"
+    >
+      <div className="search-layout">
+        <SearchBar optionsName="${optName}" />
+        <div className="search-body">
+          <aside><FacetFilters optionsName="${optName}" /></aside>
+          <main><Results optionsName="${optName}" /></main>
+        </div>
+        {/* Add visualizations below */}
+      </div>
+    </MarkLogicContext>
+  );
+}
+\`\`\`
+
+Tailor the component to the actual constraint names from section 2.
+
+### 6. PITFALLS
+List 3–5 FastTrack-specific pitfalls relevant to this configuration, e.g.:
+- "Range constraint on an unindexed field will throw XDMP-BADLEXICO at search time"
+- "geo-elem-pair constraint requires the parent property to exist at the document root, not nested"
+- "FacetFilters expects constraint names to match exactly — case-sensitive"
+- "extract-path uses XPath (forward slash + property name), not dot notation"
+- "MarkLogicContext host/port must match the App Server that has the search options, not the Management port"
+
+Be specific to the fields in this schema.`,
+          },
+        }],
+      };
+    }
+  );
+
+  server.prompt(
+    "fasttrack_app_scaffold",
+    "Generate a complete FastTrack React application scaffold including project structure, " +
+    "MarkLogicContext configuration, environment setup, and all widget components for a given data model.",
+    {
+      app_name: z.string().describe("Name for the React application"),
+      collection: z.string().describe("Primary MarkLogic collection the app searches"),
+      ml_host: z.string().optional().describe("MarkLogic host (default: localhost)"),
+      ml_port: z.number().optional().describe("MarkLogic REST port (default: 8000)"),
+      search_options_name: z.string().optional().describe("Named search options configuration (created with ml_search_options_put)"),
+      features: z.array(z.enum(["search", "facets", "map", "timeline", "network-graph", "ai-summary"])).optional().describe("FastTrack features to include (default: search, facets)"),
+    },
+    ({ app_name, collection, ml_host, ml_port, search_options_name, features }) => {
+      const optName = search_options_name ?? `${collection.replace(/[^a-zA-Z0-9-_]/g, "-").toLowerCase()}-options`;
+      const featureSet = features ?? ["search", "facets"];
+      const hasMap = featureSet.includes("map");
+      const hasTimeline = featureSet.includes("timeline");
+      const hasNetwork = featureSet.includes("network-graph");
+      const hasAI = featureSet.includes("ai-summary");
+      return {
+        messages: [{
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `Generate a complete FastTrack React application scaffold for the following requirements:
+
+**App name:** ${app_name}
+**Primary collection:** ${collection}
+**MarkLogic host:** ${ml_host ?? "localhost"}
+**MarkLogic port:** ${ml_port ?? 8000}
+**Search options name:** ${optName}
+**Features:** ${featureSet.join(", ")}
+
+## Deliverables
+
+### 1. PROJECT STRUCTURE
+\`\`\`
+${app_name}/
+├── package.json
+├── .env.example
+├── src/
+│   ├── index.tsx
+│   ├── App.tsx
+│   ├── components/
+│   │   ├── SearchLayout.tsx       ← main search page
+│   │   ├── ResultCard.tsx         ← single result display
+│   │   └── ...                    ← one file per widget
+│   └── types/
+│       └── result.ts              ← TypeScript types for result docs
+└── public/
+    └── index.html
+\`\`\`
+
+### 2. package.json
+Include these dependencies:
+- react, react-dom, typescript
+- @progress/marklogic-fasttrack (latest)
+- @progress/kendo-react-* (peer deps required by FastTrack)
+
+### 3. .env.example
+\`\`\`
+REACT_APP_ML_HOST=${ml_host ?? "localhost"}
+REACT_APP_ML_PORT=${ml_port ?? 8000}
+REACT_APP_ML_DATABASE=${collection}
+REACT_APP_ML_OPTIONS=${optName}
+\`\`\`
+
+### 4. App.tsx
+Root component with MarkLogicContext wrapping the app.
+MarkLogicContext reads connection details from environment variables.
+
+### 5. SearchLayout.tsx
+Main search page component wiring together:
+- SearchBar (always)
+- FacetFilters (always)
+- Results with ResultCard (always)${hasMap ? "\n- GeospatialMap widget (synchronized with search state)" : ""}${hasTimeline ? "\n- Timeline widget (date range brush filter)" : ""}${hasNetwork ? "\n- NetworkGraph widget (entity relationship visualization)" : ""}${hasAI ? "\n- AISummary widget (AI-generated summary of results)" : ""}
+
+### 6. ResultCard.tsx
+A typed result card component. Include a TypeScript interface for the document shape
+and show the key fields from the extract-document-data configuration.
+
+### 7. SETUP INSTRUCTIONS
+Step-by-step to get the app running:
+1. Prerequisites MCP calls (ml_search_options_list to verify '${optName}' exists)
+2. npm create / npx create-react-app commands
+3. Environment variable setup
+4. npm start
+
+### 8. MARKLOGIC PREREQUISITE CHECKLIST
+Before the app will work, these must exist in MarkLogic:
+- Named search options '${optName}' — verify with ml_search_options_get name='${optName}'
+- Range indexes for all constraint fields — verify with ml_indexes_list
+- The '${collection}' collection must have documents — verify with ml_collections_list${hasMap ? "\n- Geospatial element pair index for map widget — verify with ml_indexes_list index_type='geospatial'" : ""}
+
+Generate all files with complete, working code. Do not use placeholder comments — write the actual implementation.`,
+          },
+        }],
+      };
+    }
+  );
+
   // ── Data Import Design Advisor ─────────────────────────────────────────────
 
   server.prompt(
