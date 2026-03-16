@@ -4,7 +4,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for Mar
 
 ## Features
 
-- **43 MCP tools** across 10 domains: admin, documents, search, schema, eval, SPARQL, Optic, QuickSight, Flux, and approach advisory
+- **44 MCP tools** across 10 domains: admin, documents, search, schema, eval, SPARQL, Optic (incl. vector search), QuickSight, Flux, and approach advisory
 - **5 MCP resources** including a machine-readable problem→solution decision guide
 - **13 MCP prompts** for query planning, code generation, import design, and BI integration
 - **Two transports**: stdio (Claude Desktop / local agents) and HTTP+SSE (remote agents, QuickSight)
@@ -52,6 +52,23 @@ Run these before writing any query or import plan.
 | Count distinct values / faceted nav | `ml_values_query`, `ml_facets_query` | Range or element word index |
 
 Use the `query_approach_advisor` prompt to get a concrete, filled-in query plan for any of these goals.
+
+### Multi-model data: Documents + Triples + Vectors
+
+MarkLogic stores all three model types natively. Use `data_modeling_advisor` for guided design.
+
+**Entity-oriented triple pattern (preferred)**
+
+Group triples by IRI so that each entity is one document. The document URI equals the entity IRI, and triples are embedded as a `sem:triples` array inside the document body. This avoids a separate triple store lookup for entity properties and keeps the document and its graph relationships co-located.
+
+**Importing raw RDF (two-step)**
+
+1. `flux_import` with subcommand `import-rdf-files` → loads triples as *managed triples* (quad store, one quad per document)
+2. `flux_reprocess` with an SJS transform that groups quads by subject IRI and writes one entity document per subject → produces the entity-oriented layout
+
+**Vector search**
+
+Store embeddings as a JSON array field. Define a TDE column with `scalar: "vec:vector"`. Query with `ml_vector_search` — it uses `vec:cosine-similarity` through the Optic API with no eval required. MarkLogic 12+ only.
 
 ### Bulk loading
 
@@ -205,13 +222,14 @@ Uses MarkLogic's universal index — no TDE or range index required for word que
 | `ml_collections_list` | Collections with document counts |
 | `ml_namespaces_list` | XML namespace registry |
 
-### Optic (2 tools)
+### Optic (3 tools)
 
-Row-based query engine over TDE views. Use for GROUP BY, aggregations, and joins. Requires a TDE template in the Schemas database — verify with `ml_views_list` before calling `ml_optic_query`.
+Row-based query engine over TDE views. Use for GROUP BY, aggregations, joins, and vector similarity search. Requires a TDE template in the Schemas database — verify with `ml_views_list` before calling `ml_optic_query`.
 
 | Tool | Description |
 |---|---|
 | `ml_optic_query` | Execute a serialised Optic plan (fromView, fromSearch, join, group-by, etc.) |
+| `ml_vector_search` | Find k nearest neighbours via cosine similarity over a TDE `vec:vector` column. MarkLogic 12+, no eval required. |
 | `ml_views_list` | List all available TDE schema.view pairs with the collections they cover |
 
 ### Eval *(requires `ML_ALLOW_EVAL=true`)*
@@ -226,10 +244,12 @@ Use as a last resort — ~10 KB script payload limit, no parallel batching.
 
 ### Graphs / SPARQL (2 tools)
 
+Queries MarkLogic's triple store. Supports three storage patterns: embedded triples (co-located inside the source document as a `sem:triples` array), named graphs (standalone RDF documents), and hybrid (entity document + named graph for cross-entity relationships).
+
 | Tool | Description |
 |---|---|
-| `ml_sparql_query` | SPARQL 1.1 SELECT/CONSTRUCT against the triple store |
-| `ml_graphs_list` | List named graphs |
+| `ml_sparql_query` | SPARQL 1.1 SELECT/CONSTRUCT/ASK/DESCRIBE against the triple store. Supports embedded, named-graph, and hybrid triple patterns. |
+| `ml_graphs_list` | List named graphs. Identifies managed-triple graphs that may be candidates for reprocessing into entity-oriented documents via `flux_reprocess`. |
 
 ### QuickSight Integration (4 tools)
 
@@ -297,6 +317,12 @@ Flux is the preferred path for all bulk data operations. It runs as a subprocess
 |---|---|
 | `data_import_advisor` | Choose the right import tool and strategy (always considers Flux first) |
 | `gdelt_import` | Ready-to-run `flux_import` call for a GDELT 1.0 event export date |
+
+### Multi-Model Design
+
+| Prompt | Purpose |
+|---|---|
+| `data_modeling_advisor` | Design a MarkLogic multi-model schema combining Documents, Triples, and Vectors. Returns 8-section plan: model selection, document design, triple design (entity-oriented pattern + managed-triples reprocess path), vector/embedding design, TDE schema, import sequence, query plan, pitfalls. |
 
 ### QuickSight
 
