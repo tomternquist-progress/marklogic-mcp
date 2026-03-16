@@ -301,12 +301,16 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
           const skippedNote = generated.skippedNullColumns.length > 0
             ? `\n  NOTE: ${generated.skippedNullColumns.length} always-null column(s) omitted from TDE (no non-null values in sample): ${generated.skippedNullColumns.join(", ")}.`
             : "";
+          const skippedInvalidNote = generated.skippedInvalidColumns.length > 0
+            ? `\n  NOTE: ${generated.skippedInvalidColumns.length} column(s) omitted — names start with ':' or other invalid XPath-leading chars after sanitization (e.g. Socrata ':@computed_region_*' fields) and would break the view: ${generated.skippedInvalidColumns.join(", ")}.`
+            : "";
           tdeGenNote =
             `\n\nTDE AUTO-GENERATED: ${generated.uri}\n` +
             `  Schema: ${schemaName}, View: ${viewName}` +
             colSummary +
             sanitizedNote +
             skippedNote +
+            skippedInvalidNote +
             htmlWarning +
             `\n  Run ml_tde_validate with tde_uri="${generated.uri}" and collection="${targetCollection}" to verify.`;
         } catch (tdeErr) {

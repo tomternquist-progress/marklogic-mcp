@@ -65,6 +65,12 @@ export interface GeneratedTdeTemplate {
   sanitizedColumns: string[];
   /** Column names skipped because every sampled value was null (would contribute nothing to the view) */
   skippedNullColumns: string[];
+  /**
+   * Column names skipped because their sanitized path produces an invalid TDE val expression.
+   * For example, Socrata `:@computed_region_*` keys sanitize to `:_computed_region_*`, which
+   * starts with `:` — an invalid XPath step that MarkLogic rejects, causing SQL-TABLENOTFOUND.
+   */
+  skippedInvalidColumns: string[];
 }
 
 export interface ViewDescriptor {
@@ -474,6 +480,7 @@ export class SchemaClient {
 
     const sanitizedColumns: string[] = [];
     const skippedNullColumns: string[] = [];
+    const skippedInvalidColumns: string[] = [];
     const columns: TdeColumn[] = discovery.inferredFields
       .filter((f) => !f.path.includes(".")) // top-level fields only
       .filter((f) => {
@@ -481,6 +488,18 @@ export class SchemaClient {
         // to the TDE view and create noise (e.g. Socrata @computed_region_* columns).
         if (f.exampleValues.length === 0 && f.nullable) {
           skippedNullColumns.push(f.path);
+          return false;
+        }
+        return true;
+      })
+      .filter((f) => {
+        // Skip columns whose sanitized path starts with ':' or any non-[a-zA-Z_] character.
+        // Example: Socrata ':@computed_region_*' keys sanitize to ':_computed_region_*', which
+        // starts with ':' — an invalid XPath leading character that MarkLogic rejects, causing
+        // the entire TDE view to return SQL-TABLENOTFOUND even though all other columns are valid.
+        const sanitized = f.path.replace(/[ \t]/g, "_").replace(/[^a-zA-Z0-9_.:-]/g, "_");
+        if (/^[^a-zA-Z_]/.test(sanitized)) {
+          skippedInvalidColumns.push(f.path);
           return false;
         }
         return true;
@@ -510,7 +529,7 @@ export class SchemaClient {
     };
 
     const uri = `/tde/${options.schemaName}/${options.viewName}.json`;
-    return { uri, template, sanitizedColumns, skippedNullColumns };
+    return { uri, template, sanitizedColumns, skippedNullColumns, skippedInvalidColumns };
   }
 }
 
