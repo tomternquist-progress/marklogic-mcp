@@ -9,9 +9,9 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
     "Execute a SPARQL 1.1 SELECT, CONSTRUCT, ASK, or DESCRIBE query against the MarkLogic triple store.\n\n" +
     "TRIPLE STORAGE PATTERNS — MarkLogic supports three layouts, all queryable by this tool:\n" +
     "  Embedded / unmanaged: triples live inside the source document as <sem:triple> elements (XML,\n" +
-    "  namespace http://marklogic.com/semantics) or as a 'triple' JSON key (singular) whose value is\n" +
-    "  an object or array of objects with 'subject', 'predicate', 'object' properties. For IRI objects\n" +
-    "  the value is a plain URI string; for literals use {\"value\":\"...\",\"datatype\":\"...\"}.\n" +
+    "  namespace http://marklogic.com/semantics) or as a JSON 'triple' array where each element is\n" +
+    "  itself wrapped in a 'triple' key: {\"triple\":[{\"triple\":{\"subject\":\"...\",\"predicate\":\"...\",\n" +
+    "  \"object\":\"...\"}}]}. IRI objects are plain URI strings; literals use {\"datatype\":\"...\",\"value\":\"...\"}.\n" +
     "  CAUTION: 'sem:triples' (plural) as the JSON root key creates MANAGED triples, not embedded ones.\n" +
     "  SPARQL finds embedded triples automatically — no separate load step.\n" +
     "  Named graphs: standalone RDF documents loaded via flux_import (subcommand: import-rdf-files)\n" +

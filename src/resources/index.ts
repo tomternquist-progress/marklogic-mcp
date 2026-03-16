@@ -157,19 +157,20 @@ TRIPLE DESIGN — ENTITY-ORIENTED PATTERN (preferred):
   Goal: one document per entity; document URI = entity IRI; triples embedded inside.
   /entities/person/12345.json  ← document holds all entity properties + triples
 
-  JSON UNMANAGED TRIPLE FORMAT — use "triple" key (singular, NOT "sem:triples"):
+  JSON UNMANAGED TRIPLE FORMAT — outer "triple" array; each element also wrapped in "triple":
   {
     "id": "12345", "name": "Alice",
     "triple": [
-      { "subject":   "http://example.org/person/12345",
-        "predicate": "http://schema.org/knows",
-        "object":    "http://example.org/person/67890" },
-      { "subject":   "http://example.org/person/12345",
-        "predicate": "http://schema.org/name",
-        "object":    { "value": "Alice", "datatype": "http://www.w3.org/2001/XMLSchema#string" } }
+      { "triple": { "subject":   "http://example.org/person/12345",
+                    "predicate": "http://schema.org/knows",
+                    "object":    "http://example.org/person/67890" } },
+      { "triple": { "subject":   "http://example.org/person/12345",
+                    "predicate": "http://schema.org/name",
+                    "object":    { "datatype": "http://www.w3.org/2001/XMLSchema#string",
+                                   "value": "Alice" } } }
     ]
   }
-  IRI objects → plain URI string. Literal objects → {"value":"...","datatype":"..."}.
+  IRI objects → plain URI string. Literal objects → {"datatype":"...","value":"..."}.
   CAUTION: "sem:triples" as the JSON root key = MANAGED triples (raw RDF doc), not embedded.
 
   XML UNMANAGED TRIPLE FORMAT — sem:triple element (namespace http://marklogic.com/semantics):
