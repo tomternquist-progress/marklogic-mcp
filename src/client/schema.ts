@@ -291,7 +291,7 @@ export class SchemaClient {
     `;
     const body = new URLSearchParams();
     body.append("javascript", javascript);
-    body.append("vars[collections]", JSON.stringify(collections));
+    body.append("vars", JSON.stringify({ collections }));
     const res = await this.base.http.post("/v1/eval", body.toString(), {
       params: { database: "Schemas" },
       headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "multipart/mixed" },
@@ -346,11 +346,12 @@ export class SchemaClient {
       results;
     `;
 
+    // MarkLogic /v1/eval expects vars as a single JSON-object parameter:
+    //   vars={"varName": value, ...}
+    // NOT PHP-style bracket notation vars[name]=value (which MarkLogic ignores).
     const body = new URLSearchParams();
     body.append("javascript", javascript);
-    body.append("vars[tdeJson]", JSON.stringify(tdeJson));
-    body.append("vars[collection]", JSON.stringify(collection));
-    body.append("vars[sampleSize]", JSON.stringify(sampleSize));
+    body.append("vars", JSON.stringify({ tdeJson, collection, sampleSize }));
 
     const res = await this.base.http.post("/v1/eval", body.toString(), {
       params: {},
