@@ -61,6 +61,15 @@ services:
       # Set to empty string to disable: FLUX_RUNNER_URL=
       - FLUX_RUNNER_URL=${FLUX_RUNNER_URL:-http://flux-runner:8080}
 
+      # Semaphore (Progress Data Platform — optional)
+      - SEMAPHORE_HOST=${SEMAPHORE_HOST:-}
+      - SEMAPHORE_SCS_PORT=${SEMAPHORE_SCS_PORT:-5058}
+      - SEMAPHORE_KMM_PORT=${SEMAPHORE_KMM_PORT:-5080}
+      - SEMAPHORE_USERNAME=${SEMAPHORE_USERNAME:-}
+      - SEMAPHORE_PASSWORD=${SEMAPHORE_PASSWORD:-}
+      - SEMAPHORE_SSL=${SEMAPHORE_SSL:-false}
+      - SEMAPHORE_TIMEOUT_MS=${SEMAPHORE_TIMEOUT_MS:-30000}
+
       # Logging
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - LOG_FORMAT=${LOG_FORMAT:-pretty}

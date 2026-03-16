@@ -60,6 +60,14 @@ services:
       - LOG_LEVEL=info
       - LOG_FORMAT=pretty
       - FLUX_RUNNER_URL=http://flux-runner:8080
+      # Semaphore (Progress Data Platform — optional)
+      # - SEMAPHORE_HOST=semaphore.example.com
+      # - SEMAPHORE_SCS_PORT=5058
+      # - SEMAPHORE_KMM_PORT=5080
+      # - SEMAPHORE_USERNAME=
+      # - SEMAPHORE_PASSWORD=
+      # - SEMAPHORE_SSL=false
+      # - SEMAPHORE_TIMEOUT_MS=30000
     ports:
       - "3000:3000"
     depends_on:
