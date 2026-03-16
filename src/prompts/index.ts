@@ -318,8 +318,10 @@ embedded inside the document. The document URI equals the entity's IRI.
 ### 3a. Entity-Oriented Pattern (preferred)
 Describe:
 - How to assign one document per entity (URI = IRI)
-- Which relationships to model as embedded sem:triple objects in a "sem:triples" array
+- Which relationships to model as embedded sem:triple objects using the "triple" JSON key (unmanaged format)
 - Example JSON structure with both entity properties AND embedded triples in the same doc
+  (JSON: "triple": [{"subject":"...","predicate":"...","object":"..."}] — IRI objects are plain strings,
+   literal objects use {"value":"...","datatype":"..."}. NOT "sem:triples" which creates managed triples.)
 - How cts.search and ml_sparql_query both find the entity via this co-located layout
 
 ### 3b. Managed Triples → Reprocess (when raw RDF files are the source)
@@ -329,7 +331,7 @@ If the data source is Turtle, N-Triples, or RDF/XML files, describe the two-step
   Step 2: flux_reprocess with an SJS transform that:
     - Groups triples by subject IRI (SELECT ?s WHERE { ?s ?p ?o } GROUP BY ?s)
     - Writes one JSON document per IRI at /entities/{type}/{localname}.json
-    - Embeds the triples as "sem:triples" in the document
+    - Embeds the triples as "triple" array in the document (unmanaged format, not "sem:triples")
     - Assigns the document to an entity collection
   Rule: group by IRI where reasonable. Avoid creating documents that aggregate
   thousands of triples from unrelated subjects.
