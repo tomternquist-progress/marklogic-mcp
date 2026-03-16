@@ -69,7 +69,7 @@ export class DocumentsClient {
     const params: Record<string, string | number> = {
       format: "json",
       start: options.start ?? 1,
-      "page-length": options.pageLength ?? 20,
+      pageLength: options.pageLength ?? 20,
     };
     if (options.collection) params.collection = options.collection;
     if (options.directory) params.directory = options.directory;
