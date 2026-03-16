@@ -469,7 +469,14 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
     "RDF USE CASE — building hybrid entity documents from a named graph:\n" +
     "  Load RDF into a named graph via ml_graph_put or flux_import (import-rdf-files), then reprocess\n" +
     "  the managed triplestore documents. The module reads triples via sem.sparql() and writes JSON\n" +
-    "  entity documents with embedded triples (JSON 'triple' key, unmanaged format) for TDE indexing.",
+    "  entity documents with embedded triples (JSON 'triple' key, unmanaged format) for TDE indexing.\n\n" +
+    "  OPTIONAL PREDICATE RULE — when a SPARQL variable is unbound (predicate absent for this subject),\n" +
+    "  do NOT assign an empty string ''. Either omit the field entirely (preferred) or assign null:\n" +
+    "    WRONG:  broaderUri: row.broader || ''\n" +
+    "    CORRECT: if (row.broader) doc.broaderUri = row.broader;   // omit when absent\n" +
+    "    CORRECT: broaderUri: row.broader ?? null                   // null when absent\n" +
+    "  This applies to every optional predicate (skos:broader, dcterms:description, owl:sameAs, etc.).\n" +
+    "  Empty-string values pollute search indexes, break range queries, and create misleading TDE rows.",
     {
       invoke_module: z.string().describe("URI of the transformation module in the Modules database, e.g. /transforms/enrich.sjs"),
       collections: z.array(z.string()).optional().describe("Reprocess documents in these collections"),
