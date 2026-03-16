@@ -29,7 +29,25 @@ export async function startHttpTransport(serverFactory: () => McpServer, config:
   const sessions = new Map<string, StreamableHTTPServerTransport>();
 
   app.post("/mcp", async (req, res) => {
-    const sessionId = (req.headers["mcp-session-id"] as string | undefined) ?? randomUUID();
+    const incomingSessionId = req.headers["mcp-session-id"] as string | undefined;
+
+    // If the client sends a known session ID, use the existing transport.
+    // If no session ID is provided, this is a fresh connection — generate one.
+    // If an unknown session ID is provided, the server likely restarted and lost
+    // the session. Respond with 404 so the client knows to re-initialize cleanly.
+    if (incomingSessionId && !sessions.has(incomingSessionId)) {
+      res.status(404).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32001,
+          message: "Session not found: the server may have restarted. Please start a new session (re-initialize).",
+        },
+        id: null,
+      });
+      return;
+    }
+
+    const sessionId = incomingSessionId ?? randomUUID();
     let transport = sessions.get(sessionId);
 
     if (!transport) {
