@@ -11,7 +11,13 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
     "  Embedded / unmanaged: triples live inside the source document as <sem:triple> elements (XML,\n" +
     "  namespace http://marklogic.com/semantics) or as a JSON 'triples' array (plural key) where each\n" +
     "  element is wrapped in a 'triple' key: {\"triples\":[{\"triple\":{\"subject\":\"...\",\"predicate\":\"...\",\n" +
-    "  \"object\":\"...\"}}]}. IRI objects are plain URI strings; literals use {\"datatype\":\"...\",\"value\":\"...\"}.\n" +
+    "  \"object\":\"...\"}}]}. Object encoding rules for JSON embedded triples:\n" +
+    "    - IRI/URI object: plain string, e.g. \"http://example.org/thing\"\n" +
+    "    - String literal: {\"datatype\":\"http://www.w3.org/2001/XMLSchema#string\",\"value\":\"hello\"}\n" +
+    "      CAUTION: a bare string object (not wrapped in datatype/value) is treated as an IRI, not a literal.\n" +
+    "    - Language-tagged literal: {\"datatype\":\"http://www.w3.org/1999/02/22-rdf-syntax-ns#langString\",\n" +
+    "      \"value\":\"hello@en\"} — MarkLogic encodes the lang tag by appending @lang to the value field.\n" +
+    "    - Typed literal (int, date, etc.): {\"datatype\":\"http://www.w3.org/2001/XMLSchema#integer\",\"value\":\"42\"}\n" +
     "  CAUTION: 'sem:triples' (plural) as the JSON root key creates MANAGED triples, not embedded ones.\n" +
     "  SPARQL finds embedded triples automatically — no separate load step.\n" +
     "  Named graphs: standalone RDF documents loaded via flux_import (subcommand: import-rdf-files)\n" +
