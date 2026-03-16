@@ -41,7 +41,7 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
 
   server.tool(
     "ml_tde_validate",
-    "Validate a TDE template against sample documents from a collection. Runs tde.validate() on up to sample_size documents and reports which pass/fail, lists the exact error messages, and suggests which columns need nullable:true. Use this after writing a new TDE template to verify it works before importing data — TDEs apply at query time, so you never need to re-import data to fix a TDE.",
+    "Verify a TDE template is working by querying its Optic row view and returning sample rows. Reports row count vs document count, surfaces SQL-TABLENOTFOUND and TABLEREINDEXING errors, and shows sample rows so you can confirm the right data is being extracted. NOTE: Uses Optic row queries (not tde.validate()) because tde.validate() has an internal bug in MarkLogic 12.0.1.",
     {
       tde_uri: z.string().describe("URI of the TDE template in the Schemas database, e.g. /tde/gdelt/events.json"),
       collection: z.string().describe("Collection to sample documents from, e.g. gdelt-events"),

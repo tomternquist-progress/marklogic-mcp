@@ -32,13 +32,23 @@ export interface RangeIndex {
 export interface TdeValidationResult {
   tdeUri: string;
   collection: string;
+  /** Number of documents in the collection (via xdmp:estimate) */
+  documentCount: number;
+  /** Number of rows returned by the view for up to sampleSize rows */
+  sampledRows: number;
+  /** Schema and view names extracted from the TDE */
+  views: Array<{ schema: string; view: string }>;
+  /** A few sample rows from the view */
+  sampleRows: unknown[];
+  /** Error if the view could not be queried (e.g. SQL-TABLENOTFOUND, reindexing) */
+  viewError?: string;
+  summary: string;
+  // Legacy fields kept for backward compatibility
   sampledDocuments: number;
   validDocuments: number;
   invalidDocuments: number;
   errors: Array<{ uri: string; messages: string[] }>;
-  /** Column names that appear in errors and likely need nullable:true */
   suggestedNullableColumns: string[];
-  summary: string;
 }
 
 export interface TdeColumn {
@@ -314,32 +324,40 @@ export class SchemaClient {
       throw new Error(`TDE template not found at: ${tdeUri}`);
     }
     const tdeContent = (tdeResult[0] as { content: unknown }).content;
-    const tdeJson = typeof tdeContent === "string" ? tdeContent : JSON.stringify(tdeContent);
+    const tplObj = (typeof tdeContent === "string" ? JSON.parse(tdeContent) : tdeContent) as Record<string, unknown>;
+    const tpl = (tplObj.template ?? tplObj) as Record<string, unknown>;
+    const tplRows = (tpl.rows as Array<Record<string, unknown>>) ?? [];
 
+    // Extract schema/view pairs from the TDE template
+    const viewPairs = tplRows
+      .filter((r) => r.schemaName && r.viewName)
+      .map((r) => ({ schema: r.schemaName as string, view: r.viewName as string }));
+
+    if (viewPairs.length === 0) {
+      throw new Error(`No rows definitions found in TDE template at: ${tdeUri}`);
+    }
+
+    // NOTE: tde.validate() is broken in MarkLogic 12.0.1 (XDMP-INTERNAL: basic_string::_S_construct null not valid).
+    // We use Optic row queries instead, which is more useful anyway: it confirms the view is queryable,
+    // returns actual row counts, and surfaces SQL-TABLENOTFOUND / TABLEREINDEXING errors directly.
     const javascript = `
-      const tde = require('/MarkLogic/tde');
-      const templateNode = fn.head(xdmp.unquote(tdeJson));
-      if (!templateNode) throw new Error('Failed to reconstruct TDE template from JSON');
+      const op = require('/MarkLogic/optic');
+      const docCount = xdmp.estimate(cts.collectionQuery(collection));
       const results = [];
-      for (const doc of fn.subsequence(cts.search(cts.collectionQuery(collection)), 1, sampleSize)) {
-        const docUri = xdmp.nodeUri(doc);
+      for (const {schema, view} of viewPairs) {
         try {
-          const errs = tde.validate([templateNode], [doc]);
-          const errArr = Array.from(errs).map(e => String(e));
-          results.push({ uri: docUri, valid: errArr.length === 0, errors: errArr });
-        } catch (e) {
-          results.push({ uri: docUri, valid: false, errors: [e.message] });
+          const rows = op.fromView(schema, view).limit(sampleSize).result().toArray();
+          results.push({ schema, view, rowCount: rows.length, docCount, sampleRows: rows.slice(0, 3) });
+        } catch(e) {
+          results.push({ schema, view, error: e.message, docCount });
         }
       }
       results;
     `;
 
-    // MarkLogic /v1/eval expects vars as a single JSON-object parameter:
-    //   vars={"varName": value, ...}
-    // NOT PHP-style bracket notation vars[name]=value (which MarkLogic ignores).
     const body = new URLSearchParams();
     body.append("javascript", javascript);
-    body.append("vars", JSON.stringify({ tdeJson, collection, sampleSize }));
+    body.append("vars", JSON.stringify({ collection, sampleSize, viewPairs }));
 
     const res = await this.base.http.post("/v1/eval", body.toString(), {
       params: {},
@@ -348,55 +366,48 @@ export class SchemaClient {
     });
     const parsed = parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
 
-    // Results come back as individual objects (one per document) or a single array
-    type DocResult = { uri: string; valid: boolean; errors: string[] };
-    const docResults: DocResult[] = [];
+    type ViewResult = { schema: string; view: string; rowCount?: number; docCount: number; sampleRows?: unknown[]; error?: string };
+    const viewResults: ViewResult[] = [];
     for (const r of parsed) {
       if (Array.isArray(r.value)) {
-        docResults.push(...(r.value as DocResult[]));
-      } else if (r.value && typeof r.value === "object" && "uri" in (r.value as object)) {
-        docResults.push(r.value as DocResult);
+        viewResults.push(...(r.value as ViewResult[]));
+      } else if (r.value && typeof r.value === "object" && "schema" in (r.value as object)) {
+        viewResults.push(r.value as ViewResult);
       }
     }
 
-    const errorEntries = docResults
-      .filter((d) => !d.valid)
-      .map((d) => ({ uri: d.uri, messages: d.errors }));
+    const firstResult = viewResults[0];
+    const docCount = firstResult?.docCount ?? 0;
+    const rowCount = firstResult?.rowCount ?? 0;
+    const viewError = firstResult?.error;
+    const sampleRows = firstResult?.sampleRows ?? [];
 
-    // Extract column names mentioned in cast/eval errors to suggest nullable:true
-    const nullablePattern = /Column\s+(\w+)\s*=.*XDMP-CAST|invalid cast.*Column\s+(\w+)|nullable.*Column\s+(\w+)/gi;
-    const colPattern = /Eval for Column (\w+)=|Column (\w+).*cast|Column (\w+).*nullable/gi;
-    const nullableCols = new Set<string>();
-    for (const entry of errorEntries) {
-      for (const msg of entry.messages) {
-        for (const re of [nullablePattern, colPattern]) {
-          let m: RegExpExecArray | null;
-          re.lastIndex = 0;
-          while ((m = re.exec(msg)) !== null) {
-            const col = m[1] ?? m[2] ?? m[3];
-            if (col) nullableCols.add(col);
-          }
-        }
-      }
+    let summary: string;
+    if (viewError) {
+      summary = `View query failed: ${viewError}`;
+    } else if (rowCount === 0 && docCount > 0) {
+      summary = `View returned 0 rows despite ${docCount} documents in collection "${collection}". The TDE context path or collection scope may not match the document structure.`;
+    } else if (rowCount > 0) {
+      summary = `View is healthy: returned ${rowCount} of up to ${sampleSize} rows (collection has ~${docCount} documents).`;
+    } else {
+      summary = `No documents in collection "${collection}" and no rows in view.`;
     }
-
-    const valid = docResults.filter((d) => d.valid).length;
-    const invalid = docResults.filter((d) => !d.valid).length;
-    const summary = docResults.length === 0
-      ? `No documents found in collection "${collection}".`
-      : invalid === 0
-        ? `All ${valid} sampled documents passed TDE validation.`
-        : `${invalid}/${docResults.length} documents failed. ${nullableCols.size > 0 ? `Add nullable:true to: ${[...nullableCols].join(", ")}.` : "Check error details."}`;
 
     return {
       tdeUri,
       collection,
-      sampledDocuments: docResults.length,
-      validDocuments: valid,
-      invalidDocuments: invalid,
-      errors: errorEntries,
-      suggestedNullableColumns: [...nullableCols],
+      documentCount: docCount,
+      sampledRows: rowCount,
+      views: viewPairs,
+      sampleRows,
+      viewError,
       summary,
+      // Legacy fields
+      sampledDocuments: rowCount,
+      validDocuments: viewError ? 0 : rowCount,
+      invalidDocuments: viewError ? rowCount : 0,
+      errors: viewError ? [{ uri: tdeUri, messages: [viewError] }] : [],
+      suggestedNullableColumns: [],
     };
   }
 
