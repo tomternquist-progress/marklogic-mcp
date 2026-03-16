@@ -68,6 +68,9 @@ Requirements:
 - Use cts.search() not fn.doc() for document retrieval
 - Handle errors with try/catch blocks
 - Include JSDoc comments for all exported functions
+- When building entity documents from RDF/SPARQL results, NEVER assign empty string ""
+  for unbound optional variables. Either omit the field (if (row.broader) doc.broaderUri = row.broader)
+  or assign null (broaderUri: row.broader ?? null). Empty strings pollute indexes and mislead queries.
 
 Generate the SJS module now.`,
         },
@@ -336,6 +339,14 @@ If the data source is Turtle, N-Triples, or RDF/XML files, describe the two-step
     - Assigns the document to an entity collection
   Rule: group by IRI where reasonable. Avoid creating documents that aggregate
   thousands of triples from unrelated subjects.
+
+  OPTIONAL PREDICATE RULE — when a SPARQL OPTIONAL clause yields an unbound variable
+  (predicate absent for this subject), do NOT write an empty string for the field.
+  Either omit the field from the document (preferred) or assign null:
+    WRONG:   broaderUri: row.broader || ""          // pollutes indexes, misleads queries
+    CORRECT: if (row.broader) doc.broaderUri = row.broader;  // omit the key entirely
+    CORRECT: broaderUri: row.broader ?? null                  // null when unbound
+  For TDE columns backed by optional predicates, mark the column nullable: true.
 
 ### 3c. SPARQL Query Patterns
 Show example SPARQL for the key relationship queries in this domain.
