@@ -320,9 +320,9 @@ Describe:
 - How to assign one document per entity (URI = IRI)
 - Which relationships to model as embedded sem:triple objects using the "triple" JSON key (unmanaged format)
 - Example JSON structure with both entity properties AND embedded triples in the same doc
-  (JSON: "triple": [{"triple":{"subject":"...","predicate":"...","object":"..."}}] — each array element
-   is itself wrapped in a "triple" key. IRI objects are plain URI strings; literal objects use
-   {"datatype":"...","value":"..."}. NOT "sem:triples" which creates managed triples.)
+  (JSON: "triples": [{"triple":{"subject":"...","predicate":"...","object":"..."}}] — use "triples"
+   (plural) for the array key; each element is wrapped in a "triple" key. IRI objects are plain URI
+   strings; literal objects use {"datatype":"...","value":"..."}. NOT "sem:triples" = managed triples.)
 - How cts.search and ml_sparql_query both find the entity via this co-located layout
 
 ### 3b. Managed Triples → Reprocess (when raw RDF files are the source)

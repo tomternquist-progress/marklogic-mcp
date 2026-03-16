@@ -157,10 +157,10 @@ TRIPLE DESIGN — ENTITY-ORIENTED PATTERN (preferred):
   Goal: one document per entity; document URI = entity IRI; triples embedded inside.
   /entities/person/12345.json  ← document holds all entity properties + triples
 
-  JSON UNMANAGED TRIPLE FORMAT — outer "triple" array; each element also wrapped in "triple":
+  JSON UNMANAGED TRIPLE FORMAT — "triples" (plural) for the array key; each element wrapped in "triple":
   {
     "id": "12345", "name": "Alice",
-    "triple": [
+    "triples": [
       { "triple": { "subject":   "http://example.org/person/12345",
                     "predicate": "http://schema.org/knows",
                     "object":    "http://example.org/person/67890" } },
