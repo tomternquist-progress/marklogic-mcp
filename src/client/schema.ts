@@ -27,6 +27,12 @@ export interface RangeIndex {
   namespace?: string;
   pathExpression?: string;
   scalarType: string;
+  // Geospatial-specific fields (present when type starts with "geospatial-")
+  parentLocalname?: string;
+  parentNamespace?: string;
+  latLocalname?: string;
+  lonLocalname?: string;
+  coordinateSystem?: string;
 }
 
 export interface TdeValidationResult {
@@ -609,5 +615,61 @@ function extractRangeIndexes(props: Record<string, unknown>): RangeIndex[] {
   for (const idx of rangeField) {
     indexes.push({ type: "range-field", localname: idx["field-name"], scalarType: idx["scalar-type"] ?? "string" });
   }
+
+  // Geospatial indexes
+  const geoPair = (props["geospatial-element-pair-index"] as Array<Record<string, string>> | undefined) ?? [];
+  const geoElem = (props["geospatial-element-index"] as Array<Record<string, string>> | undefined) ?? [];
+  const geoPath = (props["geospatial-path-index"] as Array<Record<string, string>> | undefined) ?? [];
+  const geoAttrPair = (props["geospatial-element-attribute-pair-index"] as Array<Record<string, string>> | undefined) ?? [];
+  const geoChild = (props["geospatial-element-child-index"] as Array<Record<string, string>> | undefined) ?? [];
+
+  for (const idx of geoPair) {
+    indexes.push({
+      type: "geospatial-element-pair",
+      scalarType: "geospatial",
+      parentLocalname: idx["parent-localname"],
+      parentNamespace: idx["parent-namespace-uri"],
+      latLocalname: idx["latitude-localname"],
+      lonLocalname: idx["longitude-localname"],
+      coordinateSystem: idx["coordinate-system"],
+    });
+  }
+  for (const idx of geoElem) {
+    indexes.push({
+      type: "geospatial-element",
+      scalarType: "geospatial",
+      localname: idx.localname,
+      namespace: idx["namespace-uri"],
+      coordinateSystem: idx["coordinate-system"],
+    });
+  }
+  for (const idx of geoPath) {
+    indexes.push({
+      type: "geospatial-path",
+      scalarType: "geospatial",
+      pathExpression: idx["path-expression"],
+      coordinateSystem: idx["coordinate-system"],
+    });
+  }
+  for (const idx of geoAttrPair) {
+    indexes.push({
+      type: "geospatial-element-attribute-pair",
+      scalarType: "geospatial",
+      parentLocalname: idx["parent-localname"],
+      latLocalname: idx["latitude-attribute-localname"],
+      lonLocalname: idx["longitude-attribute-localname"],
+      coordinateSystem: idx["coordinate-system"],
+    });
+  }
+  for (const idx of geoChild) {
+    indexes.push({
+      type: "geospatial-element-child",
+      scalarType: "geospatial",
+      parentLocalname: idx["parent-localname"],
+      localname: idx.localname,
+      coordinateSystem: idx["coordinate-system"],
+    });
+  }
+
   return indexes;
 }

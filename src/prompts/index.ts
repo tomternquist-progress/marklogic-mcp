@@ -610,7 +610,7 @@ PRODUCE THE FOLLOWING ANALYSIS
 ## 1. PROBLEM CLASSIFICATION
 Classify this goal into one or more of these MarkLogic problem types:
   data-loading | full-text-search | structured-filter | analytics-aggregation |
-  graph-query | vector-similarity | multi-model-design | time-series |
+  geospatial-search | graph-query | vector-similarity | multi-model-design | time-series |
   schema-discovery | export-bi | code-generation | admin-health | data-transform
 
 ## 2. MARKLOGIC-NATIVE APPROACH
@@ -637,7 +637,8 @@ Available tools (use only these):
               ml_database_statistics, ml_forests_list, ml_servers_list, ml_server_properties
   Documents:  ml_document_get, ml_document_list, ml_document_put, ml_document_delete,
               ml_document_patch
-  Search:     ml_search, ml_search_qbe, ml_values_query, ml_suggest, ml_facets_query
+  Search:     ml_search, ml_search_qbe, ml_values_query, ml_suggest, ml_facets_query,
+              ml_geospatial_search
   Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_indexes_list,
               ml_collections_list, ml_namespaces_list
   Eval:       ml_eval_javascript, ml_eval_xquery, ml_invoke_module

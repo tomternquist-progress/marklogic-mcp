@@ -90,6 +90,10 @@ Export for BI        Optic → tabular export     ml_export_tabular         ml_s
 (QuickSight etc.)                               ml_optic_query            ml_indexes_list
                                                 flux_export
 
+Geospatial search    Geospatial element pair    ml_geospatial_search      ml_indexes_list
+(radius / box /      index + structured query                             (index_type=geospatial)
+ polygon)            (cts geospatial family)
+
 Graph / entity       Triple store / SPARQL      ml_sparql_query           ml_graphs_list
 relationships        + entity-oriented docs     (sparql_query_builder)
                                                 data_modeling_advisor
@@ -314,7 +318,8 @@ Documents (2–5, config-dependent):
                ml_document_get, ml_document_list
                [write-enabled] ml_document_put, ml_document_delete, ml_document_patch
 
-Search (4):    ml_search, ml_search_qbe, ml_values_query, ml_suggest
+Search (5):    ml_search, ml_search_qbe, ml_values_query, ml_suggest,
+               ml_geospatial_search
 
 Schema (6):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
                ml_indexes_list, ml_collections_list, ml_namespaces_list

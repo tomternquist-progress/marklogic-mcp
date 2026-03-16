@@ -69,17 +69,20 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
 
   server.tool(
     "ml_indexes_list",
-    "List all configured indexes for a MarkLogic database (range element, range path, range field, geospatial).",
+    "List all configured indexes for a MarkLogic database (range element, range path, range field, geospatial element pair, geospatial path). " +
+    "Geospatial indexes are required by ml_geospatial_search — check here first to see what parent/lat/lon property names are indexed.",
     {
       database: z.string().describe("Database name to inspect"),
-      index_type: z.enum(["range-element", "range-path", "range-field", "all"]).optional().describe("Filter by index type (default: all)"),
+      index_type: z.enum(["range-element", "range-path", "range-field", "geospatial", "all"]).optional().describe("Filter by index type: 'geospatial' shows all geospatial index variants (default: all)"),
     },
     async ({ database, index_type }) => {
       try {
         const indexes = await clients.schema.listIndexes(database);
-        const filtered = index_type && index_type !== "all"
-          ? indexes.filter((i) => i.type === index_type)
-          : indexes;
+        const filtered = (!index_type || index_type === "all")
+          ? indexes
+          : index_type === "geospatial"
+          ? indexes.filter((i) => i.type.startsWith("geospatial-"))
+          : indexes.filter((i) => i.type === index_type);
         return { content: [{ type: "text", text: JSON.stringify(filtered, null, 2) }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };

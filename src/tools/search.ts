@@ -77,6 +77,97 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
   );
 
   server.tool(
+    "ml_geospatial_search",
+    "Find MarkLogic documents within a geospatial region — circle (radius from a point), bounding box, or polygon. " +
+    "Requires a geospatial element pair index on the parent/lat/lon JSON properties. " +
+    "Call ml_indexes_list with index_type='geospatial' first to confirm the index exists and note the parentLocalname, latLocalname, and lonLocalname values.",
+    {
+      region_type: z.enum(["circle", "box", "polygon"]).describe("Shape of the search region"),
+      // Circle params
+      center_lat: z.number().min(-90).max(90).optional().describe("Center latitude (required for circle)"),
+      center_lon: z.number().min(-180).max(180).optional().describe("Center longitude (required for circle)"),
+      radius_km: z.number().positive().optional().describe("Search radius in kilometres (required for circle)"),
+      // Box params
+      south: z.number().min(-90).max(90).optional().describe("Southern latitude bound (required for box)"),
+      west: z.number().min(-180).max(180).optional().describe("Western longitude bound (required for box)"),
+      north: z.number().min(-90).max(90).optional().describe("Northern latitude bound (required for box)"),
+      east: z.number().min(-180).max(180).optional().describe("Eastern longitude bound (required for box)"),
+      // Polygon params
+      points: z.array(z.object({
+        lat: z.number().min(-90).max(90),
+        lon: z.number().min(-180).max(180),
+      })).optional().describe("Polygon vertices as [{lat, lon}] array (required for polygon; first and last point should be the same to close the ring)"),
+      // Index parameters
+      parent_property: z.string().optional().describe("JSON property name of the parent object containing lat/lon (default: 'location'). Must match the geospatial element pair index."),
+      lat_property: z.string().optional().describe("JSON property name for latitude within parent (default: 'latitude'). Must match the index."),
+      lon_property: z.string().optional().describe("JSON property name for longitude within parent (default: 'longitude'). Must match the index."),
+      // Scope
+      collection: z.string().optional().describe("Limit search to this collection URI"),
+      page_length: z.number().int().positive().max(100).optional().describe("Max results to return (default: 10)"),
+      database: z.string().optional().describe("Database name"),
+    },
+    async ({ region_type, center_lat, center_lon, radius_km, south, west, north, east, points,
+             parent_property, lat_property, lon_property, collection, page_length, database }) => {
+      try {
+        const parentName = parent_property ?? "location";
+        const latName = lat_property ?? "latitude";
+        const lonName = lon_property ?? "longitude";
+
+        // Build the geo-elem-pair-query region
+        let region: Record<string, unknown>;
+        if (region_type === "circle") {
+          if (center_lat == null || center_lon == null || radius_km == null) {
+            return { content: [{ type: "text", text: "circle requires center_lat, center_lon, and radius_km" }], isError: true };
+          }
+          region = { circle: { radius: radius_km, point: [{ latitude: center_lat, longitude: center_lon }] } };
+        } else if (region_type === "box") {
+          if (south == null || west == null || north == null || east == null) {
+            return { content: [{ type: "text", text: "box requires south, west, north, and east" }], isError: true };
+          }
+          region = { box: [{ s: south, w: west, n: north, e: east }] };
+        } else {
+          if (!points?.length) {
+            return { content: [{ type: "text", text: "polygon requires a points array" }], isError: true };
+          }
+          region = { polygon: [{ point: points.map(p => ({ latitude: p.lat, longitude: p.lon })) }] };
+        }
+
+        const geoQuery = {
+          "geo-elem-pair-query": {
+            parent: { ns: "", name: parentName },
+            lat: { ns: "", name: latName },
+            lon: { ns: "", name: lonName },
+            ...region,
+          },
+        };
+
+        const structuredQuery = collection
+          ? { "and-query": { queries: [{ "collection-query": { uri: [collection] } }, geoQuery] } }
+          : geoQuery;
+
+        const result = await clients.search.search({
+          structuredQuery,
+          pageLength: page_length,
+          database,
+        });
+
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        return {
+          content: [{
+            type: "text",
+            text: toToolError(err) +
+              "\nNOTE: ml_geospatial_search requires a geospatial element pair index on the parent/lat/lon properties. " +
+              "Run ml_indexes_list with index_type='geospatial' to verify the index exists. " +
+              "If no index exists, create one with ml_eval_javascript using the Admin module.",
+          }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
     "ml_suggest",
     "Get search query autocomplete suggestions from MarkLogic based on a partial query string.",
     {
