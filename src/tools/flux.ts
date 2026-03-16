@@ -456,20 +456,35 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
     "PREFERRED over ml_invoke_module / xdmp.invoke for any bulk server-side transform because Flux handles\n" +
     "batching, parallel execution, and error recovery — a single xdmp.invoke transaction times out on large\n" +
     "collections (> ~1 000 docs).\n\n" +
-    "MODULE CONTRACT — the invoked SJS module receives one document URI per invocation:\n" +
-    "  'use strict';\n" +
-    "  declareUpdate(); // must be at the TOP of the file\n" +
-    "  var URI; // injected by Flux — the URI of the document being processed\n" +
-    "  var doc = cts.doc(URI).toObject();\n" +
-    "  // ... transform doc ...\n" +
-    "  xdmp.documentInsert(URI, newDoc, { permissions: [...], collections: [...] });\n\n" +
+    "TWO-PHASE PATTERN (required for scale) — always split into two modules:\n\n" +
+    "  PHASE 1 — READER MODULE (read_module parameter, --read-documents-javascript):\n" +
+    "  Collects the URIs/IRIs that Flux will distribute across threads. No declareUpdate().\n" +
+    "  Must return a Sequence or Array of URI strings.\n" +
+    "    'use strict';\n" +
+    "    // No declareUpdate() — this is a read-only collector\n" +
+    "    var GRAPH = 'http://example.org/graph';\n" +
+    "    var rows = sem.sparql('SELECT DISTINCT ?s FROM NAMED <' + GRAPH + '> WHERE { GRAPH <' + GRAPH + '> { ?s a ?type } }');\n" +
+    "    Array.from(rows).map(function(r) { return String(r.s); });\n\n" +
+    "  PHASE 2 — TRANSFORM MODULE (invoke_module parameter, --invoke):\n" +
+    "  Receives ONE URI per invocation injected by Flux. Writes exactly one output document.\n" +
+    "    'use strict';\n" +
+    "    declareUpdate(); // must be at the TOP of the file\n" +
+    "    var URI; // injected by Flux — one URI/IRI from the reader module\n" +
+    "    // ... SPARQL scoped to URI, build entity doc ...\n" +
+    "    xdmp.documentInsert(outputUri, doc, { permissions: [...], collections: [...] });\n\n" +
+    "WHY TWO MODULES MATTER:\n" +
+    "  A monolithic script that queries ALL subjects and iterates them in one transaction will hit\n" +
+    "  MarkLogic's transaction timeout (default 600 s) on any non-trivial dataset and cannot use\n" +
+    "  Flux's parallel threads. The two-phase split lets Flux distribute work across thread_count\n" +
+    "  threads with batch_size URIs per transaction — the only approach that scales.\n\n" +
     "WORKFLOW:\n" +
-    "1. Write the transform module to the Modules database with ml_document_put (database='Modules').\n" +
-    "2. Call flux_reprocess with invoke_module pointing to that URI + the collection/query to process.\n\n" +
+    "1. Write the reader module to Modules DB: ml_document_put (database='Modules').\n" +
+    "2. Write the transform module to Modules DB: ml_document_put (database='Modules').\n" +
+    "3. Call flux_reprocess with read_module + invoke_module (no --collections needed when using a reader).\n\n" +
     "RDF USE CASE — building hybrid entity documents from a named graph:\n" +
-    "  Load RDF into a named graph via ml_graph_put or flux_import (import-rdf-files), then reprocess\n" +
-    "  the managed triplestore documents. The module reads triples via sem.sparql() and writes JSON\n" +
-    "  entity documents with embedded triples (JSON 'triple' key, unmanaged format) for TDE indexing.\n\n" +
+    "  Reader: SPARQL SELECT DISTINCT ?subject → returns subject IRIs as array.\n" +
+    "  Transform: receives one IRI as URI, SPARQL for that subject's predicates, writes one JSON\n" +
+    "  entity document with embedded triples (JSON 'triple' key, unmanaged format) for TDE indexing.\n\n" +
     "  OPTIONAL PREDICATE RULE — when a SPARQL variable is unbound (predicate absent for this subject),\n" +
     "  do NOT assign an empty string ''. Either omit the field entirely (preferred) or assign null:\n" +
     "    WRONG:  broaderUri: row.broader || ''\n" +
@@ -478,15 +493,16 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
     "  This applies to every optional predicate (skos:broader, dcterms:description, owl:sameAs, etc.).\n" +
     "  Empty-string values pollute search indexes, break range queries, and create misleading TDE rows.",
     {
-      invoke_module: z.string().describe("URI of the transformation module in the Modules database, e.g. /transforms/enrich.sjs"),
-      collections: z.array(z.string()).optional().describe("Reprocess documents in these collections"),
-      query: z.string().optional().describe("CTS query to select documents to reprocess"),
+      invoke_module: z.string().describe("URI of the transform module in the Modules database (Phase 2). Receives one URI per invocation via the injected 'var URI' variable. e.g. /transforms/build-entity.sjs"),
+      read_module: z.string().optional().describe("URI of the reader/collector module in the Modules database (Phase 1, --read-documents-javascript). Must return a Sequence or Array of URI strings. Use this instead of 'collections' when URIs come from SPARQL or custom logic rather than an existing collection. e.g. /transforms/gather-subject-uris.sjs"),
+      collections: z.array(z.string()).optional().describe("Reprocess documents in these collections (Phase 1 alternative to read_module — use when the URIs to reprocess already exist as MarkLogic documents in a known collection)"),
+      query: z.string().optional().describe("CTS query to select documents to reprocess (Phase 1 alternative to read_module)"),
       database: z.string().optional().describe("MarkLogic database (defaults to configured database)"),
-      thread_count: z.number().int().positive().optional().describe("Parallel threads"),
-      batch_size: z.number().int().positive().optional().describe("Documents per batch"),
+      thread_count: z.number().int().positive().optional().describe("Parallel threads — set to 4–16 for large datasets; each thread processes batch_size URIs per transaction"),
+      batch_size: z.number().int().positive().optional().describe("URIs per transaction per thread — keep ≤ 100 for transforms that write large documents"),
       extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim"),
     },
-    async ({ invoke_module, collections, query, database, thread_count, batch_size, extra_args }) => {
+    async ({ invoke_module, read_module, collections, query, database, thread_count, batch_size, extra_args }) => {
       const args: string[] = [
         "reprocess",
         "--connection-string", flux.connectionString(database),
@@ -494,6 +510,7 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "--invoke", invoke_module,
       ];
 
+      if (read_module) args.push("--read-documents-javascript", read_module);
       if (collections?.length) args.push("--collections", collections.join(","));
       if (query) args.push("--query", query);
       if (thread_count) args.push("--thread-count", String(thread_count));
