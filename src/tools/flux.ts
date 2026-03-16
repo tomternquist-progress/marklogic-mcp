@@ -216,6 +216,24 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       // Condense repetitive write-error floods before surfacing output
       const condensedOutput = condenseWriteErrors(result.output);
 
+      // ── HTTP 404/403 on http_url: suggest how to fix ──
+      if (!result.success && http_url && condensedOutput.includes("HTTP 404")) {
+        const enhanced = condensedOutput +
+          "\n\nNOTE: The URL returned 404 (Not Found). Possible causes:" +
+          "\n  • The Socrata resource ID may be wrong — find the correct ID on the dataset's API page (look for the '?' docs button on the portal page)." +
+          "\n  • The dataset may have moved or been deprecated — try searching the portal for an updated resource ID." +
+          "\n  • Try running flux_preview with the same URL to debug the fetch before importing.";
+        return { content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: enhanced }) }], isError: true };
+      }
+      if (!result.success && http_url && condensedOutput.includes("HTTP 403")) {
+        const enhanced = condensedOutput +
+          "\n\nNOTE: The URL returned 403 (Forbidden). The resource may require an API key or authentication." +
+          "\n  • Some Socrata portals require an app token in the X-App-Token header — pass it via extra_args: ['--header', 'X-App-Token: <your-token>']." +
+          "\n  • Check whether the dataset requires account registration or a license agreement." +
+          "\n  • Try opening the URL in a browser to see the access requirements.";
+        return { content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: enhanced }) }], isError: true };
+      }
+
       // ── PATH_NOT_FOUND: explain runner-local paths ──
       if (!result.success && condensedOutput.includes("PATH_NOT_FOUND")) {
         const enhanced = condensedOutput +
@@ -264,17 +282,32 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
           );
           const tplRows = ((generated.template as Record<string, unknown>)?.template as Record<string, unknown>)?.rows as Array<Record<string, unknown>> | undefined;
           const cols = (tplRows?.[0]?.columns as Array<{ name: string; scalarType: string; nullable?: boolean }>) ?? [];
+          // ── Detect HTML-as-CSV: single column whose name looks like an HTML tag ──
+          const htmlColPattern = /^[_<]!?DOCTYPE|^__DOCTYPE|^_html|^<html/i;
+          const htmlWarning = cols.length === 1 && htmlColPattern.test(cols[0]?.name ?? "")
+            ? `\n\n⚠ WARNING: Only 1 column was detected and its name resembles an HTML tag ("${cols[0].name}"). ` +
+              `The source URL likely returned an HTML page instead of CSV data. ` +
+              `The imported documents contain HTML, not real records. ` +
+              `Delete them (ml_eval_javascript with declareUpdate + cts.search on the collection), ` +
+              `verify the URL in a browser, and try flux_preview before re-importing.`
+            : "";
+
           const colSummary = cols.length > 0
             ? `\n  Columns (${cols.length}): ${cols.map((c) => `${c.name}:${c.scalarType}${c.nullable ? "?" : ""}`).join(", ")}`
             : "";
           const sanitizedNote = generated.sanitizedColumns.length > 0
             ? `\n  WARNING: ${generated.sanitizedColumns.length} column(s) had spaces/special chars in their JSON property names and were sanitized (spaces→underscores) for TDE compatibility: ${generated.sanitizedColumns.join(", ")}. Verify the view returns data with ml_tde_validate.`
             : "";
+          const skippedNote = generated.skippedNullColumns.length > 0
+            ? `\n  NOTE: ${generated.skippedNullColumns.length} always-null column(s) omitted from TDE (no non-null values in sample): ${generated.skippedNullColumns.join(", ")}.`
+            : "";
           tdeGenNote =
             `\n\nTDE AUTO-GENERATED: ${generated.uri}\n` +
             `  Schema: ${schemaName}, View: ${viewName}` +
             colSummary +
             sanitizedNote +
+            skippedNote +
+            htmlWarning +
             `\n  Run ml_tde_validate with tde_uri="${generated.uri}" and collection="${targetCollection}" to verify.`;
         } catch (tdeErr) {
           tdeGenNote = `\n\nWARNING: Could not auto-generate TDE: ${tdeErr instanceof Error ? tdeErr.message : String(tdeErr)}`;

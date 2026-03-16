@@ -53,6 +53,8 @@ export interface GeneratedTdeTemplate {
   template: Record<string, unknown>;
   /** Column names that were sanitized (spaces/special chars replaced with underscores) */
   sanitizedColumns: string[];
+  /** Column names skipped because every sampled value was null (would contribute nothing to the view) */
+  skippedNullColumns: string[];
 }
 
 export interface ViewDescriptor {
@@ -137,28 +139,13 @@ export class SchemaClient {
 
   async listCollections(database?: string, limit = 50): Promise<Array<{ name: string; count: number }>> {
     try {
-      const params: Record<string, string | number> = { format: "json", limit };
-      if (database) params.database = database;
-
-      const raw = await this.base.get<Record<string, unknown>>(
-        this.base.http,
-        "/v1/search",
-        {
-          params: {
-            ...params,
-            "page-length": 0,
-            format: "json",
-          },
-        }
-      );
-
       const xquery = `
         for $c in cts:collections()
         let $count := xdmp:estimate(cts:collection-query($c))
         order by $count descending
         return object-node { "name": $c, "count": $count }
       `;
-      const evalParams: Record<string, string | number> = { format: "json" };
+      const evalParams: Record<string, string | number> = {};
       if (database) evalParams.database = database;
       const evalRes = await this.base.http.post(
         "/v1/eval",
@@ -172,17 +159,18 @@ export class SchemaClient {
           responseType: "text",
         }
       );
-      void raw;
-
-      const text = evalRes.data as string;
-      const matches = [...text.matchAll(/\{[^}]+\}/g)];
-      return matches
-        .map((m) => {
-          try {
-            return JSON.parse(m[0]) as { name: string; count: number };
-          } catch {
-            return null;
+      const parts = parseMultipartMixed(evalRes.data as string, evalRes.headers["content-type"] as string);
+      return parts
+        .map((p) => {
+          const v = p.value;
+          if (v && typeof v === "object" && "name" in (v as object)) {
+            return v as { name: string; count: number };
           }
+          // Fallback: try parsing string parts as JSON
+          if (typeof v === "string") {
+            try { return JSON.parse(v) as { name: string; count: number }; } catch { /* skip */ }
+          }
+          return null;
         })
         .filter(Boolean)
         .slice(0, limit) as Array<{ name: string; count: number }>;
@@ -473,8 +461,18 @@ export class SchemaClient {
     });
 
     const sanitizedColumns: string[] = [];
+    const skippedNullColumns: string[] = [];
     const columns: TdeColumn[] = discovery.inferredFields
       .filter((f) => !f.path.includes(".")) // top-level fields only
+      .filter((f) => {
+        // Skip columns where every sampled value was null — they contribute nothing
+        // to the TDE view and create noise (e.g. Socrata @computed_region_* columns).
+        if (f.exampleValues.length === 0 && f.nullable) {
+          skippedNullColumns.push(f.path);
+          return false;
+        }
+        return true;
+      })
       .map((f) => {
         const scalarType = inferTdeScalarType(f);
         // MarkLogic's JSON-to-XML model maps property names to XML element names.
@@ -500,7 +498,7 @@ export class SchemaClient {
     };
 
     const uri = `/tde/${options.schemaName}/${options.viewName}.json`;
-    return { uri, template, sanitizedColumns };
+    return { uri, template, sanitizedColumns, skippedNullColumns };
   }
 }
 
