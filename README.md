@@ -4,7 +4,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for Mar
 
 ## Features
 
-- **44 MCP tools** across 10 domains: admin, documents, search, schema, eval, SPARQL, Optic (incl. vector search), QuickSight, Flux, and approach advisory
+- **46 MCP tools** across 10 domains: admin, documents, search, schema, eval, SPARQL, Optic (incl. vector search), QuickSight, Flux, and approach advisory
 - **5 MCP resources** including a machine-readable problem→solution decision guide
 - **13 MCP prompts** for query planning, code generation, import design, and BI integration
 - **Two transports**: stdio (Claude Desktop / local agents) and HTTP+SSE (remote agents, QuickSight)
@@ -175,7 +175,7 @@ docker compose up
 |---|---|
 | `ml_suggest_approach` | Analyse a natural-language task and return ranked tool recommendations with ready-to-use recipe parameters. Call this before starting any non-trivial task. |
 
-### Admin (7 tools)
+### Admin (8 tools)
 
 | Tool | Description |
 |---|---|
@@ -186,6 +186,7 @@ docker compose up
 | `ml_forests_list` | Forest status |
 | `ml_servers_list` | App server list |
 | `ml_server_properties` | App server configuration |
+| `ml_reindex_status` | Check whether a database has finished reindexing after TDE installation or index config changes. Returns `ready=true` when safe to run `ml_optic_query` or `ml_tde_validate`. Use after `flux_import` with `generate_tde=true` to avoid SQL-TABLEREINDEXING errors. |
 
 ### Documents (6 tools)
 
@@ -198,7 +199,7 @@ docker compose up
 | `ml_document_delete` *(write)* | Delete document |
 | `ml_document_patch` *(write)* | Partial update |
 
-### Search (4 tools)
+### Search (5 tools)
 
 Uses MarkLogic's universal index — no TDE or range index required for word queries.
 
@@ -207,6 +208,7 @@ Uses MarkLogic's universal index — no TDE or range index required for word que
 | `ml_search` | Full-text and structured search with cts.search semantics |
 | `ml_search_qbe` | Query By Example — match by document structure |
 | `ml_values_query` | Lexicon/range index value counts and aggregates |
+| `ml_geospatial_search` | Find documents within a geospatial region — circle, bounding box, or polygon. Requires a geospatial element pair index; confirm with `ml_indexes_list` first. |
 | `ml_suggest` | Search autocomplete from a partial query string |
 
 > Range queries within `ml_search` require a pre-existing range index. Verify with `ml_indexes_list` first.
