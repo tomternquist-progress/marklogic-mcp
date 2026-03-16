@@ -242,14 +242,15 @@ Use as a last resort — ~10 KB script payload limit, no parallel batching.
 | `ml_eval_javascript` | Execute Server-Side JavaScript |
 | `ml_invoke_module` | Call a stored SJS/XQuery module |
 
-### Graphs / SPARQL (2 tools)
+### Graphs / SPARQL (3 tools)
 
 Queries MarkLogic's triple store. Supports three storage patterns: embedded triples (co-located inside the source document as a `sem:triples` array), named graphs (standalone RDF documents), and hybrid (entity document + named graph for cross-entity relationships).
 
 | Tool | Description |
 |---|---|
-| `ml_sparql_query` | SPARQL 1.1 SELECT/CONSTRUCT/ASK/DESCRIBE against the triple store. Supports embedded, named-graph, and hybrid triple patterns. |
+| `ml_sparql_query` | SPARQL 1.1 SELECT/CONSTRUCT/ASK/DESCRIBE. SELECT and ASK return `{ head, results }` JSON. CONSTRUCT and DESCRIBE return raw Turtle text. Supports embedded, named-graph, and hybrid triple patterns. |
 | `ml_graphs_list` | List named graphs. Identifies managed-triple graphs that may be candidates for reprocessing into entity-oriented documents via `flux_reprocess`. |
+| `ml_graph_put` *(write)* | Load Turtle, N-Triples, JSON-LD, or RDF/XML into a named graph via PUT/PATCH `/v1/graphs`. |
 
 ### QuickSight Integration (4 tools)
 

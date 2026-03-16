@@ -18,6 +18,9 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
     "  or ml_document_put. Query with FROM NAMED <graph-uri>. Use for ontologies and taxonomies.\n" +
     "  Hybrid: document holds entity properties + named graph holds cross-entity relationships,\n" +
     "  linked via subject URI = document URI. Most powerful pattern for knowledge graphs.\n\n" +
+    "RETURN FORMAT:\n" +
+    "  SELECT and ASK return SPARQL results JSON: { head: { vars }, results: { bindings } }.\n" +
+    "  CONSTRUCT and DESCRIBE return raw Turtle text (the RDF graph as a Turtle string).\n\n" +
     "DISCOVERY: Use ml_graphs_list to find named graph URIs before writing your query.\n\n" +
     "COMBINING WITH DOCUMENTS (multi-model): Join op.fromSPARQL() with op.fromView() in ml_eval_javascript.\n" +
     "Use p.on(leftCol, rightCol) for equi-joins — both args must be direct column refs, not expressions.\n" +
@@ -41,7 +44,11 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
     async ({ sparql, default_graph, base, database }) => {
       try {
         const result = await clients.graphs.sparqlQuery(sparql, { defaultGraph: default_graph, database, base });
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        // CONSTRUCT/DESCRIBE return raw Turtle text; SELECT/ASK return SPARQL results JSON
+        const text = typeof result === "string"
+          ? result
+          : JSON.stringify(result, null, 2);
+        return { content: [{ type: "text", text }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
