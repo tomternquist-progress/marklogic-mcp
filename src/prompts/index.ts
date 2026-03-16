@@ -602,11 +602,11 @@ Available tools (use only these):
   Optic:      ml_optic_query, ml_views_list, ml_vector_search
   Flux:       flux_import, flux_export, flux_copy, flux_reprocess, flux_preview, flux_help,
               flux_status
-  Prompts:    xquery_function_generator, sjs_module_generator, tde_schema_generator,
-              rest_extension_generator, structured_query_builder, optic_query_builder,
-              sparql_query_builder, query_approach_advisor, data_modeling_advisor,
-              data_import_advisor, gdelt_import, quicksight_dataset_designer,
-              quicksight_dashboard_planner
+  Prompts:    uri_designer, xquery_function_generator, sjs_module_generator,
+              tde_schema_generator, rest_extension_generator, structured_query_builder,
+              optic_query_builder, sparql_query_builder, query_approach_advisor,
+              data_modeling_advisor, data_import_advisor, gdelt_import,
+              quicksight_dataset_designer, quicksight_dashboard_planner
 
 ## 5. PITFALLS TO AVOID
 List 2–5 specific, concrete pitfalls for this goal. Examples of good pitfalls:
@@ -628,6 +628,160 @@ Do not hedge with generic advice.`,
         },
       }],
     })
+  );
+
+  // ── URI Design Prompt ──────────────────────────────────────────────────────
+
+  server.prompt(
+    "uri_designer",
+    "Design well-formed MarkLogic document URIs from entity type, primary key fields, and collection. " +
+    "Returns URI patterns, flux_import uri_template syntax, multi-key and hierarchical variants, " +
+    "and pitfalls. Call this before ml_document_put or flux_import whenever URIs are not already defined.",
+    {
+      entity_type: z.string().describe("Entity or document type, e.g. 'order', 'customer', 'event'"),
+      primary_key_fields: z.string().describe("Comma-separated primary key field names, e.g. 'orderId' or 'country,year'"),
+      format: z.enum(["json", "xml"]).optional().describe("Document format — determines URI extension (default: json)"),
+      collection: z.string().optional().describe("Collection URI or short name that documents will be assigned to, e.g. 'orders' or 'http://example.com/orders'"),
+      parent_entity: z.string().optional().describe("Parent entity type if this is a child/nested entity, e.g. 'customer' for a child 'order'"),
+      parent_key_fields: z.string().optional().describe("Parent entity primary key fields if hierarchical URI is needed, e.g. 'customerId'"),
+    },
+    ({ entity_type, primary_key_fields, format, collection, parent_entity, parent_key_fields }) => {
+      const ext = format ?? "json";
+      const keys = primary_key_fields.split(",").map(k => k.trim());
+      const keyPlaceholders = keys.map(k => `{${k}}`).join("-");
+      const collectionPrefix = collection
+        ? collection.replace(/^https?:\/\/[^/]+/, "").replace(/\/$/, "") || `/${collection.replace(/[^a-z0-9-]/gi, "-").toLowerCase()}`
+        : `/${entity_type.toLowerCase()}s`;
+      const flatUri = `${collectionPrefix}/${entity_type.toLowerCase()}-${keyPlaceholders}.${ext}`;
+      const pathUri = keys.length === 1
+        ? `${collectionPrefix}/${keyPlaceholders}.${ext}`
+        : `${collectionPrefix}/${keys[0] ? `{${keys[0]}}` : ""}/${keys.slice(1).map(k => `{${k}}`).join("-")}.${ext}`;
+      const hierarchicalUri = parent_entity && parent_key_fields
+        ? `/${parent_entity.toLowerCase()}s/{${parent_key_fields.trim()}}/${entity_type.toLowerCase()}s/${keyPlaceholders}.${ext}`
+        : null;
+      return {
+        messages: [{
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `You are a MarkLogic URI design expert. Design well-formed document URIs for the following entity.
+Do NOT call any tools — this is a design step only.
+
+═══════════════════════════════════════════
+ENTITY CONTEXT
+═══════════════════════════════════════════
+  Entity type        : ${entity_type}
+  Primary key fields : ${primary_key_fields}
+  Document format    : ${ext}
+  Collection         : ${collection ?? "(derive from entity type)"}
+  Parent entity      : ${parent_entity ?? "(none — top-level entity)"}
+  Parent key fields  : ${parent_key_fields ?? "(n/a)"}
+
+═══════════════════════════════════════════
+URI DESIGN RULES (always apply)
+═══════════════════════════════════════════
+
+RULE 1 — PREFIX WITH COLLECTION OR ENTITY TYPE
+  Every URI must start with a meaningful path prefix that groups related documents.
+  This prefix is the "directory" in MarkLogic; ml_document_list can scope to it.
+  Good:  /orders/order-{orderId}.json
+  Bad:   /{orderId}.json   ← no prefix; no grouping; impossible to list all orders
+
+RULE 2 — EMBED ALL PRIMARY KEY VALUES IN THE PATH
+  URI = stable identity. Include every primary key field value so the URI is
+  deterministic and collision-free. Never use UUIDs unless the source data has none.
+  Good:  /events/gdelt/{GlobalEventID}.json
+  Good:  /prices/{country}-{year}-{productId}.json   ← composite key
+  Bad:   /orders/order.json   ← no key; overwrites on every write
+
+RULE 3 — MATCH URI PREFIX TO COLLECTION SHORT NAME
+  When a document belongs to collection "orders", start its URI with /orders/.
+  This makes ml_document_list and directory queries intuitive.
+  Assign: collections = ["orders"]
+  URI:    /orders/{orderId}.json
+
+RULE 4 — USE ONLY URL-SAFE CHARACTERS
+  Allowed: letters, digits, /, -, _, .
+  Encode or replace: spaces → -, colons in key values → -, slashes in values → use path segment
+
+RULE 5 — USE THE RIGHT EXTENSION
+  .json for JSON documents, .xml for XML documents.
+  Modules: .sjs or .xqy (stored in Modules database, not content database).
+  TDE templates: .json or .xml (stored in Schemas database).
+
+RULE 6 — HIERARCHICAL URIS FOR CHILD ENTITIES
+  If this entity belongs to a parent, nest it under the parent's key in the path:
+  /customers/{customerId}/orders/{orderId}.json
+  Benefits: ml_document_list /customers/42/orders/ lists all orders for customer 42.
+
+═══════════════════════════════════════════
+PRODUCE THE FOLLOWING URI DESIGN
+═══════════════════════════════════════════
+
+## 1. RECOMMENDED URI PATTERN
+State the single best URI pattern for this entity:
+  Pattern  : ${flatUri}
+  Rationale: explain why this grouping and key embedding satisfies the rules above
+
+Also show the alternative path-style pattern if keys > 1:
+  Pattern  : ${pathUri}
+  When to use: (explain trade-off vs flat pattern)
+
+${hierarchicalUri ? `## 1b. HIERARCHICAL VARIANT (parent entity detected)
+  Pattern  : ${hierarchicalUri}
+  When to use: when every child query is scoped by parent key; enables directory-scoped listing` : ""}
+
+## 2. FLUX IMPORT uri_template
+Show the exact flux_import uri_template string to use when bulk-loading this entity from a delimited/JSON file:
+\`\`\`json
+{
+  "uri_template": "${flatUri}",
+  "collections": ["${collection ?? entity_type.toLowerCase() + "s"}"]
+}
+\`\`\`
+Explain: Flux replaces {FieldName} with the field value from each source row at import time.
+If a key field contains slashes or special characters, note how to sanitize them.
+
+## 3. SINGLE-DOCUMENT EXAMPLE
+Show a concrete ml_document_put call using a realistic example value for each key:
+\`\`\`json
+{
+  "uri": "<filled-in example URI>",
+  "content_type": "${ext === "json" ? "application/json" : "application/xml"}",
+  "content": { "<example ${entity_type} document with ${primary_key_fields} field(s)>" },
+  "collections": ["${collection ?? entity_type.toLowerCase() + "s"}"]
+}
+\`\`\`
+
+## 4. DIRECTORY LISTING CALL
+Show the ml_document_list call that lists all documents for this entity type:
+\`\`\`json
+{
+  "directory": "${collectionPrefix}/",
+  "page_size": 20
+}
+\`\`\`
+
+## 5. COLLECTION ASSIGNMENT
+State the exact collection URI(s) to assign, and why:
+- Primary collection: "${collection ?? entity_type.toLowerCase() + "s"}"  — groups all ${entity_type} documents for ml_collections_list and search scoping
+- (add any secondary collections if the domain calls for it, e.g. a status collection)
+
+## 6. PITFALLS TO AVOID
+List 3–5 URI-specific pitfalls:
+- "Using UUIDs instead of natural keys makes URIs opaque — prefer source system IDs"
+- "Omitting the collection prefix means ml_document_list cannot scope to this entity type"
+- "Composite keys joined without a separator cause collisions: id=12,year=3 ≡ id=123,year=''"
+- "Mutable fields (status, name) in URIs cause stale URIs after updates — only use immutable keys"
+- "Key values with path separators (/) break the directory structure — replace / with - in values"
+- "Storing TDE templates at /tde/... in the content database instead of the Schemas database — they must go to database='Schemas'"
+
+Be specific. Reference actual MCP tool names (flux_import, ml_document_put, ml_document_list).
+Do not give generic advice.`,
+          },
+        }],
+      };
+    }
   );
 
   // ── Dataset Import Prompts ─────────────────────────────────────────────────

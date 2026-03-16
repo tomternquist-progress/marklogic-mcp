@@ -131,8 +131,47 @@ Code generation      Prompt templates           xquery_function_generator —
 Data import design   Import advisor prompt      data_import_advisor       —
                                                 flux_import
 
+URI design           URI designer prompt        uri_designer              —
+(naming/keys)                                   ml_document_put
+                                                flux_import (uri_template)
+
 QuickSight design    Dataset/dashboard prompts  quicksight_dataset_designer ml_schema_discover
                                                 quicksight_dashboard_planner
+
+
+── URI DESIGN — ALWAYS CALL uri_designer BEFORE WRITING DOCUMENTS ─────────────
+
+Before calling ml_document_put or setting uri_template in flux_import, decide on a
+URI pattern using these rules. Use the uri_designer prompt when unsure.
+
+RULE 1 — PREFIX WITH COLLECTION OR ENTITY TYPE
+  Every URI starts with a path segment that groups related documents.
+  ml_document_list can scope to this prefix as a "directory".
+  Good: /orders/order-{orderId}.json   Bad: /{orderId}.json
+
+RULE 2 — EMBED ALL PRIMARY KEY VALUES
+  URI = stable, deterministic identity. Include every primary key field so the URI
+  is collision-free and can be reconstructed from the source record alone.
+  Good: /prices/{country}-{year}-{productId}.json   Bad: /prices/price.json
+
+RULE 3 — MATCH URI PREFIX TO COLLECTION SHORT NAME
+  Collection "orders" → URI prefix /orders/. This keeps directory listing and
+  collection scoping consistent.
+
+RULE 4 — HIERARCHICAL URIS FOR CHILD ENTITIES
+  /customers/{customerId}/orders/{orderId}.json
+  Enables: ml_document_list /customers/42/orders/ → all orders for one customer.
+
+RULE 5 — IMMUTABLE KEYS ONLY
+  Never embed mutable fields (status, name) in URIs. Only use stable IDs.
+
+RULE 6 — URL-SAFE CHARACTERS ONLY
+  letters, digits, /, -, _, .   Replace spaces and special chars before use.
+
+FLUX uri_template SYNTAX:
+  flux_import uses {FieldName} interpolation in uri_template.
+  Example: "/orders/{orderId}.json" → Flux substitutes the value from each row.
+  Use uri_designer to confirm the pattern before running flux_import.
 
 
 ── MULTI-MODEL DATA DESIGN ─────────────────────────────────────────────────────
@@ -265,6 +304,13 @@ Optic (3):     ml_optic_query, ml_views_list, ml_vector_search
 
 Flux (7):      flux_import, flux_export, flux_copy, flux_reprocess,
                flux_preview, flux_help, flux_status
+
+Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
+               tde_schema_generator, rest_extension_generator,
+               structured_query_builder, optic_query_builder, sparql_query_builder,
+               query_approach_advisor, data_modeling_advisor, data_import_advisor,
+               gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
+               problem_advisor
 `;
 
 export function registerAllResources(server: McpServer, clients: MarkLogicClients): void {
