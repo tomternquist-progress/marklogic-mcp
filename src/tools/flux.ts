@@ -2,9 +2,14 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 
-function formatResult(result: { exitCode: number; output: string; success: boolean; timedOut?: boolean }): string {
+function formatResult(result: { exitCode: number; output: string; success: boolean; timedOut?: boolean }, maxOutputChars?: number): string {
   const status = result.success ? "SUCCESS" : result.timedOut ? "TIMED OUT" : `FAILED (exit ${result.exitCode})`;
-  return `[${status}]\n\n${result.output || "(no output)"}`;
+  let output = result.output || "(no output)";
+  if (maxOutputChars !== undefined && output.length > maxOutputChars) {
+    const truncated = output.length - maxOutputChars;
+    output = output.slice(0, maxOutputChars) + `\n\n[... truncated ${truncated.toLocaleString()} characters. Use a smaller preview_rows value or inspect the source data directly.]`;
+  }
+  return `[${status}]\n\n${output}`;
 }
 
 /**
@@ -171,7 +176,14 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         try {
           runnerPath = await flux.upload(local_file);
         } catch (err) {
-          return { content: [{ type: "text", text: `Failed to upload local file to flux runner: ${err instanceof Error ? err.message : String(err)}` }], isError: true };
+          const detail = err instanceof Error ? err.message : String(err);
+          const hint =
+            detail.includes("File not found")
+              ? ` The path must exist on the MCP server host, not your local machine or the flux runner container. ` +
+                `If you are connecting to a remote MCP server, the file must be uploaded there first, ` +
+                `or served over HTTP so the flux runner can fetch it with http_url instead.`
+              : "";
+          return { content: [{ type: "text", text: `Failed to upload local file to flux runner: ${detail}${hint}` }], isError: true };
         }
         args.push("--path", runnerPath);
       } else if (http_url) {
@@ -413,7 +425,9 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         ];
       }
       const result = await flux.run(previewArgs);
-      return { content: [{ type: "text", text: formatResult(result) }], isError: !result.success };
+      // Spark's tabular preview format can produce very wide output for datasets with
+      // many/long columns. Cap at 40 KB to keep the response usable in context.
+      return { content: [{ type: "text", text: formatResult(result, 40_000) }], isError: !result.success };
     }
   );
 

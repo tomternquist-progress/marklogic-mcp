@@ -14,8 +14,10 @@ export class EvalClient {
     if (!this.allowEval) throw new EvalDisabledError();
     const body = new URLSearchParams();
     body.append("xquery", xquery);
-    if (vars) {
-      Object.entries(vars).forEach(([k, v]) => body.append(`vars[${k}]`, JSON.stringify(v)));
+    if (vars && Object.keys(vars).length > 0) {
+      // MarkLogic /v1/eval expects vars as a single JSON object: vars={"key":value,...}
+      // NOT individual vars[key]=value entries (which are silently ignored)
+      body.append("vars", JSON.stringify(vars));
     }
     return this.evalRequest(body, database);
   }
@@ -24,8 +26,10 @@ export class EvalClient {
     if (!this.allowEval) throw new EvalDisabledError();
     const body = new URLSearchParams();
     body.append("javascript", javascript);
-    if (vars) {
-      Object.entries(vars).forEach(([k, v]) => body.append(`vars[${k}]`, JSON.stringify(v)));
+    if (vars && Object.keys(vars).length > 0) {
+      // MarkLogic /v1/eval expects vars as a single JSON object: vars={"key":value,...}
+      // NOT individual vars[key]=value entries (which are silently ignored)
+      body.append("vars", JSON.stringify(vars));
     }
     return this.evalRequest(body, database);
   }
@@ -56,8 +60,8 @@ export class EvalClient {
     const body = new URLSearchParams();
     body.append("module", moduleUri);
     if (modulesDb) body.append("modules-database", modulesDb);
-    if (vars) {
-      Object.entries(vars).forEach(([k, v]) => body.append(`vars[${k}]`, JSON.stringify(v)));
+    if (vars && Object.keys(vars).length > 0) {
+      body.append("vars", JSON.stringify(vars));
     }
     return this.evalRequest(body, database);
   }

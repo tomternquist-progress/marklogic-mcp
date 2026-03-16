@@ -9,7 +9,16 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
     "Execute an Optic query against MarkLogic using a serialized plan (the $optic JSON format). Returns rows and column names.",
     {
       plan: z.union([z.record(z.unknown()), z.string()]).describe(
-        "Serialized Optic plan as a JSON object (preferred) or JSON string. Must be the $optic plan format, e.g. {\"$optic\":{\"ns\":\"op\",\"fn\":\"operators\",\"args\":[...]}}"
+        "Serialized Optic plan as a JSON object (preferred) or JSON string. Must be the $optic plan format, e.g. {\"$optic\":{\"ns\":\"op\",\"fn\":\"operators\",\"args\":[...]}}.\n\n" +
+        "COMMON OPERATORS:\n" +
+        "- from-view: args=[\"schema\",\"view\"]\n" +
+        "- where: args=[{\"ns\":\"op\",\"fn\":\"eq\",\"args\":[{col},{val}]}]\n" +
+        "- select: args=[[col1, col2, ...]]\n" +
+        "- order-by (SINGLE key): args=[{\"ns\":\"op\",\"fn\":\"desc\",\"args\":[\"colName\"]}]\n" +
+        "- order-by (MULTIPLE keys): wrap in an array — args=[[{\"ns\":\"op\",\"fn\":\"asc\",\"args\":[\"col1\"]},{\"ns\":\"op\",\"fn\":\"desc\",\"args\":[\"col2\"]}]]\n" +
+        "- group-by: args=[groupCols, [aggregates]]\n" +
+        "- limit: args=[N]\n" +
+        "- join-inner: args=[rightView, {\"ns\":\"op\",\"fn\":\"on\",\"args\":[leftCol,rightCol]}]"
       ),
       database: z.string().optional().describe("Target database (uses server default if omitted)"),
       strip_schema_prefix: z.boolean().optional().describe("Strip the 'schema.view.' prefix from result column names. Useful when querying a single view and the fully-qualified names are too verbose. Default: false."),
@@ -35,6 +44,9 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
         }
         if (msg.includes("TABLEREINDEXING") || msg.includes("reindexing")) {
           msg += "\nHint: The TDE view is still being built. Use ml_reindex_status (database=\"Documents\") to check when reindex-count reaches 0, then retry.";
+        }
+        if (msg.includes("OPTIC-INVALARGS") && msg.includes("orderBy")) {
+          msg += "\nHint: order-by accepts exactly 1 argument. For a single sort key use: {\"ns\":\"op\",\"fn\":\"order-by\",\"args\":[{\"ns\":\"op\",\"fn\":\"desc\",\"args\":[\"col\"]}]}. For MULTIPLE sort keys, wrap them in a nested array as the single argument: {\"ns\":\"op\",\"fn\":\"order-by\",\"args\":[[{\"ns\":\"op\",\"fn\":\"asc\",\"args\":[\"col1\"]},{\"ns\":\"op\",\"fn\":\"desc\",\"args\":[\"col2\"]}]]}.";
         }
         return { content: [{ type: "text", text: msg }], isError: true };
       }
