@@ -150,6 +150,10 @@ URI design           URI designer prompt        uri_designer              —
 QuickSight design    Dataset/dashboard prompts  quicksight_dataset_designer ml_schema_discover
                                                 quicksight_dashboard_planner
 
+Project setup /      ml-gradle config-as-code   project_setup_advisor     —
+deploy indexes       (content-database.json,    (prompt)
+(ml-gradle / DHF)    ml-schemas/tde/)
+
 FastTrack UI         Named search-options       ml_search_options_list    ml_indexes_list
 (SearchBar,          (constraints = facets;     ml_search_options_get     ml_collections_list
  FacetFilters,       extract-document-data =    ml_search_options_put     ml_schema_discover
@@ -393,6 +397,7 @@ Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                tde_schema_generator, rest_extension_generator,
                structured_query_builder, optic_query_builder, sparql_query_builder,
                query_approach_advisor, data_modeling_advisor, data_import_advisor,
+               project_setup_advisor,
                gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
                fasttrack_search_designer, fasttrack_app_scaffold,
                problem_advisor

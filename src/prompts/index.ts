@@ -650,8 +650,8 @@ Available tools (use only these):
   Prompts:    uri_designer, xquery_function_generator, sjs_module_generator,
               tde_schema_generator, rest_extension_generator, structured_query_builder,
               optic_query_builder, sparql_query_builder, query_approach_advisor,
-              data_modeling_advisor, data_import_advisor, gdelt_import,
-              quicksight_dataset_designer, quicksight_dashboard_planner
+              data_modeling_advisor, data_import_advisor, project_setup_advisor,
+              gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner
 
 ## 5. PITFALLS TO AVOID
 List 2–5 specific, concrete pitfalls for this goal. Examples of good pitfalls:
@@ -1196,6 +1196,159 @@ Generate all files with complete, working code. Do not use placeholder comments 
   );
 
   // ── Data Import Design Advisor ─────────────────────────────────────────────
+
+  server.prompt(
+    "project_setup_advisor",
+    "Advise on structuring a new MarkLogic project with ml-gradle or Data Hub Framework (DHF). " +
+    "Covers directory layout, database/index config, TDE deployment, security, and module structure.",
+    {
+      project_description: z.string().describe(
+        "Describe the project: what kind of data, expected query patterns, any existing MarkLogic setup"
+      ),
+      use_dhf: z.enum(["yes", "no", "unsure"]).optional().describe(
+        "Whether to use Data Hub Framework (yes/no/unsure). DHF is appropriate for entity-centric data " +
+        "integration pipelines with ingestion, mapping, and mastering steps."
+      ),
+      existing_indexes: z.string().optional().describe(
+        "Paste or describe any range/geospatial indexes that need to be added (from ml_indexes_list output)"
+      ),
+    },
+    ({ project_description, use_dhf, existing_indexes }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a MarkLogic infrastructure expert. Produce a structured project setup plan.
+
+**Project:** ${project_description}
+**Use DHF:** ${use_dhf ?? "unsure — recommend based on project description"}
+**Indexes to add:** ${existing_indexes ?? "none specified — recommend based on query patterns"}
+
+---
+
+## Section 1 — Framework choice: ml-gradle vs DHF
+
+Decide whether to use plain ml-gradle or Data Hub Framework.
+
+**Use plain ml-gradle when:**
+- Custom application (not a data integration / MDM pipeline)
+- Single content database
+- Full control over DB config without DHF conventions
+- Lighter footprint, simpler deployment
+
+**Use DHF when:**
+- Entity-centric data integration from multiple source systems
+- Ingestion → mapping → matching/merging (mastering) pipeline needed
+- Need staging (raw) and final (mastered) databases
+- SmartMastering or entity services features required
+
+State your recommendation and the reason.
+
+---
+
+## Section 2 — Directory structure
+
+Show the complete \`src/main/\` layout for this project. For plain ml-gradle:
+
+\`\`\`
+src/main/
+  ml-config/
+    databases/
+      content-database.json    ← indexes, lexicons
+    security/
+      roles/
+      users/
+    servers/
+      rest-api-server.json
+  ml-schemas/
+    tde/
+      <entity>-tde.json        ← one TDE file per entity/view
+  ml-modules/
+    root/
+      <app modules>
+  ml-data/                     ← seed/test data (optional)
+gradle.properties
+gradle-local.properties        ← gitignore this file (contains passwords)
+gradle-dev.properties
+\`\`\`
+
+For DHF also show: \`entities/\`, \`flows/\`, \`mappings/\`, \`hub-internal-config/\` (note: system-managed).
+
+---
+
+## Section 3 — Database configuration
+
+Show the \`content-database.json\` (or \`final-database.json\` for DHF) snippet needed for this project.
+Include:
+- All range element indexes needed for the described query patterns
+- Geospatial indexes if spatial search is needed
+- uri-lexicon: true and collection-lexicon: true (almost always required)
+- Any word lexicons for suggest/autocomplete
+
+Index JSON format:
+\`\`\`json
+{
+  "range-element-indexes": [
+    {
+      "scalar-type": "string",
+      "namespace-uri": "",
+      "localname": "<fieldName>",
+      "collation": "http://marklogic.com/collation/codepoint",
+      "range-value-positions": false,
+      "invalid-values": "reject"
+    }
+  ]
+}
+\`\`\`
+
+---
+
+## Section 4 — TDE template
+
+Show a starter TDE template (\`ml-schemas/tde/<entity>-tde.json\`) for the primary entity.
+Remind the user:
+- Files here are auto-assigned to the \`http://marklogic.com/xdmp/tde\` collection by ml-gradle
+- Deploy with: \`gradle mlLoadSchemas\`
+- Check ml_reindex_status after deployment before querying via Optic
+- For DHF: DHF auto-generates TDE from \`.entity.json\` descriptors — manual TDE only needed
+  for custom views not covered by the entity model
+
+---
+
+## Section 5 — Key gradle.properties settings
+
+List the minimum required properties for this project. Flag any DHF-specific properties
+(mlStagingDbName, mlFinalDbName, mlJobDbName, etc.) vs plain ml-gradle properties.
+
+Always include:
+\`\`\`properties
+mlHost=localhost
+mlRestPort=<port>
+mlAppName=<name>
+mlUsername=<admin-user>
+mlPassword=<password>        # Never commit — use gradle-local.properties
+mlAuth=digest
+\`\`\`
+
+---
+
+## Section 6 — Deployment checklist
+
+Ordered list of gradle tasks to run for initial deployment, and what each does:
+
+1. \`gradle mlDeploy\` — deploys databases, servers, security, loads schemas + modules
+2. \`gradle mlLoadSchemas\` — (re)deploy TDE templates without full redeploy
+3. \`gradle mlLoadModules\` — (re)deploy XQuery/SJS modules
+4. Check \`ml_reindex_status\` in MCP after adding indexes
+5. Verify with \`ml_views_list\` that TDE views are live before querying
+
+For DHF also include: \`gradle hubDeployArtifacts\` after deploying entities/flows.
+
+Generate the complete plan now.`,
+        },
+      }],
+    })
+  );
 
   server.prompt(
     "data_import_advisor",
