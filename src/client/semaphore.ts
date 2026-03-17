@@ -113,7 +113,7 @@ import type { SemaphoreConfig } from "../config/schema.js";
  * publisher SPARQL then finds the labels correctly.
  */
 function buildPlainSkosPublisherXml(modelName: string): string {
-  return PLAIN_SKOS_PUBLISHER_XML_TEMPLATE.replace("{{MODEL_NAME}}", modelName);
+  return PLAIN_SKOS_PUBLISHER_XML_TEMPLATE.replaceAll("{{MODEL_NAME}}", modelName);
 }
 
 const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?>
@@ -129,18 +129,45 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
     </property>
   </bean>
 
+  <!-- Override SparqlEndpoint label SPARQL to query skosxl:prefLabel triples
+       that were added to the model via SPARQL UPDATE. Uses an explicit GRAPH clause
+       so the query works regardless of whether the publisher SPARQL endpoint is
+       model-scoped (/kmm/api/model:X/sparql) or global (/kmm/api/sparql). -->
+  <bean id="SkosXlModel" parent="SparqlEndpoint">
+    <property name="getPrefLabelsSparql">
+      <value><![CDATA[
+        PREFIX skosxl: <http://www.w3.org/2008/05/skos-xl#>
+        SELECT ?termUri ?prefLabelUri ?prefLabel ?prefLabelRelationship
+        WHERE {
+          GRAPH <urn:x-evn-master:{{MODEL_NAME}}> {
+            ?termUri skosxl:prefLabel ?prefLabelUri .
+            ?prefLabelUri skosxl:literalForm ?prefLabel .
+            BIND(skosxl:prefLabel AS ?prefLabelRelationship)
+          }
+        }
+      ]]></value>
+    </property>
+    <property name="getAltLabelsForwardSparql">
+      <value><![CDATA[
+        PREFIX skosxl: <http://www.w3.org/2008/05/skos-xl#>
+        SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
+        WHERE {
+          GRAPH <urn:x-evn-master:{{MODEL_NAME}}> {
+            ?termUri skosxl:altLabel ?labelUri .
+            ?labelUri skosxl:literalForm ?labelLiteral .
+          }
+        }
+      ]]></value>
+    </property>
+  </bean>
+
   <bean class="com.smartlogic.publisher.Publisher">
-    <!-- Use the default SparqlEndpoint (defined in ModelDefinition.xml) for label lookups.
-         Without this, Publisher falls back to OE API mode which does not find SPARQL-inserted triples. -->
-    <property name="model" ref="SparqlEndpoint"/>
+    <property name="model" ref="SkosXlModel"/>
     <property name="configurationSets">
       <list>
-        <!-- AllResources: generates one CLS rule per skos:Concept for plain-SKOS vocabularies.
-             AllConcepts does NOT find skos:Concept typed resources — only Semaphore-native concept types.
-             With AllConcepts, the publisher reports 0 Concepts and only 1 rule (the ConceptScheme). -->
+        <!-- AllResources: generates one CLS rule per concept.
+             rulebaseClass sets the \${rulebaseClass} variable in the KID template. -->
         <bean parent="AllResources">
-          <!-- rulebaseClass sets the \${rulebaseClass} variable in the KID template.
-               Without it, classification META elements have name="" and are silently dropped. -->
           <property name="rulebaseClass" value="{{MODEL_NAME}}"/>
           <property name="languageCodes">
             <list><value>en</value></list>
@@ -1259,14 +1286,16 @@ export class SemaphoreClient {
     // The model must have skosxl:prefLabel triples (added via SPARQL UPDATE) so the
     // default publisher SKOS-XL SPARQL finds them. The PlainSkosModel SPARQL override
     // does not work reliably in the Semaphore 5.10 publisher SPARQL engine.
+    // Canonical config: AllResources + SkosXlModel with explicit GRAPH clause.
+    // SkosXlModel queries skosxl:prefLabel triples added via SPARQL UPDATE,
+    // with GRAPH <urn:x-evn-master:{model}> so it works with both model-scoped
+    // and global SPARQL endpoints.
     const alreadyHasAllResources = currentXml.includes('parent="AllResources"');
     const alreadyHasRulebaseClass = currentXml.includes("rulebaseClass");
-    const alreadyHasNoPlainSkos = !currentXml.includes("PlainSkosModel");
-    // model ref="SparqlEndpoint" is required — without it, Publisher falls back to OE API
-    // mode and doesn't see SPARQL-inserted triples (e.g. skosxl:prefLabel nodes).
-    const alreadyHasSparqlEndpoint = currentXml.includes('ref="SparqlEndpoint"');
+    const alreadyHasSkosXlModel = currentXml.includes("SkosXlModel");
+    const alreadyHasGraphClause = currentXml.includes("urn:x-evn-master:");
 
-    if (alreadyHasAllResources && alreadyHasRulebaseClass && alreadyHasNoPlainSkos && alreadyHasSparqlEndpoint) {
+    if (alreadyHasAllResources && alreadyHasRulebaseClass && alreadyHasSkosXlModel && alreadyHasGraphClause) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
@@ -1277,11 +1306,11 @@ export class SemaphoreClient {
     if (!alreadyHasAllResources) {
       changes.push("AllConcepts → AllResources");
     }
-    if (!alreadyHasNoPlainSkos) {
-      changes.push("Removed PlainSkosModel SPARQL override — using default SKOS-XL SPARQL (skosxl:prefLabel triples added to model)");
+    if (!alreadyHasSkosXlModel) {
+      changes.push("Added SkosXlModel bean — queries skosxl:prefLabel with explicit GRAPH clause");
     }
-    if (!alreadyHasSparqlEndpoint) {
-      changes.push("Added model ref=\"SparqlEndpoint\" — forces SPARQL label lookup instead of OE API fallback");
+    if (!alreadyHasGraphClause) {
+      changes.push("Added GRAPH <urn:x-evn-master:...> clause to scope SPARQL to model named graph");
     }
 
     // Write the canonical patched XML (replaces any existing XML config entirely)
