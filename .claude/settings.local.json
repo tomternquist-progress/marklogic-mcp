@@ -47,7 +47,12 @@
       "mcp__marklogic-mcp__ml_indexes_list",
       "mcp__marklogic-mcp__ml_eval_javascript",
       "mcp__marklogic-mcp__ml_database_properties",
-      "mcp__marklogic-mcp__ml_search"
+      "mcp__marklogic-mcp__ml_search",
+      "mcp__marklogic-mcp__semaphore_status",
+      "mcp__marklogic-mcp__semaphore_studio_status",
+      "mcp__marklogic-mcp__ml_cluster_status",
+      "mcp__marklogic-mcp__semaphore_publish_sets",
+      "mcp__marklogic-mcp__semaphore_classes"
     ]
   }
 }

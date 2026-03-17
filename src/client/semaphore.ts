@@ -923,6 +923,47 @@ export class SemaphoreClient {
       }
     }
 
+    // If publishMaster isn't set (new model created via API), auto-discover the environment
+    // from the system and assign it to this user for this model.
+    if (!envUri) {
+      try {
+        const envData = await this.kmmGet<{ "@graph"?: Array<Record<string, unknown>> }>(
+          `/kmm/api?path=sempubpermissions:ClassificationServerEnvironment/rdf:instance`
+        );
+        const envGraph = envData["@graph"] ?? [];
+        if (envGraph.length > 0) {
+          const discoveredUri = (envGraph[0] as Record<string, string>)["@id"];
+          if (discoveredUri) {
+            const token = await this.kmmApiKey();
+            const patch = [
+              {
+                op: "add",
+                path: "@graph/0/sempubpermissions:publishMaster/-",
+                value: { "@id": discoveredUri },
+              },
+            ];
+            const patchRes = await this.kmmHttp.patch(
+              `/kmm/api/sys/${modelUri}/user:${username}`,
+              patch,
+              {
+                headers: {
+                  "x-api-key": token,
+                  "Content-Type": "application/json-patch+json",
+                },
+                validateStatus: (s) => s < 500,
+              }
+            );
+            if (patchRes.status === 200 || patchRes.status === 204) {
+              envUri = discoveredUri;
+              logger.info("Auto-assigned publisher environment", { modelUri, envUri });
+            }
+          }
+        }
+      } catch {
+        // ignore — will throw below if envUri still undefined
+      }
+    }
+
     if (!envUri) {
       throw new Error(
         `Publish failed: no publisher environment is assigned to user "${username}" for model "${modelUri}".\n` +
