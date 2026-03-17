@@ -112,7 +112,11 @@ import type { SemaphoreConfig } from "../config/schema.js";
  * Required for: UNESCO Thesaurus, EuroVoc, AGROVOC, and any vocabulary that uses
  * plain skos:prefLabel literals rather than skosxl:prefLabel + skosxl:Label nodes.
  */
-const PLAIN_SKOS_PUBLISHER_XML = `<?xml version="1.0" encoding="UTF-8"?>
+function buildPlainSkosPublisherXml(modelName: string): string {
+  return PLAIN_SKOS_PUBLISHER_XML_TEMPLATE.replace("{{MODEL_NAME}}", modelName);
+}
+
+const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?>
 <beans xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
        xmlns="http://www.springframework.org/schema/beans"
        xsi:schemaLocation="http://www.springframework.org/schema/beans
@@ -163,6 +167,9 @@ const PLAIN_SKOS_PUBLISHER_XML = `<?xml version="1.0" encoding="UTF-8"?>
         <!-- AllConcepts: generates one CLS rule per skos:Concept.
              AllResources (the default) only generates rules at the ConceptScheme level. -->
         <bean parent="AllConcepts">
+          <!-- rulebaseClass sets the \${rulebaseClass} variable in the KID template.
+               Without it, classification META elements have name="" and are silently dropped. -->
+          <property name="rulebaseClass" value="{{MODEL_NAME}}"/>
           <property name="languageCodes">
             <list><value>en</value></list>
           </property>
@@ -1234,8 +1241,12 @@ export class SemaphoreClient {
     // STRLANG normalization is required for regional language tags (e.g. @en-us, @pt-br).
     // Without it, the publisher assigns 0 labels for any vocab with regional subtags.
     const alreadyHasStrlang = currentXml.includes("STRLANG");
+    // rulebaseClass is required so the KID template ${rulebaseClass} variable resolves to
+    // a non-empty string. Without it, all classification META elements have name="" and
+    // are silently dropped by CLS parsers.
+    const alreadyHasRulebaseClass = currentXml.includes("rulebaseClass");
 
-    if (alreadyHasAllConcepts && alreadyHasPlainSkos && alreadyHasStrlang) {
+    if (alreadyHasAllConcepts && alreadyHasPlainSkos && alreadyHasStrlang && alreadyHasRulebaseClass) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
@@ -1254,7 +1265,8 @@ export class SemaphoreClient {
 
     // Write the canonical patched XML (replaces any existing XML config entirely)
     const targetFilename = xmlFilename ?? "Semaphore-Publisher-CS-only.xml";
-    zip.file(targetFilename, PLAIN_SKOS_PUBLISHER_XML);
+    const modelName = modelUri.replace(/^model:/, "");
+    zip.file(targetFilename, buildPlainSkosPublisherXml(modelName));
 
     // Ensure the ContextualCitation.kid template is present
     if (!zip.files["templates/ContextualCitation.kid"]) {
