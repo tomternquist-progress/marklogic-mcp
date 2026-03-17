@@ -54,32 +54,41 @@
  *   auto-produced ConceptScheme root rule (1 rule total) instead of one rule per concept.
  *   kmmPatchPublishConfigForPlainSkos() now injects the correct GRAPH clause automatically.
  *
- *   PUBLISHER WORKSPACE LIFECYCLE (important — read before calling workspace methods):
+ *   PUBLISHER WORKSPACE LIFECYCLE (verified 2026-03-17):
  *     The publisher workspace is a ZIP stored on the Semaphore server filesystem.
- *     It is created by the Semaphore Studio UI when you first open a model's
- *     Publisher tab. The REST API can read (GET) and update (POST) an existing
- *     workspace, but CANNOT create a new one via the API alone.
+ *     It does NOT need to be created manually in Studio.
  *
- *     Workspace GET/POST endpoint (correct URL — no double-slash prefix):
- *       GET  /kmm/api/publisher/workspace/{encodedUri}/config → ZIP download
+ *     CREATING A WORKSPACE: Triggering a publish (POST /kmm/api?path=publisher/{uri}/publish)
+ *     creates the workspace automatically as a side effect, even if the model has no content.
+ *     After the publish returns HTTP 200/202, GET /workspace/{uri}/config returns HTTP 200 + ZIP.
+ *
+ *     The kmmPatchPublishConfigForPlainSkos() method auto-detects a missing workspace and
+ *     bootstraps it via an initial publish before uploading the patched config.
+ *
+ *     Workspace GET/POST endpoint:
+ *       GET  /kmm/api/publisher/workspace/{encodedUri}/config → ZIP download (404 if not created yet)
  *       POST /kmm/api/publisher/workspace/{encodedUri}/config → ZIP upload (multipart/form-data)
  *     where {encodedUri} = encodeURIComponent("urn:x-evn-master:{ModelName}")
  *
- *     If workspace does not exist: GET returns 404, POST returns 403.
- *     Solution: open Semaphore Studio → model → Publisher tab → initialize workspace.
- *     After initialization, kmmPatchPublishConfigForPlainSkos() will succeed.
- *
- *   PUBLISHER ENVIRONMENTS (important — read before calling kmmPublish):
+ *   PUBLISHER ENVIRONMENTS (verified 2026-03-17):
  *     Semaphore publisher "environments" map named targets to sets of CLS/SES servers.
- *     They are configured in Semaphore Studio: Admin → Publisher → Environments → Add.
- *     The publish API requires a named environment; if none is configured,
- *     publish fails with HTTP 404 "Environment doesn't exist: null".
- *     The kmmPublish() method passes the environment name if provided, or omits it.
+ *     They are configured once in Semaphore Studio: Admin → Publisher → Environments → Add.
+ *     The publish API requires a named environment; if none is configured, publish fails.
  *
- *     To configure an environment pointing to the CLS:
+ *     ENVIRONMENT DISCOVERY: There is NO global list API (sempubpermissions:ClassificationServerEnvironment
+ *     does not exist as an endpoint). Environments are stored per-model: when a user first publishes
+ *     a model via Studio, the environment URI is written to:
+ *       sys/{modelUri}/user:{username}  →  sempubpermissions:publishMaster
+ *     kmmPublish() reads that value, and if absent for a new model, scans other models'
+ *     sys records to borrow an existing environment URI and assigns it automatically.
+ *
+ *     ONE-TIME SETUP REQUIRED: At least one model must have been published via Studio once
+ *     (to record the environment). After that, all subsequent models can be published fully
+ *     via API with no Studio interaction.
+ *
+ *     To configure an environment pointing to the CLS (one-time only):
  *       Studio → Administration → Publisher → Classification Server Environments → Add
- *       Name: <any name>, Host: <cls-host>, Port: <cls-port>
- *     Then pass that name as options.environment to kmmPublish().
+ *       Name: <any label>, Host: <cls-host>, Port: <cls-port>
  *
  * Flux classifier flags (for bulk classification at ingest time):
  *   --classifier-host <host>  --classifier-port <clsPort>  --classifier-path /
@@ -93,11 +102,12 @@
  * CLS language codes use an indexed format ("en1", "fr1" etc.) not ISO codes.
  * Use listClsLanguages() to discover available codes. The default is usually "en1".
  *
- * Publisher workspace notes (from KMM API reference):
- *   - The workspace config endpoint uses a DOUBLE-SLASH: /kmm/api//{encodedUri}/...
- *   - New models have no workspace until the Studio Publisher tab is accessed once
- *     (or a publish is triggered that initialises it). The workspace config upload
- *     (POST multipart) returns HTTP 415 until the workspace exists.
+ * Publisher workspace notes (verified 2026-03-17 against Semaphore 5.10.1):
+ *   - The workspace config endpoint uses a SINGLE-SLASH: /kmm/api/publisher/workspace/{uri}/config
+ *     (an older note said double-slash — that was incorrect; double-slash returns HTTP 400)
+ *   - New models have no workspace ZIP until the first publish is triggered via the API.
+ *     The Studio Publisher tab is NOT required for workspace initialization.
+ *     Triggering a publish (even with an empty model) creates the workspace as a side effect.
  *   - The publish trigger endpoint encodes model URI colons (%3A) but NOT slashes
  *     in the path parameter value: /kmm/api?path=publisher/model%3AName/publish
  */
@@ -1008,39 +1018,72 @@ export class SemaphoreClient {
     }
 
     // If publishMaster isn't set (new model created via API), auto-discover the environment
-    // from the system and assign it to this user for this model.
+    // by scanning other models' sys records.
+    //
+    // BACKGROUND (verified 2026-03-17):
+    //   The KMM API endpoint sempubpermissions:ClassificationServerEnvironment/rdf:instance
+    //   does NOT exist as a global list. Environments are stored per-model — when a user
+    //   first publishes a model via Studio, Semaphore writes the environment URI into:
+    //     sys/{modelUri}/user:{username}  →  sempubpermissions:publishMaster
+    //   So to auto-discover the environment for a NEW model, we must scan other models that
+    //   have already been published at least once.
     if (!envUri) {
       try {
-        const envData = await this.kmmGet<{ "@graph"?: Array<Record<string, unknown>> }>(
-          `/kmm/api?path=sempubpermissions:ClassificationServerEnvironment/rdf:instance`
-        );
-        const envGraph = envData["@graph"] ?? [];
-        if (envGraph.length > 0) {
-          const discoveredUri = (envGraph[0] as Record<string, string>)["@id"];
-          if (discoveredUri) {
-            const token = await this.kmmApiKey();
-            const patch = [
-              {
-                op: "add",
-                path: "@graph/0/sempubpermissions:publishMaster/-",
-                value: { "@id": discoveredUri },
-              },
-            ];
-            const patchRes = await this.kmmHttp.patch(
-              `/kmm/api/sys/${modelUri}/user:${username}`,
-              patch,
-              {
-                headers: {
-                  "x-api-key": token,
-                  "Content-Type": "application/json-patch+json",
-                },
-                validateStatus: (s) => s < 500,
-              }
+        const allModels = await this.listKmmModels();
+        const otherModels = allModels.filter((m) => m.id !== modelUri);
+        for (const m of otherModels) {
+          try {
+            const sysPath = `sys/${m.id}/user:${username}`;
+            const permProps = "sempubpermissions:publishMaster%2Csempubpermissions:publishTask";
+            const sysData = await this.kmmGet<{ "@graph"?: Array<Record<string, unknown>> }>(
+              `/kmm/api?path=${sysPath}&properties=${permProps}&language=${lang}`
             );
-            if (patchRes.status === 200 || patchRes.status === 204) {
-              envUri = discoveredUri;
-              logger.info("Auto-assigned publisher environment", { modelUri, envUri });
+            const sysGraph = sysData["@graph"] ?? [];
+            for (const node of sysGraph) {
+              const pm = node["sempubpermissions:publishMaster"];
+              if (Array.isArray(pm) && pm.length > 0) {
+                const candidateUri = (pm[0] as Record<string, string>)["@id"];
+                if (candidateUri) {
+                  // Assign to this model
+                  const token = await this.kmmApiKey();
+                  const patch = [
+                    {
+                      op: "add",
+                      path: "@graph/0/sempubpermissions:publishMaster/-",
+                      value: { "@id": candidateUri },
+                    },
+                    {
+                      op: "add",
+                      path: "@graph/0/sempubpermissions:publishTask/-",
+                      value: { "@id": candidateUri },
+                    },
+                  ];
+                  const patchRes = await this.kmmHttp.patch(
+                    `/kmm/api/sys/${modelUri}/user:${username}`,
+                    patch,
+                    {
+                      headers: {
+                        "x-api-key": token,
+                        "Content-Type": "application/json-patch+json",
+                      },
+                      validateStatus: (s) => s < 500,
+                    }
+                  );
+                  if (patchRes.status === 200 || patchRes.status === 204) {
+                    envUri = candidateUri;
+                    logger.info("Auto-assigned publisher environment from sibling model", {
+                      modelUri,
+                      sourceModel: m.id,
+                      envUri,
+                    });
+                  }
+                  break;
+                }
+              }
             }
+            if (envUri) break;
+          } catch {
+            // skip this model — try next
           }
         }
       } catch {
@@ -1050,10 +1093,11 @@ export class SemaphoreClient {
 
     if (!envUri) {
       throw new Error(
-        `Publish failed: no publisher environment is assigned to user "${username}" for model "${modelUri}".\n` +
+        `Publish failed: no publisher environment is assigned to user "${username}" for model "${modelUri}",\n` +
+        `and no sibling model with an existing environment was found to borrow from.\n` +
         `Open Semaphore Studio → Administration → Publisher → Classification Server Environments\n` +
-        `and ensure a CLS environment is configured. Then open the model's Publisher tab and click\n` +
-        `Publish once from the UI — this assigns the environment to your user for that model.`
+        `and ensure a CLS environment is configured. Then publish any model once from the Studio UI\n` +
+        `to record the environment — subsequent API publishes will discover it automatically.`
       );
     }
 
@@ -1199,9 +1243,9 @@ export class SemaphoreClient {
         validateStatus: (s) => s < 500,
       }
     );
-    // 404 = workspace does not exist (never initialized via Studio UI)
-    // 400 = legacy double-slash URL used; no config either way — return null so caller creates fresh
-    if (res.status === 404 || res.status === 400) return null;
+    // 404 = workspace does not exist (no publish has been triggered for this model yet)
+    // Caller (kmmPatchPublishConfigForPlainSkos) bootstraps the workspace by triggering a publish.
+    if (res.status === 404) return null;
     if (res.status !== 200) {
       throw new Error(`Failed to download publish config (HTTP ${res.status}).`);
     }
@@ -1214,12 +1258,12 @@ export class SemaphoreClient {
    * Uses multipart/form-data POST (field name "file") to the workspace config endpoint.
    * Returns on HTTP 204 (success) or throws on failure.
    *
-   * PREREQUISITE: The workspace must already exist (i.e. the model's Publisher tab must
-   * have been opened in Semaphore Studio at least once). If not, POST returns HTTP 403
-   * with "permission: sempubpermissions:UploadModelConfiguration" — that message is
-   * misleading; the real issue is the workspace file doesn't exist on the server.
-   * Fix: open Studio → model → Publisher tab to initialize the workspace, then retry.
+   * PREREQUISITE: The workspace must already exist (triggered by a prior publish call).
+   * kmmPatchPublishConfigForPlainSkos() handles this automatically — it bootstraps the
+   * workspace by triggering an initial publish before uploading the patched config.
+   * Manual Studio interaction is not required.
    */
+
   /**
    * Grant the publisher workspace upload permission on a KMM model via JSON-Patch.
    *
@@ -1233,10 +1277,9 @@ export class SemaphoreClient {
    * sempubpermissions:UploadModelConfiguration array on the model's sys graph node.
    *
    * NOTE: This grants the API-level permission but does NOT create the workspace ZIP file
-   * on the server filesystem. If the workspace file has never been initialised (model was
-   * created via API and the Publisher tab was never opened), the upload will still fail
-   * with 403 even after granting the permission. In that case the Studio Publisher tab must
-   * be opened once to initialise the workspace directory.
+   * on the server filesystem. If the workspace doesn't exist yet, trigger a publish first
+   * (which creates it as a side effect). kmmPatchPublishConfigForPlainSkos() does this
+   * automatically via its bootstrap-publish logic.
    *
    * @param modelUri   KMM model URI, e.g. "model:IPTCMediaTopics"
    * @param principal  JSON-LD @id of the user/group to grant, default "user:admin"
@@ -1353,15 +1396,44 @@ export class SemaphoreClient {
    * @returns Human-readable summary of what was changed (or a no-op message if already patched).
    */
   async kmmPatchPublishConfigForPlainSkos(modelUri: string): Promise<string> {
-    // Try to download the existing workspace config ZIP
+    // Try to download the existing workspace config ZIP.
+    //
+    // WORKSPACE AUTO-INIT (verified 2026-03-17):
+    //   The publisher workspace (a ZIP on the publisher service filesystem) is created
+    //   automatically when a publish is triggered — even if the model has no content.
+    //   Before this was discovered, we thought the Studio Publisher tab had to be opened
+    //   manually. Now we bootstrap: trigger a dummy publish → workspace is created → upload
+    //   the patched plain-SKOS config → do the real publish.
+    //
+    //   Bootstrap publish uses the default SKOS-XL config (AllResources, no GRAPH clause)
+    //   and produces only 1 CLS rule (the ConceptScheme root). That is fine because:
+    //     a) The model is brand new — no rules exist in CLS for it yet.
+    //     b) We immediately overwrite the workspace config and re-publish.
     let zip: JSZip;
-    const existing = await this.kmmDownloadPublishConfigZip(modelUri);
+    let existing = await this.kmmDownloadPublishConfigZip(modelUri);
+
+    if (!existing) {
+      logger.info("No publisher workspace found — bootstrapping via initial publish", { modelUri });
+      // Bootstrap publish: initializes the workspace directory on the publisher service.
+      // Uses async=false so the workspace is guaranteed to exist when we try to download it.
+      // The model may have no content, in which case this completes in <2 s.
+      try {
+        await this.kmmPublish(modelUri, { async: false });
+        existing = await this.kmmDownloadPublishConfigZip(modelUri);
+        if (existing) {
+          logger.info("Bootstrap publish succeeded — workspace is now available", { modelUri });
+        }
+      } catch (e) {
+        logger.warn("Bootstrap publish failed — will attempt upload anyway", { modelUri, err: String(e) });
+      }
+    }
+
     if (existing) {
       zip = await JSZip.loadAsync(existing);
       logger.debug("Downloaded existing publisher config ZIP", { modelUri, size: existing.length });
     } else {
       zip = new JSZip();
-      logger.debug("No existing publisher config — creating fresh ZIP", { modelUri });
+      logger.debug("No existing publisher config even after bootstrap — creating fresh ZIP", { modelUri });
     }
 
     // Always target the CS-only config — this is what kmmPublish() uses by default

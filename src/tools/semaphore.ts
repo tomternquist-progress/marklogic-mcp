@@ -619,16 +619,13 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "Trigger a Semaphore KMM publish — compile the taxonomy model into CLS classification rules.\n\n" +
     "Publishing converts the RDF taxonomy in KMM into a .rules file that the Classification Server (CLS) " +
     "uses to classify text. You must re-publish after any change to model content or publisher config.\n\n" +
-    "PREREQUISITES (two one-time setup steps in Semaphore Studio):\n" +
-    "  1. PUBLISHER WORKSPACE: The model's Publisher tab must have been opened in Semaphore Studio\n" +
-    "     at least once — this initializes the workspace ZIP on the server. Without it,\n" +
-    "     semaphore_publish_config_fix_plain_skos will fail (HTTP 403).\n" +
-    "     Studio URL: http://<semaphore-host>:<kmm-port>/kmm/#/models/<modelName>/publisher\n\n" +
-    "  2. PUBLISHER ENVIRONMENT: A CLS server environment must be configured in Studio admin.\n" +
-    "     Without it, publish fails: HTTP 404 'Environment doesn't exist'.\n" +
+    "PREREQUISITES:\n" +
+    "  1. PUBLISHER WORKSPACE: Created automatically the first time a publish is triggered.\n" +
+    "     No Studio interaction required — workspace init happens as a side effect of publish.\n\n" +
+    "  2. PUBLISHER ENVIRONMENT: Must be configured once in Studio Admin (one-time, global).\n" +
     "     Studio: Administration → Publisher → Classification Server Environments → Add\n" +
     "     (Name: any label, Host: <cls-host>, Port: <cls-port>)\n" +
-    "     Then pass environment='<name>' to this tool.\n\n" +
+    "     After that, all future model publishes auto-discover this environment.\n\n" +
     "ASYNC vs SYNC:\n" +
     "  Large models (500+ concepts) will time out on synchronous publish. " +
     "  Use async=true (the default) — the tool returns a job ID immediately. " +
@@ -791,10 +788,8 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "  (UNESCO, EuroVoc, AGROVOC, IPTC) and SKOS-XL ones benefit from the GRAPH clause fix.\n" +
     "  Symptom: semaphore_publish completes successfully but only 1 rule loads in CLS.\n\n" +
     "BEFORE RUNNING:\n" +
-    "  1. WORKSPACE INITIALIZATION (required for new models):\n" +
-    "     Open Semaphore Studio and navigate to the model's Publisher tab — this creates the\n" +
-    "     publisher workspace ZIP on the server. Without this step, this tool returns HTTP 403.\n" +
-    "     Studio URL: http://<semaphore-host>:<kmm-port>/kmm/#/models/<modelName>/publisher\n\n" +
+    "  1. WORKSPACE: Initialized automatically — this tool bootstraps the workspace by triggering\n" +
+    "     an initial publish if no workspace exists yet. No Studio interaction required.\n\n" +
     "  2. Ensure concepts have sem:guid triples — use semaphore_kmm_sparql_update:\n" +
     "     PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>\n" +
     "     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n" +

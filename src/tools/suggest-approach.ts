@@ -521,41 +521,40 @@ function classify(task: string): ToolRecipe[] {
           sparql: "PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>\nPREFIX skos: <http://www.w3.org/2004/02/skos/core#>\nINSERT { ?c sem:guid ?g }\nWHERE { ?c a skos:Concept . FILTER NOT EXISTS { ?c sem:guid ?x } . BIND(STRUUID() AS ?g) }",
           note: "Required — sem:guid is used by the ContextualCitation.kid template to generate unique rule IDs",
         },
-        step4_init_workspace: {
-          manual_step: "Open Semaphore Studio → model Publisher tab → click Initialize. Required once per model.",
-          url: "http://<semaphore-host>:<kmm-port>/kmm/#/models/<ModelName>/publisher",
-        },
-        step5_fix_publisher_config: {
+        step4_fix_publisher_config: {
           tool: "semaphore_publish_config_fix_plain_skos",
           model_uri: "model:<ModelName>",
-          note: "Adds GRAPH clause + plain SKOS label queries. Fixes the '1 rule only' silent failure.",
+          note: "Adds GRAPH clause + plain SKOS label queries. Bootstraps workspace automatically if needed. Fixes the '1 rule only' silent failure.",
         },
-        step6_publish: {
+        step5_publish: {
           tool: "semaphore_publish",
           model_uri: "model:<ModelName>",
           wait_for_completion: true,
           note: "After publish, the tool auto-checks the loaded rule count and warns if still 1.",
         },
-        step7_diagnose_if_needed: {
+        step6_diagnose_if_needed: {
           tool: "semaphore_publish_diagnose",
           model_uri: "model:<ModelName>",
           note: "Run this if rule count is wrong — it compares KMM concepts vs CLS rules and explains the fix.",
         },
-        step8_test: {
+        step7_test: {
           tool: "semaphore_classify",
           content: "<sample text mentioning concepts from the taxonomy>",
           threshold: 0,
         },
       },
       rationale:
-        "Loading a SKOS taxonomy into Semaphore requires 6 steps. The critical non-obvious one is " +
-        "semaphore_publish_config_fix_plain_skos: the publisher's SPARQL endpoint is a global store " +
-        "where each model's data lives in a named graph (urn:x-evn-master:{ModelName}). Without the " +
-        "GRAPH clause fix, ALL label queries return empty → only 1 rule is published (the ConceptScheme " +
-        "root) → classification returns nothing. This silent failure is the most common issue.",
+        "Loading a SKOS taxonomy into Semaphore requires 5 steps (all via API, no Studio interaction needed). " +
+        "The critical non-obvious one is semaphore_publish_config_fix_plain_skos: the publisher's SPARQL " +
+        "endpoint is a global store where each model's data lives in a named graph (urn:x-evn-master:{ModelName}). " +
+        "Without the GRAPH clause fix, ALL label queries return empty → only 1 rule is published (the " +
+        "ConceptScheme root) → classification returns nothing. This silent failure is the most common issue. " +
+        "The tool also auto-bootstraps the publisher workspace (triggering an initial publish as a side effect) " +
+        "so no manual Studio interaction is needed.",
       warnings: [
-        "The Publisher workspace must be initialized in Semaphore Studio before step 5 — " +
-        "without this, semaphore_publish_config_fix_plain_skos returns HTTP 403.",
+        "ONE-TIME GLOBAL SETUP: A CLS environment must be configured in Studio Admin once " +
+        "(Administration → Publisher → Classification Server Environments → Add). After that, all " +
+        "subsequent model publishes auto-discover it — no per-model Studio steps needed.",
         "sem:guid must be added to all concepts (step 3) before publishing — the ContextualCitation.kid " +
         "template uses ${resource.guid} to generate unique rule identifiers.",
         "After publish, if all CLS rules = 1, run semaphore_publish_diagnose for root-cause analysis.",
