@@ -9,6 +9,90 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`semaphore_publish_diagnose` tool** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
+  Triangulates KMM concept count (OE API), labeled English concept count (SPARQL with GRAPH
+  clause), and CLS estimated rule count to identify the root cause of publish failures.
+  Primary diagnostic: distinguishes "no concepts loaded", "labels not found", and "GRAPH
+  clause missing" failure modes. Outputs a human-readable root-cause explanation and fix.
+
+- **`kmmConceptCount(modelUri)` client method** (`src/client/semaphore.ts`)
+  Public method querying the OE API for `skos:Concept` instance count in a model.
+  Used by `semaphore_publish_diagnose` to compare concept count against CLS rule count.
+
+- **`clsRuleCount(publishSetName)` client method** (`src/client/semaphore.ts`)
+  Fetches the CLS `/rulenetview.html` page and parses the pak file size as a proxy for
+  rule count (CLS does not expose a direct rule-count API). Size < 5 KB → 1 rule (failure
+  mode); ≥ 5 KB → estimates ~200 bytes/rule.
+
+### Fixed
+
+- **Publisher SPARQL queries missing `GRAPH` clause** (`src/client/semaphore.ts`)
+  Root cause of the "only 1 CLS rule published" silent failure for all SKOS vocabularies:
+  the publisher's `SparqlEndpoint` connects to a global SPARQL endpoint shared across all
+  models. Each model's data lives in a named graph `urn:x-evn-master:{ModelName}`, not the
+  default graph. Without an explicit `GRAPH` clause, all label queries return 0 rows and
+  the publisher generates only the auto-produced ConceptScheme root rule.
+  `PLAIN_SKOS_PUBLISHER_XML_TEMPLATE` updated to wrap all `WHERE {}` clauses with
+  `GRAPH <urn:x-evn-master:{{MODEL_NAME}}> { ... }`. IPTC Media Topics went from 1 rule
+  to 1,391 rules after this fix.
+
+- **`listKmmModels()` returning empty array** (`src/client/semaphore.ts`)
+  The `sys:Model/rdf:instance` endpoint returns model IDs with a `.tch` suffix
+  (e.g. `model:IPTCMediaTopics.tch`). The previous filter discarded these, returning
+  nothing. Fixed to strip the `.tch` suffix with `.replace(/\.tch$/, "")`.
+
+- **Workspace config endpoint double-slash URL** (`src/client/semaphore.ts`, comments)
+  An earlier note documented the workspace API as `/kmm/api//{encodedUri}/...` (double
+  slash). The correct URL is `/kmm/api/publisher/workspace/{encodedUri}/config` (single
+  slash). The double-slash form returns HTTP 400 "invalid uris: publisher".
+
+- **Publisher workspace initialisation — no Studio UI required** (`src/client/semaphore.ts`)
+  Previous belief: the Studio Publisher tab must be opened once per model to create the
+  workspace ZIP on the publisher service filesystem (HTTP 403 otherwise).
+  Verified: triggering any publish via the REST API creates the workspace as a side effect,
+  even for an empty model, completing in < 2 s. `kmmPatchPublishConfigForPlainSkos()` now
+  auto-bootstraps the workspace by running an initial publish when GET returns 404, then
+  downloads the freshly created ZIP, applies the plain-SKOS patch, and re-uploads.
+
+- **Publisher environment discovery for new models** (`src/client/semaphore.ts`)
+  Previous approach: query `sempubpermissions:ClassificationServerEnvironment/rdf:instance`
+  for a global list of environments. This graph does not exist in Semaphore 5.10.1.
+  Environments are stored per-model in `sys/{modelUri}/user:{username}` →
+  `sempubpermissions:publishMaster` when Studio first publishes a model.
+  `kmmPublish()` now falls back to scanning all other models' sys records to find an
+  existing environment URI and JSON-Patch-assigns it to the new model automatically.
+  One-time global prerequisite: at least one model must have been published via Studio once.
+
+### Changed
+
+- **`semaphore_publish` prerequisites** (`src/tools/semaphore.ts`)
+  Removed "open Studio Publisher tab" as a required manual step. Updated to document that
+  workspace initialisation is automatic on first publish, and environment is auto-discovered
+  from sibling models.
+
+- **`semaphore_publish_config_fix_plain_skos` prerequisites** (`src/tools/semaphore.ts`)
+  Removed Studio URL prerequisite. Updated to state that workspace bootstrapping is
+  automatic (no Studio interaction needed).
+
+- **`semaphore_publish` auto-warns on 1-rule result** (`src/tools/semaphore.ts`)
+  After `wait_for_completion=true` + COMPLETE status, the tool now checks the CLS rule
+  count and emits a warning with the root cause (missing GRAPH clause) and fix command
+  if the count is ≤ 1.
+
+- **`suggest-approach.ts` taxonomy pipeline** (`src/tools/suggest-approach.ts`)
+  Reduced from 8 steps to 5: removed manual `step4_init_workspace` (Studio Publisher tab),
+  renumbered remaining steps. Updated rationale and warnings to reflect fully programmatic
+  workflow. Added one-time global setup note for CLS environment config.
+
+- **`kmmPatchPublishConfigForPlainSkos` detection logic** (`src/client/semaphore.ts`)
+  Changed "already patched?" detection from checking for `LANGMATCHES` to checking for the
+  `urn:x-evn-master:` graph URI — more precise and catches partially-patched configs.
+
+- **`semaphore_publish_config_fix_plain_skos` description** (`src/tools/semaphore.ts`)
+  Rewritten to explain the GRAPH clause root cause (global SPARQL endpoint / named graph
+  isolation) rather than the previously described SKOS-XL vs plain-SKOS framing. The GRAPH
+  clause fix affects ALL label queries regardless of SKOS flavour.
+
 - **`semaphore_kmm_sparql_update` tool** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
   New tool for running SPARQL UPDATE (INSERT DATA / DELETE DATA / DELETE+INSERT / LOAD)
   against a KMM model graph. Always passes `checkConstraints=false&runEditRules=false` to

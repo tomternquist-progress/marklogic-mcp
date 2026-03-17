@@ -287,7 +287,7 @@ Flux is the preferred path for all bulk data operations. It runs as a subprocess
 > `flux_import` supports `generate_tde: true` to auto-create an Optic view from the imported collection in one call.
 > `flux_import` also supports inline Semaphore classification at ingest via `classify_with_semaphore: true` — attaches taxonomy categories to every imported document.
 
-### Semaphore (12 tools)
+### Semaphore (15 tools)
 
 Semaphore is the Progress Data Platform taxonomy and classification engine. These tools manage the full lifecycle: load a SKOS vocabulary into KMM, configure the publisher, publish rules to the Classification Server (CLS), and classify content.
 
@@ -310,10 +310,14 @@ Semaphore is the Progress Data Platform taxonomy and classification engine. Thes
 | `semaphore_kmm_skos_load` | Load a SKOS vocabulary from a public URL into a KMM model |
 | `semaphore_kmm_sparql` | Query model content via SPARQL SELECT |
 | `semaphore_kmm_sparql_update` | Run SPARQL INSERT/DELETE/LOAD to modify model triples |
+| `semaphore_kmm_model_delete` | Permanently delete a KMM model and all its triples |
 | `semaphore_publish` | Trigger an async KMM publish — compiles the taxonomy into CLS rules |
-| `semaphore_publish_config_fix_plain_skos` | Patch the publisher config for plain-SKOS vocabularies (skos:prefLabel, no SKOS-XL) — replaces AllResources→AllConcepts and overrides label SPARQL |
+| `semaphore_publish_config_fix_plain_skos` | Patch the publisher config for plain-SKOS vocabularies (skos:prefLabel, no SKOS-XL) — adds GRAPH clause, switches to AllConcepts, bootstraps workspace automatically |
+| `semaphore_publish_diagnose` | Diagnose publish failures — compares KMM concept count vs CLS rule count and identifies the root cause |
 
-> **Plain-SKOS vocabularies** (UNESCO, EuroVoc, AGROVOC): run `semaphore_publish_config_fix_plain_skos` before `semaphore_publish`. Without the fix, the publisher generates only 1 rule (for the ConceptScheme root) instead of one per concept.
+> **Plain-SKOS vocabularies** (UNESCO, EuroVoc, AGROVOC, IPTC): run `semaphore_publish_config_fix_plain_skos` before `semaphore_publish`. Without it, the publisher generates only 1 CLS rule (for the ConceptScheme root) instead of one per concept. The root cause is that the publisher's SPARQL endpoint is a global store — each model's data lives in the named graph `urn:x-evn-master:{ModelName}` and is invisible without an explicit `GRAPH` clause. This tool adds the clause automatically.
+>
+> **Fully programmatic pipeline**: The entire taxonomy workflow — create model, load SKOS, fix config, publish — runs via API with no Semaphore Studio interaction. The publisher workspace is initialised automatically on first publish. The only one-time global prerequisite is adding a CLS environment in Studio Admin once (`Administration → Publisher → Classification Server Environments → Add`); after that, `semaphore_publish` auto-discovers it for all future models.
 >
 > **Configuration**: Set `SEMAPHORE_HOST`, `SEMAPHORE_SCS_PORT` (default 5058), `SEMAPHORE_KMM_PORT` (default 5080), `SEMAPHORE_USERNAME`, and `SEMAPHORE_PASSWORD` in the MCP server `.env`.
 
