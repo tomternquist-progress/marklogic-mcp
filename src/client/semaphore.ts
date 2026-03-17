@@ -102,15 +102,13 @@ import type { SemaphoreConfig } from "../config/schema.js";
 // ── Publisher config constants ────────────────────────────────────────────────
 
 /**
- * Publisher config XML for SKOS models.
+ * Build the canonical "plain SKOS" publisher config XML for a given model.
  *
- * Uses AllResources with the default SparqlEndpoint (SKOS-XL label queries).
- * Before using this config, the model must have skosxl:prefLabel / skosxl:altLabel
- * triples added via SPARQL UPDATE (see kmmPatchPublishConfigForPlainSkos).
- *
- * For models that use plain skos:prefLabel (no SKOS-XL), kmmPatchPublishConfigForPlainSkos
- * first adds SKOS-XL triples to the KMM model, then uploads this config — the default
- * publisher SPARQL then finds the labels correctly.
+ * Uses AllConcepts + PlainSkosModel (plain skos:prefLabel / skos:altLabel SPARQL queries).
+ * This is the same pattern that successfully published the UNESCO Thesaurus (4,408 rules).
+ * LANGMATCHES matches @en, @en-US, @en-GB, and all English regional variants — required
+ * for vocabularies like IPTC Media Topics (@en-US) and UNESCO Thesaurus (@en).
+ * No SKOS-XL triples are required — plain skos:prefLabel labels are used directly.
  */
 function buildPlainSkosPublisherXml(modelName: string): string {
   return PLAIN_SKOS_PUBLISHER_XML_TEMPLATE.replaceAll("{{MODEL_NAME}}", modelName);
@@ -129,19 +127,41 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
     </property>
   </bean>
 
-  <!-- Use the default SparqlEndpoint (SKOS-XL, no GRAPH clause).
-       The publisher's model-scoped SPARQL endpoint (/kmm/api/model:X/sparql) serves
-       the model's data in its default graph — an explicit GRAPH clause would query
-       a named graph that is NOT the default graph at that endpoint and returns 0 results.
-       We pre-populated skosxl:prefLabel triples in the model via SPARQL UPDATE so the
-       default SKOS-XL queries work without any custom override. -->
+  <!-- PlainSkosModel: override label SPARQL queries to use plain skos:prefLabel / skos:altLabel.
+       Required for vocabularies that store labels directly on the concept node (not SKOS-XL).
+       LANGMATCHES matches @en, @en-US, @en-GB, and all English regional variants. -->
+  <bean id="PlainSkosModel" parent="SparqlEndpoint">
+    <property name="getPrefLabelsSparql">
+      <value><![CDATA[
+        PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+        SELECT ?termUri ?prefLabel
+        WHERE {
+          ?termUri a skos:Concept ;
+                   skos:prefLabel ?prefLabel .
+          FILTER(LANGMATCHES(LANG(?prefLabel), "en"))
+        }
+      ]]></value>
+    </property>
+    <property name="getAltLabelsForwardSparql">
+      <value><![CDATA[
+        PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+        SELECT DISTINCT ?termUri ?labelLiteral
+        WHERE {
+          ?termUri a skos:Concept ;
+                   skos:altLabel ?labelLiteral .
+          FILTER(LANGMATCHES(LANG(?labelLiteral), "en"))
+        }
+      ]]></value>
+    </property>
+  </bean>
+
   <bean class="com.smartlogic.publisher.Publisher">
-    <property name="model" ref="SparqlEndpoint"/>
+    <property name="model" ref="PlainSkosModel"/>
     <property name="configurationSets">
       <list>
-        <!-- AllResources: generates one CLS rule per concept.
+        <!-- AllConcepts: generates one CLS rule per skos:Concept.
              rulebaseClass sets the \${rulebaseClass} variable in the KID template. -->
-        <bean parent="AllResources">
+        <bean parent="AllConcepts">
           <property name="rulebaseClass" value="{{MODEL_NAME}}"/>
           <property name="languageCodes">
             <list><value>en</value></list>
@@ -532,12 +552,13 @@ export class SemaphoreClient {
 
   /**
    * List all models (taxonomies/ontologies) registered in KMM.
-   * Calls GET /kmm/api/specialgraph:system/teamwork:Tag/rdf:instance
-   * and returns the @graph array of model tag objects.
+   * Calls GET /kmm/api/sys/sys:Model/rdf:instance (the correct endpoint for model instances).
+   * Note: the legacy teamwork:Tag endpoint (/kmm/api/specialgraph:system/teamwork:Tag/rdf:instance)
+   * returns empty — it lists a different object type than what createKmmModel creates.
    */
   async listKmmModels(): Promise<KmmModel[]> {
-    const data = await this.kmmGet<{ "@graph"?: Array<{ "@id": string }> }>(
-      "/kmm/api/specialgraph:system/teamwork:Tag/rdf:instance"
+    const data = await this.kmmGet<{ "@graph"?: Array<{ "@id": string; "rdfs:label"?: unknown }> }>(
+      "/kmm/api/sys/sys:Model/rdf:instance"
     );
     return (data["@graph"] ?? []).map((item) => ({ id: item["@id"] }));
   }
@@ -652,10 +673,13 @@ export class SemaphoreClient {
 
     logger.info("kmmImportSkos: uploading to backup/import", { modelUri, format, bytes: fileBuffer.length });
 
-    // 2. POST as multipart/form-data to backup/import
+    // 2. POST as multipart/form-data to backup/import.
+    // Use content=automatic (matching Semaphore Studio UI behaviour) so KMM triggers
+    // full OE indexing — required for the publisher's AllConcepts to enumerate concepts.
+    // content=existing bypasses OE indexing and results in 0 concept rules at publish time.
     const token = await this.kmmApiKey();
     const { body, contentType } = buildMultipart([
-      { name: "content",             value: "existing" },
+      { name: "content",             value: "automatic" },
       { name: "templateName",        value: "" },
       { name: "templateDescription", value: "" },
       { name: "record",              value: "false" },
@@ -1253,19 +1277,15 @@ export class SemaphoreClient {
       : "";
 
     // Check what needs to change.
-    // Canonical config: AllResources + ref="SparqlEndpoint" (default SKOS-XL queries, no GRAPH clause).
-    // NO custom SPARQL overrides — the publisher's model-scoped SPARQL endpoint
-    // (/kmm/api/model:X/sparql) serves data in its default graph, so GRAPH clauses
-    // would match zero triples and produce 0 concept rules.
-    // The model must have skosxl:prefLabel triples (added via SPARQL UPDATE) so the
-    // default SKOS-XL queries find labels.
-    const alreadyHasAllResources = currentXml.includes('parent="AllResources"');
+    // Canonical config: AllConcepts + PlainSkosModel bean with plain skos:prefLabel SPARQL queries.
+    // This is the same pattern that successfully published the UNESCO Thesaurus (4,408 rules).
+    // LANGMATCHES is required for @en-US / @en-GB language tags (e.g. IPTC Media Topics).
+    const alreadyHasAllConcepts = currentXml.includes('parent="AllConcepts"');
     const alreadyHasRulebaseClass = currentXml.includes("rulebaseClass");
-    const alreadyHasSparqlEndpoint = currentXml.includes('ref="SparqlEndpoint"');
-    const hasSkosXlOverride = currentXml.includes("SkosXlModel") || currentXml.includes("PlainSkosModel");
-    const hasGraphClause = currentXml.includes("urn:x-evn-master:");
+    const alreadyHasPlainSkosModel = currentXml.includes("PlainSkosModel");
+    const alreadyHasLangmatches = currentXml.includes("LANGMATCHES");
 
-    if (alreadyHasAllResources && alreadyHasRulebaseClass && alreadyHasSparqlEndpoint && !hasSkosXlOverride && !hasGraphClause) {
+    if (alreadyHasAllConcepts && alreadyHasRulebaseClass && alreadyHasPlainSkosModel && alreadyHasLangmatches) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
@@ -1273,17 +1293,14 @@ export class SemaphoreClient {
     }
 
     const changes: string[] = [];
-    if (!alreadyHasAllResources) {
-      changes.push("AllConcepts → AllResources");
+    if (!alreadyHasAllConcepts) {
+      changes.push("AllResources → AllConcepts (generates one rule per skos:Concept)");
     }
-    if (!alreadyHasSparqlEndpoint) {
-      changes.push("Added model ref=\"SparqlEndpoint\" (default SKOS-XL label queries)");
+    if (!alreadyHasPlainSkosModel) {
+      changes.push("Added PlainSkosModel bean with plain skos:prefLabel / skos:altLabel SPARQL queries");
     }
-    if (hasSkosXlOverride) {
-      changes.push("Removed custom SPARQL override bean (SkosXlModel/PlainSkosModel) — using default SparqlEndpoint");
-    }
-    if (hasGraphClause) {
-      changes.push("Removed explicit GRAPH clause — model-scoped SPARQL endpoint serves default graph");
+    if (!alreadyHasLangmatches) {
+      changes.push("Added LANGMATCHES filter (matches @en, @en-US, @en-GB, all English variants)");
     }
 
     // Write the canonical patched XML to the target file
