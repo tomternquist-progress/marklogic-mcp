@@ -135,8 +135,9 @@ const PLAIN_SKOS_PUBLISHER_XML = `<?xml version="1.0" encoding="UTF-8"?>
         SELECT ?termUri ?prefLabelUri ?prefLabel ?prefLabelRelationship
         WHERE {
           BIND(skos:prefLabel AS ?prefLabelRelationship) .
-          ?termUri skos:prefLabel ?prefLabel .
-          FILTER(LANGMATCHES(LANG(?prefLabel), "en"))
+          ?termUri skos:prefLabel ?rawLabel .
+          FILTER(LANGMATCHES(LANG(?rawLabel), "en"))
+          BIND(STRLANG(STR(?rawLabel), "en") AS ?prefLabel) .
           BIND(?termUri AS ?prefLabelUri) .
         }
       ]]></value>
@@ -146,8 +147,9 @@ const PLAIN_SKOS_PUBLISHER_XML = `<?xml version="1.0" encoding="UTF-8"?>
         PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
         SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
         WHERE {
-          ?termUri skos:altLabel ?labelLiteral .
-          FILTER(LANGMATCHES(LANG(?labelLiteral), "en"))
+          ?termUri skos:altLabel ?rawLabel .
+          FILTER(LANGMATCHES(LANG(?rawLabel), "en"))
+          BIND(STRLANG(STR(?rawLabel), "en") AS ?labelLiteral) .
           BIND(?termUri AS ?labelUri) .
         }
       ]]></value>
@@ -1229,8 +1231,11 @@ export class SemaphoreClient {
     // Check what needs to change
     const alreadyHasAllConcepts = currentXml.includes('parent="AllConcepts"');
     const alreadyHasPlainSkos = currentXml.includes("PlainSkosModel");
+    // STRLANG normalization is required for regional language tags (e.g. @en-us, @pt-br).
+    // Without it, the publisher assigns 0 labels for any vocab with regional subtags.
+    const alreadyHasStrlang = currentXml.includes("STRLANG");
 
-    if (alreadyHasAllConcepts && alreadyHasPlainSkos) {
+    if (alreadyHasAllConcepts && alreadyHasPlainSkos && alreadyHasStrlang) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
