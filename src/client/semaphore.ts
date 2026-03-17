@@ -140,7 +140,7 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
         WHERE {
           BIND(skos:prefLabel AS ?prefLabelRelationship) .
           ?termUri skos:prefLabel ?rawLabel .
-          FILTER(LANGMATCHES(LANG(?rawLabel), "en"))
+          FILTER(STRSTARTS(LANG(?rawLabel), "en"))
           BIND(STRLANG(STR(?rawLabel), "en") AS ?prefLabel) .
           BIND(?termUri AS ?prefLabelUri) .
         }
@@ -152,7 +152,7 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
         SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
         WHERE {
           ?termUri skos:altLabel ?rawLabel .
-          FILTER(LANGMATCHES(LANG(?rawLabel), "en"))
+          FILTER(STRSTARTS(LANG(?rawLabel), "en"))
           BIND(STRLANG(STR(?rawLabel), "en") AS ?labelLiteral) .
           BIND(?termUri AS ?labelUri) .
         }
