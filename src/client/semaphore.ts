@@ -129,27 +129,31 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
 
   <!-- PlainSkosModel: override label SPARQL queries to use plain skos:prefLabel / skos:altLabel.
        Required for vocabularies that store labels directly on the concept node (not SKOS-XL).
+       The publisher requires exactly 4 SELECT columns for getPrefLabelsSparql:
+         ?termUri, ?prefLabelUri, ?prefLabel, ?prefLabelRelationship
+       For plain SKOS (no intermediate label node), bind ?termUri as ?prefLabelUri.
        LANGMATCHES matches @en, @en-US, @en-GB, and all English regional variants. -->
   <bean id="PlainSkosModel" parent="SparqlEndpoint">
     <property name="getPrefLabelsSparql">
       <value><![CDATA[
         PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-        SELECT ?termUri ?prefLabel
+        SELECT ?termUri ?prefLabelUri ?prefLabel ?prefLabelRelationship
         WHERE {
-          ?termUri a skos:Concept ;
-                   skos:prefLabel ?prefLabel .
+          BIND(skos:prefLabel AS ?prefLabelRelationship) .
+          ?termUri skos:prefLabel ?prefLabel .
           FILTER(LANGMATCHES(LANG(?prefLabel), "en"))
+          BIND(?termUri AS ?prefLabelUri) .
         }
       ]]></value>
     </property>
     <property name="getAltLabelsForwardSparql">
       <value><![CDATA[
         PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-        SELECT DISTINCT ?termUri ?labelLiteral
+        SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
         WHERE {
-          ?termUri a skos:Concept ;
-                   skos:altLabel ?labelLiteral .
+          ?termUri skos:altLabel ?labelLiteral .
           FILTER(LANGMATCHES(LANG(?labelLiteral), "en"))
+          BIND(?termUri AS ?labelUri) .
         }
       ]]></value>
     </property>
@@ -160,9 +164,8 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
     <property name="configurationSets">
       <list>
         <!-- AllConcepts: generates one CLS rule per skos:Concept.
-             rulebaseClass sets the \${rulebaseClass} variable in the KID template. -->
+             No rulebaseClass — let Semaphore auto-name the class from the model name. -->
         <bean parent="AllConcepts">
-          <property name="rulebaseClass" value="{{MODEL_NAME}}"/>
           <property name="languageCodes">
             <list><value>en</value></list>
           </property>
@@ -999,11 +1002,22 @@ export class SemaphoreClient {
       language: lang,
     });
 
+    // Pass classificationServers inline so the publisher knows which CLS to write rules to.
+    // Without this body, the publisher looks up CLS servers from the environment URI on its
+    // internal store — which is empty after a server restart/wipe, causing a silent 2ms
+    // completion with 0 rules pushed to CLS.
+    const clsBody = this.clsHost
+      ? JSON.stringify({ classificationServers: [{ host: this.clsHost, port: this.clsPort, path: "/" }] })
+      : "";
+
     const res = await this.kmmHttp.post(
       `/kmm/api?${qs.toString()}`,
-      "",
+      clsBody,
       {
-        headers: { "x-api-key": await this.kmmApiKey() },
+        headers: {
+          "x-api-key": await this.kmmApiKey(),
+          ...(clsBody ? { "Content-Type": "application/json" } : {}),
+        },
         validateStatus: (s) => s < 500,
       }
     );
@@ -1280,12 +1294,19 @@ export class SemaphoreClient {
     // Canonical config: AllConcepts + PlainSkosModel bean with plain skos:prefLabel SPARQL queries.
     // This is the same pattern that successfully published the UNESCO Thesaurus (4,408 rules).
     // LANGMATCHES is required for @en-US / @en-GB language tags (e.g. IPTC Media Topics).
+    // Canonical config checks — must match the template exactly:
+    // - AllConcepts (not AllResources)
+    // - PlainSkosModel bean with 4-column SELECT (prefLabelUri required)
+    // - LANGMATCHES for English regional variants
+    // - No rulebaseClass (let Semaphore auto-name from model name)
     const alreadyHasAllConcepts = currentXml.includes('parent="AllConcepts"');
-    const alreadyHasRulebaseClass = currentXml.includes("rulebaseClass");
     const alreadyHasPlainSkosModel = currentXml.includes("PlainSkosModel");
     const alreadyHasLangmatches = currentXml.includes("LANGMATCHES");
+    const alreadyHasPrefLabelUri = currentXml.includes("?prefLabelUri");
+    const alreadyHasPrefLabelRelationship = currentXml.includes("?prefLabelRelationship");
 
-    if (alreadyHasAllConcepts && alreadyHasRulebaseClass && alreadyHasPlainSkosModel && alreadyHasLangmatches) {
+    if (alreadyHasAllConcepts && alreadyHasPlainSkosModel && alreadyHasLangmatches &&
+        alreadyHasPrefLabelUri && alreadyHasPrefLabelRelationship) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
@@ -1301,6 +1322,9 @@ export class SemaphoreClient {
     }
     if (!alreadyHasLangmatches) {
       changes.push("Added LANGMATCHES filter (matches @en, @en-US, @en-GB, all English variants)");
+    }
+    if (!alreadyHasPrefLabelUri || !alreadyHasPrefLabelRelationship) {
+      changes.push("Fixed getPrefLabelsSparql to return all 4 required columns (?termUri ?prefLabelUri ?prefLabel ?prefLabelRelationship)");
     }
 
     // Write the canonical patched XML to the target file
