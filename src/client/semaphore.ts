@@ -855,6 +855,70 @@ export class SemaphoreClient {
    * misleading; the real issue is the workspace file doesn't exist on the server.
    * Fix: open Studio → model → Publisher tab to initialize the workspace, then retry.
    */
+  /**
+   * Grant the publisher workspace upload permission on a KMM model via JSON-Patch.
+   *
+   * The Semaphore publisher workspace requires the `sempubpermissions:UploadModelConfiguration`
+   * permission before a config ZIP can be uploaded. By default this is only granted when a
+   * user opens the model's Publisher tab in Semaphore Studio.
+   *
+   * This method grants it programmatically via the PATCH /sys/{graphUri} endpoint
+   * (RFC 6902 JSON-Patch, Content-Type: application/json-patch+json) — confirmed working in
+   * Semaphore 5.10.1. It appends the given principal (default: "user:admin") to the
+   * sempubpermissions:UploadModelConfiguration array on the model's sys graph node.
+   *
+   * NOTE: This grants the API-level permission but does NOT create the workspace ZIP file
+   * on the server filesystem. If the workspace file has never been initialised (model was
+   * created via API and the Publisher tab was never opened), the upload will still fail
+   * with 403 even after granting the permission. In that case the Studio Publisher tab must
+   * be opened once to initialise the workspace directory.
+   *
+   * @param modelUri   KMM model URI, e.g. "model:IPTCMediaTopics"
+   * @param principal  JSON-LD @id of the user/group to grant, default "user:admin"
+   */
+  async kmmGrantPublisherPermission(
+    modelUri: string,
+    principal = "user:admin"
+  ): Promise<void> {
+    const modelName = modelUri.replace(/^model:/, "");
+    const graphUri = `model:${modelName}`;
+    const encodedGraph = encodeURIComponent(graphUri);
+    const token = await this.kmmApiKey();
+
+    const patch = [
+      {
+        op: "add",
+        path: "@graph/0/sempubpermissions:UploadModelConfiguration/-",
+        value: { "@id": principal },
+      },
+    ];
+
+    const res = await this.kmmHttp.patch(
+      `/kmm/api/sys/${encodedGraph}`,
+      patch,
+      {
+        headers: {
+          "x-api-key": token,
+          "Content-Type": "application/json-patch+json",
+        },
+        validateStatus: (s) => s < 500,
+      }
+    );
+
+    if (res.status !== 200 && res.status !== 204) {
+      logger.warn("kmmGrantPublisherPermission returned non-success", {
+        status: res.status,
+        modelUri,
+        principal,
+      });
+    } else {
+      logger.info("Granted sempubpermissions:UploadModelConfiguration", {
+        modelUri,
+        principal,
+      });
+    }
+  }
+
   async kmmUploadPublishConfigZip(modelUri: string, zipBuffer: Buffer): Promise<void> {
     const modelName = modelUri.replace(/^model:/, "");
     const encodedUri = encodeURIComponent(`urn:x-evn-master:${modelName}`);
@@ -864,14 +928,31 @@ export class SemaphoreClient {
       { name: "file", value: zipBuffer, filename: "config.zip", contentType: "application/zip" },
     ]);
 
-    const res = await this.kmmHttp.post(
-      `/kmm/api/publisher/workspace/${encodedUri}/config`,
-      body,
-      {
-        headers: { "x-api-key": token, "Content-Type": contentType },
-        validateStatus: (s) => s < 500,
+    const doUpload = async () =>
+      this.kmmHttp.post(
+        `/kmm/api/publisher/workspace/${encodedUri}/config`,
+        body,
+        {
+          headers: { "x-api-key": token, "Content-Type": contentType },
+          validateStatus: (s) => s < 500,
+        }
+      );
+
+    let res = await doUpload();
+
+    // On 403 try granting the permission via JSON-Patch and retry once.
+    // This handles models created via API that have never had the Publisher tab opened.
+    // Note: the grant alone is sufficient when the workspace file already exists on the
+    // server (i.e. the model was created in Studio or the Publisher tab was opened once).
+    if (res.status === 403) {
+      logger.info("kmmUploadPublishConfigZip got 403 — attempting auto-grant of UploadModelConfiguration", { modelUri });
+      try {
+        await this.kmmGrantPublisherPermission(modelUri);
+        res = await doUpload();
+      } catch {
+        // Permission grant failed — fall through to the informative error below
       }
-    );
+    }
 
     if (res.status === 403) {
       throw new Error(
