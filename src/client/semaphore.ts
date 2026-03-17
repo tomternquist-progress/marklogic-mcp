@@ -130,6 +130,9 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
   </bean>
 
   <bean class="com.smartlogic.publisher.Publisher">
+    <!-- Use the default SparqlEndpoint (defined in ModelDefinition.xml) for label lookups.
+         Without this, Publisher falls back to OE API mode which does not find SPARQL-inserted triples. -->
+    <property name="model" ref="SparqlEndpoint"/>
     <property name="configurationSets">
       <list>
         <!-- AllResources: generates one CLS rule per skos:Concept for plain-SKOS vocabularies.
