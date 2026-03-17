@@ -162,7 +162,7 @@ const PLAIN_SKOS_PUBLISHER_XML = `<?xml version="1.0" encoding="UTF-8"?>
              AllResources (the default) only generates rules at the ConceptScheme level. -->
         <bean parent="AllConcepts">
           <property name="languageCodes">
-            <list><value>en-US</value></list>
+            <list><value>en</value></list>
           </property>
           <property name="outputProcessors">
             <list>
@@ -614,6 +614,145 @@ export class SemaphoreClient {
   }
 
   /**
+   * Import a SKOS taxonomy into a KMM model using the Studio backup/import API.
+   *
+   * This mirrors the mechanism used by the Semaphore Studio UI when importing a model
+   * from a file (Model → Import). It differs from kmmLoadSkos (SPARQL LOAD) in that:
+   *   • The MCP server fetches the RDF file and POSTs it as multipart/form-data
+   *   • The import job is async — use kmmWaitForAsyncJob() to poll until complete
+   *   • The resulting model structure is identical to a Studio UI import, which the
+   *     publisher can query correctly (SPARQL LOAD produces a raw-triples model that
+   *     the publisher may not index properly)
+   *
+   * Endpoint: POST /kmm/api?path=backup/{modelUri}/import&async=true
+   * Form fields (matching Studio UI payload):
+   *   content=existing, format=<mime>, overwrite=<bool>, file=<binary>
+   *
+   * @param modelUri  KMM model URI, e.g. "model:IPTCMediaTopics"
+   * @param skosUrl   Public URL of the RDF/SKOS file to fetch and import
+   * @param options   format — MIME type (auto-detected if omitted), overwrite — default false
+   * @returns         jobId string for use with kmmWaitForAsyncJob()
+   */
+  async kmmImportSkos(
+    modelUri: string,
+    skosUrl: string,
+    options: { format?: string; overwrite?: boolean } = {}
+  ): Promise<string> {
+    // 1. Fetch the RDF file from the public URL
+    logger.info("kmmImportSkos: fetching RDF file", { modelUri, skosUrl });
+    const fileRes = await axios.get(skosUrl, {
+      responseType: "arraybuffer",
+      timeout: 120_000,
+      validateStatus: (s) => s < 400,
+    });
+    const fileBuffer = Buffer.from(fileRes.data as ArrayBuffer);
+
+    // Auto-detect format from Content-Type or URL
+    let format = options.format;
+    if (!format) {
+      const ct = (fileRes.headers["content-type"] as string | undefined) ?? "";
+      if (ct.includes("turtle") || skosUrl.includes(".ttl")) format = "text/turtle";
+      else if (ct.includes("n-triples") || skosUrl.includes(".nt")) format = "application/n-triples";
+      else if (ct.includes("json") || skosUrl.includes(".jsonld")) format = "application/ld+json";
+      else format = "application/rdf+xml"; // default (RDF/XML)
+    }
+
+    const ext = format === "text/turtle" ? ".ttl"
+              : format === "application/n-triples" ? ".nt"
+              : format === "application/ld+json" ? ".jsonld"
+              : ".rdf";
+    const filename = `${modelUri.replace(/^model:/, "")}_import${ext}`;
+
+    logger.info("kmmImportSkos: uploading to backup/import", { modelUri, format, bytes: fileBuffer.length });
+
+    // 2. POST as multipart/form-data to backup/import
+    const token = await this.kmmApiKey();
+    const { body, contentType } = buildMultipart([
+      { name: "content",             value: "existing" },
+      { name: "templateName",        value: "" },
+      { name: "templateDescription", value: "" },
+      { name: "record",              value: "false" },
+      { name: "sheetIndex",          value: "0" },
+      { name: "format",              value: format },
+      { name: "overwrite",           value: options.overwrite ? "true" : "false" },
+      { name: "file",                value: fileBuffer, filename, contentType: format },
+    ]);
+
+    const res = await this.kmmHttp.post(
+      `/kmm/api?path=backup/${modelUri}/import&async=true`,
+      body,
+      {
+        headers: { "x-api-key": token, "Content-Type": contentType },
+        validateStatus: (s) => s < 500,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity,
+      }
+    );
+
+    if (res.status !== 200 && res.status !== 202) {
+      const msg = (res.data as Record<string, unknown>)?.message as string | undefined;
+      throw new Error(`Backup import returned HTTP ${res.status}${msg ? `: ${msg}` : ""}.`);
+    }
+
+    // Response: { status:"ACCEPTED", jobId:"...", resultLifetimeMs, ... }
+    const data = res.data as Record<string, unknown>;
+    const jobId = (data?.jobId ?? data?.id) as string | undefined;
+    if (!jobId) throw new Error(`Backup import did not return a job ID. Response: ${JSON.stringify(data)}`);
+    logger.info("kmmImportSkos: import job started", { modelUri, jobId });
+    return jobId;
+  }
+
+  /**
+   * Poll a KMM async job until it completes, fails, or times out.
+   *
+   * Endpoint: GET /kmm/api?path=async/jobs/{jobId}
+   * Result:   GET /kmm/api?path=async/jobs/{jobId}/result
+   *
+   * @returns { status: "COMPLETE"|"FAILED"|"TIMEOUT", result }
+   */
+  async kmmWaitForAsyncJob(
+    jobId: string,
+    timeoutMs = 300_000,
+    pollMs = 3_000
+  ): Promise<{ status: "COMPLETE" | "FAILED" | "TIMEOUT"; result?: unknown; error?: string }> {
+    const deadline = Date.now() + timeoutMs;
+    const token = await this.kmmApiKey();
+
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollMs));
+      try {
+        const statusRes = await this.kmmHttp.get(
+          `/kmm/api?path=async/jobs/${jobId}`,
+          { headers: { "x-api-key": token }, validateStatus: (s) => s < 500 }
+        );
+        const data = statusRes.data as Record<string, unknown>;
+        const jobStatus = (data?.status as string | undefined)?.toUpperCase();
+
+        // Terminal success states: COMPLETE, FINISHED
+        if (jobStatus === "COMPLETE" || jobStatus === "FINISHED" || data?.complete === true) {
+          let result: unknown;
+          try {
+            const resultRes = await this.kmmHttp.get(
+              `/kmm/api?path=async/jobs/${jobId}/result`,
+              { headers: { "x-api-key": token }, validateStatus: (s) => s < 500 }
+            );
+            result = resultRes.data;
+          } catch { /* result endpoint is optional */ }
+          return { status: "COMPLETE", result };
+        }
+        if (jobStatus === "FAILED" || jobStatus === "ERROR") {
+          return { status: "FAILED", error: data?.message as string | undefined };
+        }
+        // Still running — continue polling
+        logger.debug("kmmWaitForAsyncJob: still running", { jobId, jobStatus });
+      } catch {
+        // Transient error — keep polling
+      }
+    }
+    return { status: "TIMEOUT" };
+  }
+
+  /**
    * Delete a KMM model and all its triples permanently.
    * THIS IS IRREVERSIBLE. Does not remove published CLS rule sets — deactivate
    * those separately via the CLS publish-set API.
@@ -691,18 +830,41 @@ export class SemaphoreClient {
     }
   }
 
+  /** Run a SPARQL SELECT against a KMM model and return raw SPARQL JSON results. */
+  private async kmmSparqlSelect(
+    modelUri: string,
+    query: string
+  ): Promise<{ results: { bindings: Array<Record<string, { value: string }>> } }> {
+    const token = await this.kmmApiKey();
+    const res = await this.kmmHttp.get(
+      `/kmm/api/${modelUri}/sparql?query=${encodeURIComponent(query)}`,
+      {
+        headers: { "x-api-key": token, "Accept": "application/sparql-results+json" },
+        validateStatus: (s) => s < 500,
+      }
+    );
+    return res.data as { results: { bindings: Array<Record<string, { value: string }>> } };
+  }
+
   /**
    * Trigger a KMM publisher run for a model, pushing rules to the Classification Server.
    *
-   * Always uses async=true by default because large models (1000+ concepts) time out
-   * on synchronous publish calls. The job ID can be polled with kmmPublishJobStatus().
+   * Uses the Studio-mirrored publish flow, discovered via browser DevTools:
+   *   1. GET sempubpermissions:publishMaster for the current user on the model
+   *      → returns the Studio environment URI (e.g. studio#environment_<hash>)
+   *   2. Clear any stale sempub:publishScheduled via SPARQL DELETE
+   *   3. PATCH path={modelUri}/{modelUri}&language={lang}&checkConstraints=false
+   *      with JSON-Patch body: [{"op":"add","path":"@graph/0/sempub:publishScheduled/-",
+   *                              "value":{"@id":"<environmentUri>"}}]
+   *   The publisher service detects the publishScheduled change and runs the publish.
+   *
+   * This replaces the old POST /kmm/api?path=publisher/{model}/publish which failed
+   * with "Environment doesn't exist" because the publisher backend's environment
+   * registry is only populated when Studio calls it with the full CLS config inline.
    *
    * @param modelUri    KMM model URI, e.g. "model:UNESCO"
    * @param options     Optional publish parameters:
-   *   config       — publisher config name (default: use the model's active config)
-   *   environment  — target environment name (default: the model's configured environment)
-   *   language     — language code (default: "en")
-   *   async        — use async publish (default: true; set false only for tiny test models)
+   *   language  — language code to publish (default: "en")
    */
   async kmmPublish(
     modelUri: string,
@@ -713,94 +875,147 @@ export class SemaphoreClient {
       async?: boolean;
     } = {}
   ): Promise<{ accepted: boolean; jobId?: string; status?: string }> {
-    // Build query string manually — URLSearchParams encodes slashes (%2F) inside
-    // the path parameter value, which prevents JAX-RS from routing the request.
-    // Colons in the model URI are encoded (%3A) but path separators are left as-is.
-    const encModelUri = modelUri.replace(/:/g, "%3A");
-    const pathValue = `publisher/${encModelUri}/publish`;
-    const qsParts = [`path=${pathValue}`];
-    if (options.language) qsParts.push(`language=${encodeURIComponent(options.language)}`);
-    if (options.config) qsParts.push(`config=${encodeURIComponent(options.config)}`);
-    if (options.environment) qsParts.push(`environment=${encodeURIComponent(options.environment)}`);
-    if (options.async !== false) qsParts.push("async=true");
+    const lang = options.language ?? "en";
+    const username = this.kmmUsername;
+    const modelName = modelUri.replace(/^model:/, "");
+    const useAsync = options.async !== false;
 
-    const { status, data } = await this.kmmPost<{ status?: string; jobId?: string; message?: string }>(
-      `/kmm/api?${qsParts.join("&")}`,
-      "",
-      "application/json"
-    );
+    // Step 1 — discover the Studio environment URI assigned to this user/model.
+    // The environment URI comes from sempubpermissions:publishMaster on the sys user record.
+    // It is set when a user first clicks Publish in Semaphore Studio for this model.
+    // KMM sys path uses "user:<name>" format, not bare username
+    const sysPath = `sys/${modelUri}/user:${username}`;
+    const permProps = "sempubpermissions:publishMaster%2Csempubpermissions:publishTask";
+    let envUri: string | undefined;
 
-    if (status === 202 || status === 200 || status === 204) {
-      const d = data ?? {};
-      return { accepted: true, jobId: d.jobId, status: d.status };
+    // Accept an explicit environment override (full URI or name)
+    if (options.environment) {
+      envUri = options.environment;
+    } else {
+      try {
+        const permData = await this.kmmGet<{ "@graph"?: Array<Record<string, unknown>> }>(
+          `/kmm/api?path=${sysPath}&properties=${permProps}&language=${lang}`
+        );
+        const graph = permData["@graph"] ?? [];
+        for (const node of graph) {
+          const pm = node["sempubpermissions:publishMaster"];
+          if (Array.isArray(pm) && pm.length > 0) {
+            envUri = (pm[0] as Record<string, string>)["@id"];
+            break;
+          }
+        }
+      } catch {
+        // ignore — will throw below if envUri is still undefined
+      }
     }
 
-    // Detect "Environment doesn't exist" — this means no publisher environment is configured
-    // in Semaphore Studio. The environment must be set up via:
-    //   Studio → Administration → Publisher → Classification Server Environments → Add
-    //   (Name: any label, Host: cls-host, Port: cls-port)
-    // Then pass options.environment = "<that name>" to retry.
-    const msg = (data as Record<string, unknown>)?.message as string | undefined;
-    if (status === 404 && msg?.includes("Environment doesn't exist")) {
-      const envName = options.environment ?? "null (not specified)";
+    if (!envUri) {
       throw new Error(
-        `Publish failed: publisher environment "${envName}" not found.\n` +
-        `Publisher environments must be configured in Semaphore Studio:\n` +
-        `  Studio → Administration → Publisher → Classification Server Environments → Add\n` +
-        `  (Name: <any label>, Host: ${this.clsHost ?? "cls-host"}, Port: ${this.clsPort})\n` +
-        `Then retry: semaphore_publish model_uri="${modelUri}" environment="<name>"`
+        `Publish failed: no publisher environment is assigned to user "${username}" for model "${modelUri}".\n` +
+        `Open Semaphore Studio → Administration → Publisher → Classification Server Environments\n` +
+        `and ensure a CLS environment is configured. Then open the model's Publisher tab and click\n` +
+        `Publish once from the UI — this assigns the environment to your user for that model.`
       );
     }
 
+    // Step 2 — POST directly to the publisher API.
+    // This mirrors what Semaphore Studio does (observed via DevTools):
+    //   POST /kmm/api?path=publisher/model:{Name}/publish
+    //        &config={Name}/Semaphore-Publisher-CS-only.xml
+    //        &environment={envUri}
+    //        &async=true
+    //        &language=en
+    //
+    // The publisher service returns HTTP 202 with:
+    //   { status: "ACCEPTED", jobId: "...", resultLifetimeMs: ..., nextStatusCheckMs: ... }
+    // Poll GET /kmm/api?path=async/jobs/{jobId} until status = "FINISHED" or "FAILED".
+    //
+    // NOTE: The environment URI must exist in the publisher service's configuration.
+    // If the service was restarted or the environment was deleted in Studio Admin,
+    // the publish job will complete in ~2ms with 0 rules (silent failure).
+    // Fix: Studio → Administration → Publisher → Classification Server Environments → (re)create.
+
+    // Determine config path. Semaphore stores workspace files at {ModelName}/{configFile}
+    // on the publisher service filesystem, even though the ZIP download strips the prefix.
+    const configPath = options.config ?? `${modelName}/Semaphore-Publisher-CS-only.xml`;
+
+    const qs = new URLSearchParams({
+      path: `publisher/${modelUri}/publish`,
+      config: configPath,
+      environment: envUri,
+      async: String(useAsync),
+      language: lang,
+    });
+
+    const res = await this.kmmHttp.post(
+      `/kmm/api?${qs.toString()}`,
+      "",
+      {
+        headers: { "x-api-key": await this.kmmApiKey() },
+        validateStatus: (s) => s < 500,
+      }
+    );
+
+    if (res.status === 202 || res.status === 200) {
+      const data = res.data as Record<string, unknown>;
+      const jobId = (data?.jobId ?? data?.id) as string | undefined;
+      return { accepted: true, jobId, status: data?.status as string ?? "ACCEPTED" };
+    }
+
+    const msg = (res.data as Record<string, unknown>)?.message as string | undefined;
     throw new Error(
-      `Publish request returned HTTP ${status}${msg ? `: ${msg}` : ""}. ` +
-      `Check the model URI, publisher config, and that a workspace exists (Studio → Publisher tab).`
+      `Publish returned HTTP ${res.status}${msg ? `: ${msg}` : ""}. ` +
+      `Ensure a publisher environment is configured in Studio Admin and the model workspace exists.`
     );
   }
 
   /**
-   * Check the status of an async publish job.
-   * Poll this after kmmPublish() to wait for completion.
+   * Poll the model's publish event graph until a new PublishEvent appears or times out.
    *
-   * Typical status values: ACCEPTED, RUNNING, COMPLETE, FAILED.
+   * Instead of polling the old async job API (which was unreliable), this queries
+   * the model's .tch graph for sempub:PublishEvent triples written by the publisher.
    *
-   * @param modelUri  KMM model URI used in the original kmmPublish() call
-   * @param jobId     Job ID returned by kmmPublish()
-   */
-  async kmmPublishJobStatus(
-    modelUri: string,
-    jobId: string
-  ): Promise<{ status: string; message?: string }> {
-    try {
-      const data = await this.kmmGet<{ status?: string; message?: string }>(
-        `/kmm/api?path=publisher/${modelUri}/job/${jobId}`
-      );
-      return { status: data.status ?? "UNKNOWN", message: data.message };
-    } catch {
-      return { status: "UNKNOWN" };
-    }
-  }
-
-  /**
-   * Poll a KMM publish job until it completes, fails, or times out.
-   *
-   * @param modelUri   KMM model URI used in kmmPublish()
-   * @param jobId      Job ID returned by kmmPublish()
-   * @param timeoutMs  Max wait time in ms (default: 300 000 = 5 min)
-   * @param pollMs     Polling interval in ms (default: 5 000 = 5 s)
+   * @param modelUri        KMM model URI used in kmmPublish()
+   * @param sinceTimestamp  ISO timestamp — only events newer than this count as "new"
+   * @param timeoutMs       Max wait time in ms (default: 300 000 = 5 min)
+   * @param pollMs          Polling interval in ms (default: 5 000 = 5 s)
    */
   async waitForPublish(
     modelUri: string,
-    jobId: string,
+    sinceTimestamp: string,
     timeoutMs = 300_000,
     pollMs = 5_000
   ): Promise<{ status: "COMPLETE" | "FAILED" | "TIMEOUT"; message?: string }> {
     const deadline = Date.now() + timeoutMs;
+    const tchGraph = `urn:x-evn-master:${modelUri.replace(/^model:/, "")}.tch`;
+    const q = [
+      "PREFIX sempub: <http://www.smartlogic.com/2017/06/semaphore-publisher#>",
+      "SELECT ?status ?publishId ?completedAt WHERE {",
+      `  GRAPH <${tchGraph}> {`,
+      "    ?e a sempub:PublishEvent ;",
+      "       sempub:hasStatus ?status ;",
+      "       sempub:publishId ?publishId ;",
+      "       sempub:completedAt ?completedAt .",
+      `    FILTER(?completedAt > "${sinceTimestamp}"^^<http://www.w3.org/2001/XMLSchema#dateTime>)`,
+      "  }",
+      "} ORDER BY DESC(?completedAt) LIMIT 1",
+    ].join("\n");
+
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, pollMs));
-      const result = await this.kmmPublishJobStatus(modelUri, jobId);
-      if (result.status === "COMPLETE") return { status: "COMPLETE", message: result.message };
-      if (result.status === "FAILED") return { status: "FAILED", message: result.message };
+      try {
+        const result = await this.kmmSparqlSelect(modelUri, q);
+        const bindings = result?.results?.bindings ?? [];
+        if (bindings.length > 0) {
+          const statusUri: string = bindings[0].status?.value ?? "";
+          const isSuccess = statusUri.includes("PublishSuccess");
+          const isFailure = statusUri.includes("PublishFailure");
+          if (isSuccess) return { status: "COMPLETE" };
+          if (isFailure) return { status: "FAILED", message: `Publish failed. Check Studio publish log.` };
+        }
+      } catch {
+        // ignore transient errors, keep polling
+      }
     }
     return { status: "TIMEOUT" };
   }

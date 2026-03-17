@@ -373,31 +373,40 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
   // ── semaphore_kmm_skos_load ───────────────────────────────────────────────────
   server.tool(
     "semaphore_kmm_skos_load",
-    "Load a SKOS taxonomy into an existing KMM model via SPARQL LOAD. " +
-    "This is the standard way to import a public vocabulary (IPTC Media Topics, EuroVoc, AGROVOC, etc.) " +
-    "into Semaphore — the KMM server fetches the RDF file directly from the given URL.\n\n" +
-    "IMPORTANT — CONSTRAINT BYPASS:\n" +
-    "  Third-party SKOS vocabularies routinely use properties (e.g. ikos:hasFacet) that fail " +
-    "  Semaphore's built-in SHACL validation, returning HTTP 409 Conflict. This tool always passes " +
-    "  checkConstraints=false&runEditRules=false to bypass this — required for all external SKOS.\n\n" +
-    "AFTER LOADING:\n" +
-    "  Use semaphore_kmm_sparql to verify concept count and spot-check labels.\n" +
-    "  Then open Semaphore Studio UI to publish the model as a CLS rule set.\n\n" +
+    "Import a SKOS taxonomy into an existing KMM model using the Studio backup/import API. " +
+    "This mirrors exactly how Semaphore Studio UI imports a vocabulary file — the MCP server " +
+    "fetches the RDF file from the given URL and POSTs it to KMM as multipart/form-data. " +
+    "This is the recommended approach for all external SKOS vocabularies (IPTC, EuroVoc, AGROVOC, etc.) " +
+    "as it creates the correct model structure that the Semaphore Publisher can query for rule generation.\n\n" +
+    "IMPORTANT — ASYNC:\n" +
+    "  The import is asynchronous and may take 1-3 minutes for large vocabularies.\n" +
+    "  The tool polls until complete (up to 5 minutes) and returns when done.\n\n" +
     "SKOS URL EXAMPLES:\n" +
-    "  IPTC Media Topics: https://cv.iptc.org/newscodes/mediatopic/?lang=x-all&format=rdfxml\n" +
-    "  Note: always check the vocabulary's API for the correct RDF/XML URL — HTML endpoints return HTML.",
+    "  IPTC Media Topics (RDF/XML): https://cv.iptc.org/newscodes/mediatopic/?lang=x-all&format=rdfxml\n" +
+    "  Note: check the vocabulary's download API for the correct RDF URL — HTML endpoints return HTML.\n\n" +
+    "AFTER LOADING:\n" +
+    "  1. Run semaphore_publish_config_fix_plain_skos (for plain skos:prefLabel vocabularies)\n" +
+    "  2. Run semaphore_publish to build the CLS rule set\n" +
+    "  3. Run semaphore_classify to test classification",
     {
       model_uri: z.string().describe(
-        "KMM model URI to load into, e.g. 'model:IPTCMediaTopics'. " +
+        "KMM model URI to import into, e.g. 'model:IPTCMediaTopics'. " +
         "Get from semaphore_kmm_models_list or use the URI returned by semaphore_kmm_model_create."
       ),
       skos_url: z.string().url().describe(
-        "Public HTTP/HTTPS URL of the SKOS RDF file. " +
-        "Must be accessible from the KMM server — the server fetches this URL directly. " +
-        "Use RDF/XML format (not HTML or Turtle) for best compatibility."
+        "Public HTTP/HTTPS URL of the SKOS RDF file to fetch and import. " +
+        "The MCP server downloads this file and posts it to KMM. " +
+        "Supports RDF/XML, Turtle (.ttl), N-Triples (.nt), and JSON-LD (.jsonld)."
+      ),
+      format: z.string().optional().describe(
+        "Override the RDF format MIME type (e.g. 'application/rdf+xml', 'text/turtle'). " +
+        "Auto-detected from Content-Type or URL extension if omitted."
+      ),
+      overwrite: z.boolean().optional().describe(
+        "If true, replaces existing triples in the model. Default: false (adds to existing)."
       ),
     },
-    async ({ model_uri, skos_url }) => {
+    async ({ model_uri, skos_url, format, overwrite }) => {
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -411,35 +420,42 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         };
       }
       try {
-        await semaphore.kmmLoadSkos(model_uri, skos_url);
+        // Step 1: start the async import job
+        const jobId = await semaphore.kmmImportSkos(model_uri, skos_url, { format, overwrite });
+
         const lines = [
-          "SKOS LOAD COMPLETE",
+          "SKOS IMPORT STARTED",
           "─".repeat(50),
           "",
-          `  Model:    ${model_uri}`,
-          `  Source:   ${skos_url}`,
+          `  Model:   ${model_uri}`,
+          `  Source:  ${skos_url}`,
+          `  Job ID:  ${jobId}`,
           "",
-          "NEXT STEPS:",
-          `  1. Verify concept count:`,
-          `     semaphore_kmm_sparql  model_uri="${model_uri}"`,
-          `     query: SELECT (COUNT(?s) AS ?n) WHERE { ?s a <http://www.w3.org/2004/02/skos/core#Concept> }`,
-          "  2. Spot-check labels:    semaphore_kmm_sparql with LIMIT 20 SELECT ?s ?label",
-          "  3. Add sem:guid (required by ContextualCitation.kid template):",
-          `     semaphore_kmm_sparql_update  model_uri="${model_uri}"`,
-          "     sparql: PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>",
-          "             PREFIX skos: <http://www.w3.org/2004/02/skos/core#>",
-          "             INSERT { ?c sem:guid ?g } WHERE {",
-          "               ?c a skos:Concept . FILTER NOT EXISTS { ?c sem:guid ?x }",
-          "               BIND(STRUUID() AS ?g) }",
-          "  4. Fix plain SKOS config (if vocabulary uses plain skos:prefLabel, not SKOS-XL):",
-          `     semaphore_publish_config_fix_plain_skos  model_uri="${model_uri}"`,
-          `  5. Publish to CLS:  semaphore_publish  model_uri="${model_uri}"  async=true`,
-          "  6. Verify in CLS:   semaphore_publish_sets → confirm new rule set is active",
-          "  7. Test:            semaphore_classify  threshold=0  content=\"<sample text>\"",
-          "",
-          "NOTE: After publishing, classification scores may be 0 while the Publisher service",
-          "finishes building the rulenet index. Re-run semaphore_classify after publish completes.",
+          "Polling for completion (up to 5 minutes)...",
         ];
+
+        // Step 2: poll until complete
+        const pollResult = await semaphore.kmmWaitForAsyncJob(jobId, 300_000);
+
+        lines.push("");
+        if (pollResult.status === "COMPLETE") {
+          lines.push("✓ Import COMPLETE");
+          lines.push("");
+          lines.push("NEXT STEPS:");
+          lines.push(`  1. Fix plain SKOS config (for plain skos:prefLabel vocabularies):`);
+          lines.push(`     semaphore_publish_config_fix_plain_skos  model_uri="${model_uri}"`);
+          lines.push(`  2. Publish to CLS:  semaphore_publish  model_uri="${model_uri}"  wait_for_completion=true`);
+          lines.push(`  3. Verify classes:  semaphore_classes`);
+          lines.push(`  4. Test:            semaphore_classify  threshold=0  content="<news text>"`);
+        } else if (pollResult.status === "FAILED") {
+          lines.push(`✗ Import FAILED: ${pollResult.error ?? "unknown error"}`);
+          lines.push("Check Semaphore Studio for details.");
+          return { content: [{ type: "text", text: lines.join("\n") }], isError: true };
+        } else {
+          lines.push("⚠ Import timed out (5 min). Check Semaphore Studio for job status.");
+          lines.push(`  Job ID: ${jobId}`);
+        }
+
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
@@ -648,11 +664,11 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
       async: z.boolean().optional().describe(
         "Use async publish (default: true). Recommended for all models — sync publish times out " +
-        "for models with more than a few hundred concepts. Returns a job_id for status polling."
+        "for models with more than a few hundred concepts."
       ),
       wait_for_completion: z.boolean().optional().describe(
-        "If true and async=true, poll the job status until the publish completes or times out (5 minute max). " +
-        "Returns a COMPLETE/FAILED/TIMEOUT status instead of returning immediately with a job ID."
+        "If true, poll for publish completion by querying the model's publish event log (up to 5 minutes). " +
+        "Returns COMPLETE/FAILED/TIMEOUT. Use this to confirm the publish finished before classifying."
       ),
     },
     async ({ model_uri, config, environment, language, async: useAsync, wait_for_completion }) => {
@@ -669,6 +685,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         };
       }
       try {
+        const sinceTimestamp = new Date().toISOString();
         const result = await semaphore.kmmPublish(model_uri, {
           config,
           environment,
@@ -684,26 +701,31 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           `  Language:    ${language ?? "en"}`,
           config       ? `  Config:      ${config}` : "",
           environment  ? `  Environment: ${environment}` : "",
+          result.jobId ? `  Job ID:      ${result.jobId}` : "",
           "",
         ].filter(s => s !== undefined);
 
-        if (result.jobId && (wait_for_completion === true)) {
-          const pollResult = await semaphore.waitForPublish(model_uri, result.jobId);
-          lines.push(`  Status: ${pollResult.status}`);
-          if (pollResult.message) lines.push(`  Message: ${pollResult.message}`);
+        if (result.accepted && (wait_for_completion === true)) {
+          // Prefer async job polling when we have a real job ID (more reliable than SPARQL graph polling)
+          const rawPoll = result.jobId
+            ? await semaphore.kmmWaitForAsyncJob(result.jobId, 300_000)
+            : await semaphore.waitForPublish(model_uri, sinceTimestamp);
+          const pollMessage = (rawPoll as { message?: string }).message
+            ?? (rawPoll as { error?: string }).error;
+          lines.push(`  Status: ${rawPoll.status}`);
+          if (pollMessage) lines.push(`  Message: ${pollMessage}`);
           lines.push("");
-          if (pollResult.status === "COMPLETE") {
+          if (rawPoll.status === "COMPLETE") {
             lines.push("Publish completed. Verify the rule set:");
             lines.push("  • semaphore_publish_sets  — confirm new rule set is active");
             lines.push("  • semaphore_classify  threshold=0  content='<test text>'");
-          } else if (pollResult.status === "FAILED") {
+          } else if (rawPoll.status === "FAILED") {
             lines.push("Publish FAILED. Check Semaphore Studio Publisher tab for error details.");
           } else {
             lines.push("Publish timed out (5 min). Check Semaphore Studio Publisher tab for status.");
           }
-        } else if (result.jobId) {
+        } else if (result.accepted) {
           lines.push(`  Status: ${result.status ?? "ACCEPTED"}`);
-          lines.push(`  Job ID: ${result.jobId}`);
           lines.push("");
           lines.push("The publish job is running asynchronously.");
           lines.push("After a minute or two, verify completion:");
