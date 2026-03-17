@@ -140,7 +140,7 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
         WHERE {
           BIND(skos:prefLabel AS ?prefLabelRelationship) .
           ?termUri skos:prefLabel ?rawLabel .
-          FILTER(STRSTARTS(LANG(?rawLabel), "en"))
+          FILTER(LANG(?rawLabel) = "en")
           BIND(STRLANG(STR(?rawLabel), "en") AS ?prefLabel) .
           BIND(?termUri AS ?prefLabelUri) .
         }
@@ -152,7 +152,7 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
         SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
         WHERE {
           ?termUri skos:altLabel ?rawLabel .
-          FILTER(STRSTARTS(LANG(?rawLabel), "en"))
+          FILTER(LANG(?rawLabel) = "en")
           BIND(STRLANG(STR(?rawLabel), "en") AS ?labelLiteral) .
           BIND(?termUri AS ?labelUri) .
         }
@@ -1291,11 +1291,12 @@ export class SemaphoreClient {
     // a non-empty string. Without it, all classification META elements have name="" and
     // are silently dropped by CLS parsers.
     const alreadyHasRulebaseClass = currentXml.includes("rulebaseClass");
-    // STRSTARTS is required — LANGMATCHES does not work in the Semaphore 5.10.1 publisher's
-    // SPARQL engine and returns 0 concepts. Any config still using LANGMATCHES must be re-uploaded.
-    const alreadyHasStrstarts = currentXml.includes("STRSTARTS") && !currentXml.includes("LANGMATCHES");
+    // Simple LANG() = "en" filter is required — LANGMATCHES and STRSTARTS do not work
+    // reliably in the Semaphore 5.10.1 publisher's SPARQL engine (returns 0 concepts).
+    // Labels in the model must be normalized to @en before publishing (en-us → en via SPARQL UPDATE).
+    const alreadyHasLangFilter = currentXml.includes('LANG(?rawLabel) = "en"');
 
-    if (alreadyHasAllConcepts && alreadyHasPlainSkos && alreadyHasStrlang && alreadyHasRulebaseClass && alreadyHasStrstarts) {
+    if (alreadyHasAllConcepts && alreadyHasPlainSkos && alreadyHasStrlang && alreadyHasRulebaseClass && alreadyHasLangFilter) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
