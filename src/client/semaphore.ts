@@ -580,7 +580,74 @@ export class SemaphoreClient {
     const data = await this.kmmGet<{ "@graph"?: Array<{ "@id": string; "rdfs:label"?: unknown }> }>(
       "/kmm/api/sys/sys:Model/rdf:instance"
     );
-    return (data["@graph"] ?? []).map((item) => ({ id: item["@id"] }));
+    return (data["@graph"] ?? [])
+      // The sys:Model/rdf:instance endpoint returns .tch (change-history) graph URIs like
+      // "model:IPTCMediaTopics.tch". Strip the suffix to get the canonical model URI.
+      .map((item) => ({ id: item["@id"].replace(/\.tch$/, "") }))
+      // Deduplicate in case both bare and .tch forms appear
+      .filter((item, idx, arr) => arr.findIndex((x) => x.id === item.id) === idx)
+      // Drop any remaining internal IDs that don't look like user-created model URIs
+      .filter((item) => item.id.startsWith("model:"));
+  }
+
+  /**
+   * Estimate how many CLS classification rules are loaded for a given publish-set name.
+   *
+   * The CLS rulenet view shows pak file sizes but not per-set rule counts. We use the
+   * pak file size as a proxy: each concept rule compiles to ~180-250 bytes. A healthy
+   * publish of 1000+ concepts produces a file well over 100 KB; the "1 rule only"
+   * failure mode produces a file under 2 KB.
+   *
+   * Returns:
+   *   > 1   estimated rule count based on pak file size (may not match exact rule count)
+   *   1     publish set exists but pak is < 5 KB (strongly suggests the 1-rule failure mode)
+   *   0     publish set not found in CLS
+   *  -1     could not reach CLS or parse HTML
+   */
+  async clsRuleCount(publishSetName: string): Promise<number> {
+    try {
+      const res = await this.clsHttp.get("/rulenetview.html", {
+        validateStatus: (s: number) => s < 500,
+      });
+      const html: string = res.data as string;
+      // Look for the publish set row:
+      //   <td>iptcmediatopics</td><td>1 (256.9 KB)</td>
+      // The "1" is the pak file count, the size is the pak file size.
+      const re = new RegExp(
+        `<td>${publishSetName.toLowerCase()}</td>\\s*<td>\\d+\\s*\\(([\\d.]+)\\s*(Bytes|KB|MB)\\)`,
+        "i"
+      );
+      const m = html.match(re);
+      if (m) {
+        const size = parseFloat(m[1]);
+        const unit = m[2].toLowerCase();
+        const bytes = unit === "mb" ? size * 1_048_576 : unit === "kb" ? size * 1_024 : size;
+        if (bytes < 5_000) return 1;       // < 5 KB → likely only the ConceptScheme rule
+        return Math.round(bytes / 200);    // estimate: ~200 bytes per concept rule
+      }
+      // Publish set not found in the HTML table
+      return 0;
+    } catch {
+      return -1;
+    }
+  }
+
+  /**
+   * Count skos:Concept instances for a model via the KMM OE API.
+   * Returns the count, or -1 on error.
+   */
+  async kmmConceptCount(modelUri: string): Promise<number> {
+    try {
+      const token = await this.kmmApiKey();
+      const res = await this.kmmHttp.get(
+        `/kmm/api/${modelUri}/skos:Concept/rdf:instance`,
+        { headers: { "x-api-key": token }, validateStatus: () => true }
+      );
+      const graph = (res.data as Record<string, unknown>)?.["@graph"] as unknown[] | undefined;
+      return graph?.length ?? -1;
+    } catch {
+      return -1;
+    }
   }
 
   /**

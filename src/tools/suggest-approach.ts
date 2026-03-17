@@ -493,8 +493,76 @@ function classify(task: string): ToolRecipe[] {
   // ── Semaphore classification / content enrichment ───────────────────────────
   const isClassification =
     /classif|semaphore|categori|tag|taxonom|concept|label|automat.*tag|enrichment|metadata.*enrich|nlp|named.entity|annotation/.test(t);
+  const isTaxonomyLoad =
+    /load.*taxon|import.*skos|skos.*load|import.*vocab|vocab.*import|publish.*taxon|taxon.*publish|iptc|eurovoc|agrovoc|unesco.*thesaur|media.*topic/.test(t);
   const isBulkClassification =
     isClassification && (isBulkImport || /bulk|all docs|collection|reprocess|pipeline/.test(t));
+
+  // ── Taxonomy loading pipeline ────────────────────────────────────────────────
+  if (isTaxonomyLoad) {
+    results.push({
+      tool: "semaphore_kmm_model_create → semaphore_kmm_skos_load → semaphore_publish_config_fix_plain_skos → semaphore_publish",
+      description: "End-to-end pipeline to load a SKOS taxonomy into Semaphore and publish it to the Classification Server",
+      use_when: ["load-taxonomy", "skos-import", "publish-taxonomy", "iptc", "eurovoc", "agrovoc"],
+      recipe: {
+        step1_create_model: {
+          tool: "semaphore_kmm_model_create",
+          name: "<ModelName e.g. IPTCMediaTopics>",
+          default_namespace: "<e.g. http://cv.iptc.org/newscodes/mediatopic/>",
+        },
+        step2_load_skos: {
+          tool: "semaphore_kmm_skos_load",
+          model_uri: "model:<ModelName>",
+          skos_url: "<public RDF URL — must return RDF/XML, Turtle, or JSON-LD>",
+        },
+        step3_add_guids: {
+          tool: "semaphore_kmm_sparql_update",
+          model_uri: "model:<ModelName>",
+          sparql: "PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>\nPREFIX skos: <http://www.w3.org/2004/02/skos/core#>\nINSERT { ?c sem:guid ?g }\nWHERE { ?c a skos:Concept . FILTER NOT EXISTS { ?c sem:guid ?x } . BIND(STRUUID() AS ?g) }",
+          note: "Required — sem:guid is used by the ContextualCitation.kid template to generate unique rule IDs",
+        },
+        step4_init_workspace: {
+          manual_step: "Open Semaphore Studio → model Publisher tab → click Initialize. Required once per model.",
+          url: "http://<semaphore-host>:<kmm-port>/kmm/#/models/<ModelName>/publisher",
+        },
+        step5_fix_publisher_config: {
+          tool: "semaphore_publish_config_fix_plain_skos",
+          model_uri: "model:<ModelName>",
+          note: "Adds GRAPH clause + plain SKOS label queries. Fixes the '1 rule only' silent failure.",
+        },
+        step6_publish: {
+          tool: "semaphore_publish",
+          model_uri: "model:<ModelName>",
+          wait_for_completion: true,
+          note: "After publish, the tool auto-checks the loaded rule count and warns if still 1.",
+        },
+        step7_diagnose_if_needed: {
+          tool: "semaphore_publish_diagnose",
+          model_uri: "model:<ModelName>",
+          note: "Run this if rule count is wrong — it compares KMM concepts vs CLS rules and explains the fix.",
+        },
+        step8_test: {
+          tool: "semaphore_classify",
+          content: "<sample text mentioning concepts from the taxonomy>",
+          threshold: 0,
+        },
+      },
+      rationale:
+        "Loading a SKOS taxonomy into Semaphore requires 6 steps. The critical non-obvious one is " +
+        "semaphore_publish_config_fix_plain_skos: the publisher's SPARQL endpoint is a global store " +
+        "where each model's data lives in a named graph (urn:x-evn-master:{ModelName}). Without the " +
+        "GRAPH clause fix, ALL label queries return empty → only 1 rule is published (the ConceptScheme " +
+        "root) → classification returns nothing. This silent failure is the most common issue.",
+      warnings: [
+        "The Publisher workspace must be initialized in Semaphore Studio before step 5 — " +
+        "without this, semaphore_publish_config_fix_plain_skos returns HTTP 403.",
+        "sem:guid must be added to all concepts (step 3) before publishing — the ContextualCitation.kid " +
+        "template uses ${resource.guid} to generate unique rule identifiers.",
+        "After publish, if all CLS rules = 1, run semaphore_publish_diagnose for root-cause analysis.",
+        "Publishing 1000+ concepts takes ~30 seconds. Use wait_for_completion=true to block until done.",
+      ],
+    });
+  }
 
   if (isClassification) {
     if (isBulkClassification) {

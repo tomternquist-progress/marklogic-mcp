@@ -716,9 +716,27 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           if (pollMessage) lines.push(`  Message: ${pollMessage}`);
           lines.push("");
           if (rawPoll.status === "COMPLETE") {
-            lines.push("Publish completed. Verify the rule set:");
-            lines.push("  • semaphore_publish_sets  — confirm new rule set is active");
-            lines.push("  • semaphore_classify  threshold=0  content='<test text>'");
+            // Auto-check loaded rule count — a well-formed publish of 100+ concepts should
+            // produce many rules. ≤1 rule is the unmistakeable "plain SKOS without GRAPH
+            // clause" symptom: only the auto-generated ConceptScheme root rule was produced.
+            const modelName = model_uri.replace(/^model:/, "").toLowerCase();
+            const ruleCount = await semaphore.clsRuleCount(modelName);
+            lines.push(`  Rules loaded in CLS: ${ruleCount >= 0 ? ruleCount : "(unknown)"}`);
+            lines.push("");
+            if (ruleCount >= 0 && ruleCount <= 1) {
+              lines.push("⚠  WARNING: Only 1 rule loaded — this strongly suggests a publisher config problem.");
+              lines.push("   Root cause: the default publisher config uses SKOS-XL label queries that hit");
+              lines.push("   the empty default graph of the global SPARQL endpoint. Each model's data lives");
+              lines.push(`   in the named graph urn:x-evn-master:${model_uri.replace(/^model:/, "")}.`);
+              lines.push("   Fix: run  semaphore_publish_config_fix_plain_skos  then re-publish.");
+            } else if (ruleCount > 1) {
+              lines.push("✓ Publish completed successfully.");
+              lines.push("  • semaphore_classify  threshold=0  content='<test text>'  — test classification");
+            } else {
+              lines.push("Publish completed. Verify the rule set:");
+              lines.push("  • semaphore_publish_sets  — confirm new rule set is active");
+              lines.push("  • semaphore_classify  threshold=0  content='<test text>'");
+            }
           } else if (rawPoll.status === "FAILED") {
             lines.push("Publish FAILED. Check Semaphore Studio Publisher tab for error details.");
           } else {
@@ -752,22 +770,26 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
   server.tool(
     "semaphore_publish_config_fix_plain_skos",
     "Fix the Semaphore publisher workspace config for a plain-SKOS model (one that uses skos:prefLabel literals, not SKOS-XL).\n\n" +
-    "PROBLEM THIS SOLVES:\n" +
-    "  The default Semaphore publisher config uses AllResources + SKOS-XL reification for label lookups. " +
-    "  When publishing a vocabulary with plain skos:prefLabel (e.g. UNESCO Thesaurus, EuroVoc, AGROVOC), " +
-    "  this produces only 1 CLS rule (for the ConceptScheme root) instead of one rule per concept. " +
-    "  Classification then returns no results because no concept-level rules exist.\n\n" +
+    "ROOT CAUSE THIS FIXES:\n" +
+    "  The Semaphore publisher's SparqlEndpoint connects to a GLOBAL SPARQL endpoint shared across all\n" +
+    "  models. Each model's data lives in a named graph (urn:x-evn-master:{ModelName}), not in the\n" +
+    "  default graph. The stock publisher config has no GRAPH clause, so all label queries hit the\n" +
+    "  empty default graph — returning 0 rows. Result: only 1 rule is published (the auto-generated\n" +
+    "  ConceptScheme root rule) instead of one rule per concept.\n\n" +
+    "  Additionally, the default config uses SKOS-XL reification for label lookups, which doesn't\n" +
+    "  work for vocabularies that store labels as plain skos:prefLabel literals.\n\n" +
     "WHAT THIS TOOL DOES:\n" +
     "  1. Downloads the current publisher workspace config ZIP from KMM (or creates a fresh one)\n" +
-    "  2. Replaces AllResources with AllConcepts — generates one rule per skos:Concept\n" +
-    "  3. Adds a PlainSkosModel bean that overrides the label SPARQL queries to use\n" +
-    "     plain skos:prefLabel / skos:altLabel instead of SKOS-XL reification\n" +
-    "  4. Ensures the ContextualCitation.kid rule template is present\n" +
-    "  5. Re-uploads the patched ZIP to the KMM workspace\n\n" +
+    "  2. Replaces the default config with AllConcepts + PlainSkosModel — generates one rule per skos:Concept\n" +
+    "  3. Injects GRAPH <urn:x-evn-master:{ModelName}> clauses into all label SPARQL queries\n" +
+    "     so the publisher finds data in the correct named graph\n" +
+    "  4. Uses plain skos:prefLabel / skos:altLabel instead of SKOS-XL reification\n" +
+    "  5. Ensures the ContextualCitation.kid rule template is present\n" +
+    "  6. Re-uploads the patched ZIP to the KMM workspace\n\n" +
     "WHEN TO USE THIS:\n" +
-    "  Use for: UNESCO Thesaurus, EuroVoc, AGROVOC, IPTC rdfxml format, and any SKOS vocabulary\n" +
-    "  that stores labels as skos:prefLabel literals on the concept node directly.\n" +
-    "  Skip for: Vocabularies already using SKOS-XL (skosxl:prefLabel + skosxl:Label nodes).\n\n" +
+    "  Use for ANY model you've loaded via semaphore_kmm_skos_load — both plain SKOS vocabularies\n" +
+    "  (UNESCO, EuroVoc, AGROVOC, IPTC) and SKOS-XL ones benefit from the GRAPH clause fix.\n" +
+    "  Symptom: semaphore_publish completes successfully but only 1 rule loads in CLS.\n\n" +
     "BEFORE RUNNING:\n" +
     "  1. WORKSPACE INITIALIZATION (required for new models):\n" +
     "     Open Semaphore Studio and navigate to the model's Publisher tab — this creates the\n" +
@@ -778,12 +800,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n" +
     "     INSERT { ?c sem:guid ?g }\n" +
     "     WHERE { ?c a skos:Concept . FILTER NOT EXISTS { ?c sem:guid ?x } . BIND(STRUUID() AS ?g) }\n\n" +
-    "LABEL LANGUAGE MATCHING:\n" +
-    "  The patched config uses LANGMATCHES(LANG(?label), 'en') which matches both bare @en\n" +
-    "  and regional variants (@en-US, @en-GB, @en-AU). This is correct for IPTC Media Topics\n" +
-    "  (which uses @en-US labels) and also works for UNESCO Thesaurus (@en labels).\n\n" +
     "AFTER RUNNING:\n" +
-    "  Run semaphore_publish (with environment=<name>) to rebuild the CLS rule set.",
+    "  Run semaphore_publish (with wait_for_completion=true) to rebuild the CLS rule set.\n" +
+    "  The tool will automatically check the loaded rule count and warn if it's still only 1.",
     {
       model_uri: z.string().describe(
         "KMM model URI to patch, e.g. 'model:UNESCO'. " +
@@ -937,6 +956,104 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
+    }
+  );
+
+  // ── semaphore_publish_diagnose ────────────────────────────────────────────────
+  server.tool(
+    "semaphore_publish_diagnose",
+    "Diagnose why a Semaphore taxonomy publish produced too few classification rules.\n\n" +
+    "Compares three counts and flags any mismatch:\n" +
+    "  • KMM concept count  — how many skos:Concept instances exist in the model (OE API)\n" +
+    "  • Labeled concept count — how many concepts have an English skos:prefLabel (SPARQL)\n" +
+    "  • CLS rule count     — how many rules are currently loaded in the Classification Server\n\n" +
+    "A healthy publish of N concepts should load ~N rules. The classic failure mode is:\n" +
+    "  KMM: 1392 concepts, Labels: 1391, CLS rules: 1\n" +
+    "This means the publisher ran successfully but its SPARQL label queries hit the empty\n" +
+    "default graph (not the model's named graph) and returned zero rows, so no concept rules\n" +
+    "were written — only the auto-generated ConceptScheme root rule.\n\n" +
+    "FIX: Run semaphore_publish_config_fix_plain_skos then re-publish.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI to diagnose, e.g. 'model:IPTCMediaTopics'. " +
+        "Get from semaphore_kmm_models_list."
+      ),
+    },
+    async ({ model_uri }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      const lines = [
+        "PUBLISH DIAGNOSTICS",
+        "─".repeat(50),
+        `  Model: ${model_uri}`,
+        "",
+      ];
+
+      // 1. KMM concept count via OE API
+      const kmmCount = await semaphore.kmmConceptCount(model_uri);
+      lines.push(`  KMM concept count (OE API):     ${kmmCount >= 0 ? kmmCount : "ERROR — could not query"}`);
+
+      // 2. Labeled concept count via SPARQL
+      let labelCount = -1;
+      try {
+        const modelName = model_uri.replace(/^model:/, "");
+        const r = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+           SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE {
+             GRAPH <urn:x-evn-master:${modelName}> {
+               ?c a skos:Concept ; skos:prefLabel ?l .
+               FILTER(LANG(?l) = "en")
+             }
+           }`
+        );
+        const n = r.rows[0]?.["n"];
+        labelCount = n !== undefined ? parseInt(String(n), 10) : -1;
+      } catch { /* ignore */ }
+      lines.push(`  English prefLabels (SPARQL):     ${labelCount >= 0 ? labelCount : "ERROR — could not query"}`);
+
+      // 3. CLS rule count
+      const publishSetName = model_uri.replace(/^model:/, "").toLowerCase();
+      const ruleCount = await semaphore.clsRuleCount(publishSetName);
+      lines.push(`  CLS rules loaded:               ${ruleCount >= 0 ? ruleCount : "unknown (CLS not reachable or publish set not found)"}`);
+
+      lines.push("");
+
+      // Diagnosis
+      const healthy = kmmCount > 0 && ruleCount > 1 && (ruleCount >= kmmCount * 0.5);
+      if (healthy) {
+        lines.push("✓ HEALTHY — rule count looks proportionate to concept count.");
+        lines.push("  Run semaphore_classify to verify classification quality.");
+      } else if (ruleCount >= 0 && ruleCount <= 1 && kmmCount > 0) {
+        lines.push("✗ PROBLEM DETECTED: Only 1 rule loaded despite " + kmmCount + " concepts in KMM.");
+        lines.push("");
+        lines.push("  Root cause: the publisher's SPARQL label queries hit the empty default graph.");
+        lines.push("  Each model's data lives in the named graph:");
+        lines.push(`    urn:x-evn-master:${model_uri.replace(/^model:/, "")}`);
+        lines.push("  Without an explicit GRAPH clause, 0 labels are found → 0 concept rules.");
+        lines.push("");
+        lines.push("  FIX (two steps):");
+        lines.push(`    1. semaphore_publish_config_fix_plain_skos  model_uri="${model_uri}"`);
+        lines.push(`    2. semaphore_publish  model_uri="${model_uri}"  wait_for_completion=true`);
+      } else if (labelCount >= 0 && labelCount === 0 && kmmCount > 0) {
+        lines.push("✗ PROBLEM DETECTED: " + kmmCount + " concepts exist but none have English prefLabels.");
+        lines.push("  Check the language tags on your skos:prefLabel triples.");
+        lines.push("  Run: semaphore_kmm_sparql to inspect what LANG() values are present:");
+        lines.push(`    model_uri="${model_uri}"`);
+        lines.push('    query: SELECT DISTINCT (LANG(?l) AS ?lang) (COUNT(?l) AS ?n) WHERE { ?c skos:prefLabel ?l } GROUP BY ?lang');
+      } else if (kmmCount <= 0) {
+        lines.push("✗ PROBLEM DETECTED: No concepts found in KMM.");
+        lines.push(`  Run semaphore_kmm_skos_load to import a SKOS vocabulary into ${model_uri}.`);
+      } else {
+        lines.push("⚠  Results inconclusive — could not determine CLS rule count.");
+        lines.push("  If classification returns nothing, run semaphore_publish_config_fix_plain_skos");
+        lines.push("  and re-publish.");
+      }
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
     }
   );
 
