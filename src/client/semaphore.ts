@@ -1242,15 +1242,13 @@ export class SemaphoreClient {
       logger.debug("No existing publisher config — creating fresh ZIP", { modelUri });
     }
 
-    // Find the main publisher XML config file (skip sub-directory imports)
-    const xmlFilename = Object.keys(zip.files).find(
-      (f) =>
-        f.endsWith(".xml") &&
-        !f.includes("/import/") &&
-        !zip.files[f].dir
-    );
+    // Always target the CS-only config — this is what kmmPublish() uses by default
+    // (config="{ModelName}/Semaphore-Publisher-CS-only.xml"). The ZIP may contain
+    // other XML files (Semaphore-Publisher-Concepts.xml, Semaphore-Publisher.xml, etc.)
+    // that are NOT used by the publish call, so patching those has no effect.
+    const xmlFilename = "Semaphore-Publisher-CS-only.xml";
 
-    const currentXml = xmlFilename
+    const currentXml = zip.files[xmlFilename]
       ? await zip.files[xmlFilename].async("string")
       : "";
 
@@ -1288,10 +1286,9 @@ export class SemaphoreClient {
       changes.push("Removed explicit GRAPH clause — model-scoped SPARQL endpoint serves default graph");
     }
 
-    // Write the canonical patched XML (replaces any existing XML config entirely)
-    const targetFilename = xmlFilename ?? "Semaphore-Publisher-CS-only.xml";
+    // Write the canonical patched XML to the target file
     const modelName = modelUri.replace(/^model:/, "");
-    zip.file(targetFilename, buildPlainSkosPublisherXml(modelName));
+    zip.file(xmlFilename, buildPlainSkosPublisherXml(modelName));
 
     // Ensure the ContextualCitation.kid template is present
     if (!zip.files["templates/ContextualCitation.kid"]) {
