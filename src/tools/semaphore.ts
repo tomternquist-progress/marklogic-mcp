@@ -1114,4 +1114,316 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       }
     }
   );
+
+  // ── semaphore_concept_search ──────────────────────────────────────────────────
+  server.tool(
+    "semaphore_concept_search",
+    "Search for concepts in a KMM model by keyword, matching across prefLabel, altLabel, and hiddenLabel.\n\n" +
+    "USE THIS TO:\n" +
+    "  • Identify which concept(s) are responsible for a false-positive classification.\n" +
+    "    Example: if 'wedding' appears wrongly on news articles, search keyword='wedding' to find the concept URI.\n" +
+    "  • Explore what labels exist in a domain before tuning.\n" +
+    "  • Verify that label changes (via semaphore_concept_labels_update) took effect.\n\n" +
+    "WORKFLOW FOR FIXING FALSE POSITIVES:\n" +
+    "  1. semaphore_concept_search — find the concept responsible (by label keyword)\n" +
+    "  2. semaphore_concept_get    — see ALL labels on that concept\n" +
+    "  3. semaphore_concept_labels_update — remove the overly-broad label\n" +
+    "  4. semaphore_publish        — rebuild the CLS rule set\n" +
+    "  5. semaphore_classify       — verify the false positive is gone\n\n" +
+    "NOTE: Prefer removing overly-broad labels over adding complex rules. Simpler taxonomy = better precision.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI, e.g. 'model:IPTCMediaTopics'. Get from semaphore_kmm_models_list."
+      ),
+      keyword: z.string().describe(
+        "Keyword to search for (case-insensitive substring match across all label types)."
+      ),
+      lang: z.string().optional().describe(
+        "Language tag filter, e.g. 'en'. Default: no language filter (matches all languages)."
+      ),
+      limit: z.number().optional().describe(
+        "Max results to return. Default: 30."
+      ),
+    },
+    async ({ model_uri, keyword, lang, limit = 30 }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return { content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }], isError: true };
+      }
+      if (!semaphore.kmmConfigured) {
+        return { content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }], isError: true };
+      }
+      const langFilter = lang ? `FILTER(LANG(?lv) = "${lang}")` : "";
+      const query = `
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+SELECT ?concept ?prefLabel ?labelType ?matchedLabel WHERE {
+  ?concept a skos:Concept .
+  ?concept skos:prefLabel ?prefLabel .
+  { ?concept skos:prefLabel ?lv . BIND("prefLabel" AS ?labelType) }
+  UNION
+  { ?concept skos:altLabel ?lv . BIND("altLabel" AS ?labelType) }
+  UNION
+  { ?concept skos:hiddenLabel ?lv . BIND("hiddenLabel" AS ?labelType) }
+  BIND(STR(?lv) AS ?matchedLabel)
+  ${langFilter}
+  FILTER(CONTAINS(LCASE(?matchedLabel), LCASE("${keyword.replace(/"/g, '\\"')}")))
+}
+ORDER BY ?prefLabel ?labelType
+LIMIT ${limit}`;
+      try {
+        const result = await semaphore.kmmSparqlQuery(model_uri, query);
+        const { rows } = result;
+        if (rows.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                `CONCEPT SEARCH — no results for "${keyword}"\n\n` +
+                "The keyword was not found in any prefLabel, altLabel, or hiddenLabel.\n\n" +
+                "Try:\n" +
+                "  • A shorter or different keyword (e.g. 'wed' instead of 'wedding')\n" +
+                "  • Remove the lang filter to search all languages\n" +
+                `  • semaphore_kmm_sparql to run a custom query against ${model_uri}`,
+            }],
+          };
+        }
+        const lines = [
+          `CONCEPT SEARCH — "${keyword}" in ${model_uri}`,
+          "─".repeat(60),
+          `Found ${rows.length} match(es)${rows.length === limit ? ` (limit ${limit} — may be more)` : ""}`,
+          "",
+          "concept_uri                                   prefLabel              labelType    matchedLabel",
+          "─".repeat(110),
+        ];
+        for (const r of rows) {
+          const concept = (r.concept ?? "").slice(0, 44).padEnd(44);
+          const pref = (r.prefLabel ?? "").slice(0, 22).padEnd(22);
+          const lt = (r.labelType ?? "").slice(0, 12).padEnd(12);
+          const ml = (r.matchedLabel ?? "").slice(0, 40);
+          lines.push(`${concept}  ${pref}  ${lt}  ${ml}`);
+        }
+        lines.push("");
+        lines.push("NEXT STEP: semaphore_concept_get  model_uri=\"" + model_uri + "\"  concept_uri=\"<URI above>\"");
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_concept_get ─────────────────────────────────────────────────────
+  server.tool(
+    "semaphore_concept_get",
+    "Retrieve the full profile of a concept from a KMM model: all labels (prefLabel, altLabel, hiddenLabel), " +
+    "hierarchical links (broader, narrower), associative links (related), and scopeNote.\n\n" +
+    "USE THIS TO:\n" +
+    "  • Understand exactly why a concept matches certain text — every label becomes a phrase-match rule.\n" +
+    "  • Identify which specific altLabel or hiddenLabel is causing false positives.\n" +
+    "  • Inspect hierarchy context before deciding whether to remove a label or restructure the taxonomy.\n\n" +
+    "LABEL TYPES AND CLASSIFICATION IMPACT:\n" +
+    "  prefLabel   — primary phrase match (highest weight, required, one per concept per language)\n" +
+    "  altLabel    — synonym phrases (same weight as prefLabel in ContextualCitation rules)\n" +
+    "  hiddenLabel — hidden phrase triggers (not displayed in UI, still drives classification)\n\n" +
+    "TUNING STRATEGY:\n" +
+    "  • False positive from a too-broad altLabel → use semaphore_concept_labels_update to remove it\n" +
+    "  • Concept too narrow (misses relevant text) → add altLabels for common synonyms\n" +
+    "  • Preclusion (concept X fires when Y is present) → Semaphore has no native NOT operator;\n" +
+    "    simulate by removing the offending label or creating a separate 'exclusion' concept\n" +
+    "    with a SPARQL rule that overrides the score — but prefer label removal first.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI, e.g. 'model:IPTCMediaTopics'. Get from semaphore_kmm_models_list."
+      ),
+      concept_uri: z.string().describe(
+        "Full concept URI, e.g. 'http://cv.iptc.org/newscodes/mediatopic/20000209'. " +
+        "Get from semaphore_concept_search."
+      ),
+    },
+    async ({ model_uri, concept_uri }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return { content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }], isError: true };
+      }
+      if (!semaphore.kmmConfigured) {
+        return { content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }], isError: true };
+      }
+      const uri = concept_uri.replace(/>/g, "").replace(/</g, "");
+      const conceptRef = uri.startsWith("http") ? `<${uri}>` : uri;
+      const query = `
+PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+SELECT ?predicate ?value WHERE {
+  ${conceptRef} ?predicate ?value .
+  FILTER(?predicate IN (
+    skos:prefLabel, skos:altLabel, skos:hiddenLabel,
+    skos:broader, skos:narrower, skos:related,
+    skos:scopeNote, skos:definition, skos:notation
+  ))
+}
+ORDER BY ?predicate ?value
+LIMIT 500`;
+      try {
+        const result = await semaphore.kmmSparqlQuery(model_uri, query);
+        const { rows } = result;
+        if (rows.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                `CONCEPT NOT FOUND: ${concept_uri}\n\n` +
+                "No triples found for this URI in the model.\n" +
+                "Verify the URI with semaphore_concept_search or semaphore_kmm_sparql.",
+            }],
+          };
+        }
+
+        // Group by predicate
+        const groups: Record<string, string[]> = {};
+        for (const r of rows) {
+          const pred = (r.predicate ?? "").replace("http://www.w3.org/2004/02/skos/core#", "skos:");
+          const val = r.value ?? "";
+          (groups[pred] ??= []).push(val);
+        }
+
+        const lines = [
+          `CONCEPT PROFILE — ${model_uri}`,
+          "─".repeat(60),
+          `URI: ${concept_uri}`,
+          "",
+        ];
+
+        const order = [
+          "skos:prefLabel", "skos:altLabel", "skos:hiddenLabel",
+          "skos:scopeNote", "skos:definition",
+          "skos:broader", "skos:narrower", "skos:related",
+          "skos:notation",
+        ];
+        for (const pred of order) {
+          if (groups[pred]) {
+            lines.push(`${pred}:`);
+            for (const v of groups[pred]) lines.push(`  ${v}`);
+            lines.push("");
+          }
+        }
+        // Any remaining predicates not in the ordered list
+        for (const [pred, vals] of Object.entries(groups)) {
+          if (!order.includes(pred)) {
+            lines.push(`${pred}:`);
+            for (const v of vals) lines.push(`  ${v}`);
+            lines.push("");
+          }
+        }
+
+        const altLabels = groups["skos:altLabel"] ?? [];
+        const hiddenLabels = groups["skos:hiddenLabel"] ?? [];
+        lines.push("TUNING GUIDANCE:");
+        if (altLabels.length > 10) {
+          lines.push(`  • This concept has ${altLabels.length} altLabels — a large label set increases false-positive risk.`);
+          lines.push("    Consider removing labels that are common words with multiple meanings.");
+        }
+        if (hiddenLabels.length > 0) {
+          lines.push(`  • ${hiddenLabels.length} hiddenLabel(s) are invisible in the UI but still drive classification.`);
+        }
+        lines.push("");
+        lines.push("TO REMOVE A LABEL:  semaphore_concept_labels_update  action=remove  label_type=altLabel  label_value=\"<value>\"");
+        lines.push("TO ADD A LABEL:     semaphore_concept_labels_update  action=add     label_type=altLabel  label_value=\"<value>\"");
+        lines.push("AFTER CHANGES:      semaphore_publish  →  semaphore_classify  (to verify)");
+
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_concept_labels_update ──────────────────────────────────────────
+  server.tool(
+    "semaphore_concept_labels_update",
+    "Add or remove a single label (prefLabel, altLabel, or hiddenLabel) on a concept in a KMM model.\n\n" +
+    "This is the primary tool for taxonomy model tuning to fix classification quality issues.\n" +
+    "Always prefer this over writing complex publisher configuration rules.\n\n" +
+    "WHEN TO USE EACH LABEL TYPE:\n" +
+    "  altLabel    — synonyms and common phrasings you WANT to trigger this concept\n" +
+    "  hiddenLabel — trigger phrases that shouldn't appear in the UI (e.g. abbreviations, misspellings)\n" +
+    "  prefLabel   — the primary display name (only one per concept per language; change with care)\n\n" +
+    "FIXING FALSE POSITIVES:\n" +
+    "  1. Use semaphore_concept_search to find the concept responsible.\n" +
+    "  2. Use semaphore_concept_get to see all its labels.\n" +
+    "  3. Use this tool with action='remove' to remove the overly-broad label.\n" +
+    "  4. Run semaphore_publish to rebuild the CLS rule set.\n" +
+    "  5. Run semaphore_classify to verify the false positive is resolved.\n\n" +
+    "IMPROVING RECALL (too few correct matches):\n" +
+    "  Add altLabels for common synonyms, abbreviations, or domain-specific phrasings.\n\n" +
+    "PRECLUSION / NEGATIVE EVIDENCE:\n" +
+    "  Semaphore does not have a native NOT operator in standard rules.\n" +
+    "  Best approaches (in order of preference):\n" +
+    "  1. Remove the label causing the match (simplest, model-level fix)\n" +
+    "  2. Narrow the concept scope — add skos:scopeNote to document intent (won't affect rules, but helps humans)\n" +
+    "  3. For complex disambiguation: use semaphore_kmm_sparql_update to add a custom rule override\n" +
+    "     (advanced — consult Semaphore documentation on manual rule templates)\n\n" +
+    "IMPORTANT: After any label change, run semaphore_publish to apply the change to the Classification Server.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI, e.g. 'model:IPTCMediaTopics'. Get from semaphore_kmm_models_list."
+      ),
+      concept_uri: z.string().describe(
+        "Full concept URI, e.g. 'http://cv.iptc.org/newscodes/mediatopic/20000209'. " +
+        "Get from semaphore_concept_search."
+      ),
+      action: z.enum(["add", "remove"]).describe(
+        "'add' inserts the label; 'remove' deletes it."
+      ),
+      label_type: z.enum(["prefLabel", "altLabel", "hiddenLabel"]).describe(
+        "SKOS label property to modify."
+      ),
+      label_value: z.string().describe(
+        "The literal string value of the label, e.g. 'wedding'. Do not include language tag here — use lang param."
+      ),
+      lang: z.string().optional().describe(
+        "Language tag for the label, e.g. 'en'. Default: 'en'."
+      ),
+    },
+    async ({ model_uri, concept_uri, action, label_type, label_value, lang = "en" }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return { content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }], isError: true };
+      }
+      if (!semaphore.kmmConfigured) {
+        return { content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }], isError: true };
+      }
+
+      const uri = concept_uri.replace(/>/g, "").replace(/</g, "");
+      const conceptRef = uri.startsWith("http") ? `<${uri}>` : uri;
+      const predicate = `<http://www.w3.org/2004/02/skos/core#${label_type}>`;
+      const escaped = label_value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const literal = `"${escaped}"@${lang}`;
+      const triple = `${conceptRef} ${predicate} ${literal}`;
+
+      const sparql = action === "add"
+        ? `INSERT DATA { ${triple} }`
+        : `DELETE DATA { ${triple} }`;
+
+      try {
+        await semaphore.kmmSparqlUpdate(model_uri, sparql);
+
+        const lines = [
+          `CONCEPT LABEL ${action.toUpperCase()}ED`,
+          "─".repeat(50),
+          "",
+          `  Model:      ${model_uri}`,
+          `  Concept:    ${concept_uri}`,
+          `  Action:     ${action === "add" ? "ADDED" : "REMOVED"}`,
+          `  Label type: skos:${label_type}`,
+          `  Value:      "${label_value}"@${lang}`,
+          "",
+          "SPARQL executed:",
+          `  ${sparql}`,
+          "",
+          "NEXT STEPS:",
+          `  1. Verify:    semaphore_concept_get  model_uri="${model_uri}"  concept_uri="${concept_uri}"`,
+          `  2. Re-publish: semaphore_publish  model_uri="${model_uri}"`,
+          "  3. Test:      semaphore_classify  (with a document that previously showed the false positive)",
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
 }
