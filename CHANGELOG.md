@@ -7,6 +7,59 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`semaphore_kmm_sparql_update` tool** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
+  New tool for running SPARQL UPDATE (INSERT DATA / DELETE DATA / DELETE+INSERT / LOAD)
+  against a KMM model graph. Always passes `checkConstraints=false&runEditRules=false` to
+  bypass Semaphore SHACL validation. Primary use case: adding `sem:guid` to every
+  `skos:Concept` before publishing (required by the `ContextualCitation.kid` template).
+
+- **`semaphore_publish` tool** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
+  Triggers a KMM publisher run via the REST API (`POST /kmm/api?path=publisher/...`),
+  replacing the previous requirement to use the Studio UI. Defaults to `async=true`
+  because synchronous publish times out for models with more than a few hundred concepts.
+  Returns the job ID for status polling. Supports `config`, `environment`, and `language`
+  parameters.
+
+- **`semaphore_publish_config_fix_plain_skos` tool** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
+  Automates the publisher config patch required for plain-SKOS vocabularies (UNESCO
+  Thesaurus, EuroVoc, AGROVOC, and any vocabulary using `skos:prefLabel` literals rather
+  than SKOS-XL reification). Downloads the workspace config ZIP from the KMM workspace
+  API, replaces `AllResources` with `AllConcepts` (to generate one CLS rule per
+  `skos:Concept` instead of only a ConceptScheme-level rule), adds a `PlainSkosModel`
+  Spring bean that overrides `getPrefLabelsSparql` and `getAltLabelsForwardSparql` for
+  plain label lookup, ensures `templates/ContextualCitation.kid` is present, and
+  re-uploads the patched ZIP. Idempotent — no-ops if the config is already patched.
+  Uses `jszip` for in-memory ZIP editing (new dependency).
+
+- **`kmmSparqlUpdate`, `kmmPublish`, `kmmPublishJobStatus`, `kmmDownloadPublishConfigZip`,
+  `kmmUploadPublishConfigZip`, `kmmPatchPublishConfigForPlainSkos` client methods**
+  (`src/client/semaphore.ts`). Backing implementation for the three new tools above.
+  `kmmUploadPublishConfigZip` uses Node.js 20 built-in `FormData`/`Blob` globals for
+  multipart upload. The workspace API path requires a double-slash (`/kmm/api//...`);
+  this is encoded in the client implementation.
+
+- **`PLAIN_SKOS_PUBLISHER_XML` and `CONTEXTUAL_CITATION_TEMPLATE` constants**
+  (`src/client/semaphore.ts`). Canonical publisher XML with `AllConcepts` +
+  `PlainSkosModel` bean, and the default `ContextualCitation.kid` rule template.
+  Embedded in the client so `semaphore_publish_config_fix_plain_skos` can create
+  a fresh config ZIP without requiring the user to supply these files.
+
+- **`jszip` dependency** (`package.json`). Used by `kmmPatchPublishConfigForPlainSkos`
+  for in-memory ZIP read/write.
+
+### Changed
+
+- **`semaphore_kmm_model_create` NEXT STEPS** (`src/tools/semaphore.ts`)
+  Updated to include the full 7-step workflow: load SKOS → verify concepts → add
+  `sem:guid` → fix plain SKOS config → publish → verify rules → test classification.
+  Replaced "Open Semaphore Studio UI" with API-based tool calls.
+
+- **`semaphore_kmm_skos_load` NEXT STEPS** (`src/tools/semaphore.ts`)
+  Same 7-step workflow added, including the `sem:guid` SPARQL INSERT snippet and
+  the `semaphore_publish_config_fix_plain_skos` + `semaphore_publish` steps.
+
 ### Fixed
 
 - **`ml_sparql_query` HTTP 406 on CONSTRUCT/DESCRIBE** (`src/client/graphs.ts`)

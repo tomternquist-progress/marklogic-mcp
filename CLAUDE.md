@@ -20,12 +20,14 @@ Before writing any new tool, prompt, resource, or client method, answer:
    - Joins/aggregates → Optic API over TDE views (`ml_optic_query`)
    - Full-text → Universal index search (`ml_search`)
    - Graph traversal → Triple store / SPARQL (`ml_sparql_query`)
+   - Content classification / auto-tagging → Semaphore CLS + KMM (`semaphore_classify`,
+     `semaphore_publish`, `flux_import` with `classify_with_semaphore: true`)
 
 3. **What must an agent discover first?** If the tool requires a pre-existing index,
    collection, or TDE template, document that prerequisite in the tool's `description`
    string so the agent knows to check before calling.
 
-4. **Is this already covered?** Check the 9 existing tool groups before adding a new
+4. **Is this already covered?** Check the 11 existing tool groups before adding a new
    tool. Extend an existing tool (via a new parameter) rather than adding a new one
    unless the problem type is genuinely distinct.
 
@@ -138,6 +140,7 @@ src/
     optic.ts         — Optic query (1 tool)
     quicksight.ts    — aggregate, timeseries, export, facets (4 tools)
     flux.ts          — import/export/copy/reprocess/preview/help/status (7 tools)
+    semaphore.ts     — CLS status/classify + KMM model management + publish (12 tools)
   resources/
     index.ts         — all resources; INSTRUCTIONS_TEXT constant at top
   prompts/
@@ -153,6 +156,7 @@ src/
     graphs.ts        — SPARQL
     optic.ts         — Optic plan execution
     flux.ts          — Flux runner HTTP client
+    semaphore.ts     — CLS XML API + KMM REST API (SPARQL, publish, workspace ZIP)
   config/
     index.ts         — dotenv loading + validation
     schema.ts        — Zod schemas for all config sections

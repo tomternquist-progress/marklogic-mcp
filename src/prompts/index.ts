@@ -647,11 +647,17 @@ Available tools (use only these):
   Optic:      ml_optic_query, ml_views_list, ml_vector_search
   Flux:       flux_import, flux_export, flux_copy, flux_reprocess, flux_preview, flux_help,
               flux_status
+  Semaphore:  semaphore_status, semaphore_studio_status, semaphore_publish_sets,
+              semaphore_classes, semaphore_classify,
+              semaphore_kmm_models_list, semaphore_kmm_model_create,
+              semaphore_kmm_skos_load, semaphore_kmm_sparql, semaphore_kmm_sparql_update,
+              semaphore_publish, semaphore_publish_config_fix_plain_skos
   Prompts:    uri_designer, xquery_function_generator, sjs_module_generator,
               tde_schema_generator, rest_extension_generator, structured_query_builder,
               optic_query_builder, sparql_query_builder, query_approach_advisor,
               data_modeling_advisor, data_import_advisor, project_setup_advisor,
-              gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner
+              gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
+              semaphore_integration_advisor
 
 ## 5. PITFALLS TO AVOID
 List 2–5 specific, concrete pitfalls for this goal. Examples of good pitfalls:

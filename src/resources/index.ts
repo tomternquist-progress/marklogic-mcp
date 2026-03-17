@@ -143,11 +143,11 @@ auto-tagging         taxonomy authoring         semaphore_classes         semaph
 concept extraction)  Classify via Flux or       semaphore_kmm_model_create
                      pre-classify app-side      semaphore_kmm_skos_load
                                                 semaphore_kmm_sparql
-                                                flux_import (extra_args:
-                                                  --classifier-host,
-                                                  --classifier-port,
-                                                  --classifier-path /,
-                                                  --classifier-http)
+                                                semaphore_kmm_sparql_update
+                                                semaphore_publish
+                                                semaphore_publish_config_fix_plain_skos
+                                                flux_import (classify_with_semaphore:
+                                                  true — bulk classification at ingest)
                                                 flux_reprocess
                                                 semaphore_integration_advisor (prompt)
 
@@ -433,6 +433,7 @@ SURFACING SEMAPHORE CATEGORIES IN MARKLOGIC SEARCH:
 
 TOOLS FOR SEMAPHORE:
   semaphore_status              — check CLS connectivity and version
+  semaphore_studio_status       — check KMM/Studio connectivity and auth
   semaphore_publish_sets        — list active taxonomy rule sets in CLS
   semaphore_classes             — browse classification class names in active rulenet
   semaphore_classify            — classify sample text (exploratory / small scale)
@@ -440,7 +441,24 @@ TOOLS FOR SEMAPHORE:
   semaphore_kmm_model_create    — create a new model container in KMM
   semaphore_kmm_skos_load       — load a SKOS vocabulary from a public URL into KMM
   semaphore_kmm_sparql          — query model content via SPARQL SELECT
+  semaphore_kmm_sparql_update   — run SPARQL INSERT/DELETE/LOAD to modify model triples
+                                  (use to add sem:guid before publishing)
+  semaphore_publish             — trigger async KMM publish → compiles taxonomy into CLS rules
+                                  always use async=true for models with 500+ concepts
+  semaphore_publish_config_fix_plain_skos
+                                — patch publisher config for plain-SKOS vocabularies
+                                  (skos:prefLabel, not SKOS-XL); downloads, patches, re-uploads
+                                  the workspace ZIP; run BEFORE semaphore_publish for
+                                  UNESCO, EuroVoc, AGROVOC, and similar vocabularies
   semaphore_integration_advisor (prompt) — full architectural design guidance
+
+PLAIN SKOS WORKFLOW (UNESCO / EuroVoc / AGROVOC):
+  1. semaphore_kmm_model_create
+  2. semaphore_kmm_skos_load (checkConstraints=false always applied)
+  3. semaphore_kmm_sparql_update — add sem:guid to all concepts (required by template)
+  4. semaphore_publish_config_fix_plain_skos — patch AllResources→AllConcepts + label SPARQL
+  5. semaphore_publish async=true — rebuild CLS rules
+  6. semaphore_publish_sets / semaphore_classify — verify
 
 KMM AUTHENTICATION NOTE:
   KMM uses Java EE form auth (not Basic auth). The MCP server handles the two-step
@@ -490,10 +508,12 @@ FastTrack (2–4, config-dependent):
                ml_search_options_list, ml_search_options_get
                [write-enabled] ml_search_options_put, ml_search_options_delete
 
-Semaphore (8): semaphore_status, semaphore_publish_sets, semaphore_classes,
-               semaphore_classify,
-               semaphore_kmm_models_list, semaphore_kmm_model_create,
-               semaphore_kmm_skos_load, semaphore_kmm_sparql
+Semaphore (12): semaphore_status, semaphore_studio_status,
+                semaphore_publish_sets, semaphore_classes, semaphore_classify,
+                semaphore_kmm_models_list, semaphore_kmm_model_create,
+                semaphore_kmm_skos_load, semaphore_kmm_sparql,
+                semaphore_kmm_sparql_update, semaphore_publish,
+                semaphore_publish_config_fix_plain_skos
 
 Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                tde_schema_generator, rest_extension_generator,

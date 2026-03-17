@@ -4,7 +4,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for Mar
 
 ## Features
 
-- **46 MCP tools** across 10 domains: admin, documents, search, schema, eval, SPARQL, Optic (incl. vector search), QuickSight, Flux, and approach advisory
+- **49 MCP tools** across 11 domains: admin, documents, search, schema, eval, SPARQL, Optic (incl. vector search), QuickSight, Flux, Semaphore (taxonomy + classification), and approach advisory
 - **5 MCP resources** including a machine-readable problem→solution decision guide
 - **13 MCP prompts** for query planning, code generation, import design, and BI integration
 - **Two transports**: stdio (Claude Desktop / local agents) and HTTP+SSE (remote agents, QuickSight)
@@ -164,6 +164,13 @@ docker compose up
 | `ML_ALLOW_EVAL` | `false` | Enable `/v1/eval` (XQuery/SJS execution) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LOG_FORMAT` | `json` | `json` or `pretty` |
+| `SEMAPHORE_HOST` | _(none)_ | Semaphore hostname (enables CLS + KMM connectivity) |
+| `SEMAPHORE_SCS_PORT` | `5058` | Classification Server port |
+| `SEMAPHORE_KMM_PORT` | `5080` | Studio / KMM port |
+| `SEMAPHORE_USERNAME` | _(none)_ | KMM username |
+| `SEMAPHORE_PASSWORD` | _(none)_ | KMM password |
+| `SEMAPHORE_URL` | _(none)_ | Explicit CLS URL override (takes precedence over host:port) |
+| `FLUX_RUNNER_URL` | _(none)_ | Flux runner HTTP URL (e.g. `http://localhost:8082`) |
 
 ---
 
@@ -278,6 +285,37 @@ Flux is the preferred path for all bulk data operations. It runs as a subprocess
 | `flux_status` | Check Flux runner availability |
 
 > `flux_import` supports `generate_tde: true` to auto-create an Optic view from the imported collection in one call.
+> `flux_import` also supports inline Semaphore classification at ingest via `classify_with_semaphore: true` — attaches taxonomy categories to every imported document.
+
+### Semaphore (12 tools)
+
+Semaphore is the Progress Data Platform taxonomy and classification engine. These tools manage the full lifecycle: load a SKOS vocabulary into KMM, configure the publisher, publish rules to the Classification Server (CLS), and classify content.
+
+**CLS (Classification Server) — port 5058**
+
+| Tool | Description |
+|---|---|
+| `semaphore_status` | Check CLS connectivity and version |
+| `semaphore_publish_sets` | List active taxonomy rule sets loaded in the CLS |
+| `semaphore_classes` | List classification class names in the active rulenet |
+| `semaphore_classify` | Classify text against the loaded rulenet (exploratory / small-scale) |
+
+**KMM / Studio (taxonomy authoring) — port 5080**
+
+| Tool | Description |
+|---|---|
+| `semaphore_studio_status` | Check KMM connectivity and authentication |
+| `semaphore_kmm_models_list` | List all taxonomy models in KMM |
+| `semaphore_kmm_model_create` | Create a new model container in KMM |
+| `semaphore_kmm_skos_load` | Load a SKOS vocabulary from a public URL into a KMM model |
+| `semaphore_kmm_sparql` | Query model content via SPARQL SELECT |
+| `semaphore_kmm_sparql_update` | Run SPARQL INSERT/DELETE/LOAD to modify model triples |
+| `semaphore_publish` | Trigger an async KMM publish — compiles the taxonomy into CLS rules |
+| `semaphore_publish_config_fix_plain_skos` | Patch the publisher config for plain-SKOS vocabularies (skos:prefLabel, no SKOS-XL) — replaces AllResources→AllConcepts and overrides label SPARQL |
+
+> **Plain-SKOS vocabularies** (UNESCO, EuroVoc, AGROVOC): run `semaphore_publish_config_fix_plain_skos` before `semaphore_publish`. Without the fix, the publisher generates only 1 rule (for the ConceptScheme root) instead of one per concept.
+>
+> **Configuration**: Set `SEMAPHORE_HOST`, `SEMAPHORE_SCS_PORT` (default 5058), `SEMAPHORE_KMM_PORT` (default 5080), `SEMAPHORE_USERNAME`, and `SEMAPHORE_PASSWORD` in the MCP server `.env`.
 
 ---
 
@@ -343,9 +381,11 @@ src/
   server.ts          — factory: createMcpServer() wires tools + resources + prompts
   index.ts           — CLI entry; selects stdio or HTTP transport
   tools/             — one file per domain; registerXxxTools() functions
+    semaphore.ts     — 12 Semaphore tools (CLS + KMM taxonomy management)
   resources/         — static + dynamic resources; INSTRUCTIONS_TEXT decision guide
   prompts/           — all prompts; query_approach_advisor and problem_advisor first
   client/            — typed HTTP clients for each MarkLogic API surface
+    semaphore.ts     — CLS XML API + KMM REST API + publisher workspace ZIP client
   config/            — dotenv loading and Zod validation
   transport/         — stdio and Express/HTTP transport wrappers
   utils/             — error formatting, digest auth, multipart builder
