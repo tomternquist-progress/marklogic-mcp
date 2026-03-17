@@ -105,7 +105,7 @@ import type { SemaphoreConfig } from "../config/schema.js";
  * Canonical publisher config XML for plain-SKOS models (skos:prefLabel, no SKOS-XL).
  *
  * Key differences from the Semaphore default:
- *   • AllConcepts (not AllResources) — generates one CLS rule per skos:Concept
+ *   • AllResources — generates one CLS rule per skos:Concept (AllConcepts does NOT work for plain-SKOS vocabularies)
  *   • PlainSkosModel bean overrides getPrefLabelsSparql / getAltLabelsForwardSparql
  *     to use plain skos:prefLabel / skos:altLabel instead of SKOS-XL reification
  *
@@ -164,9 +164,10 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
     <property name="model" ref="PlainSkosModel"/>
     <property name="configurationSets">
       <list>
-        <!-- AllConcepts: generates one CLS rule per skos:Concept.
-             AllResources (the default) only generates rules at the ConceptScheme level. -->
-        <bean parent="AllConcepts">
+        <!-- AllResources: generates one CLS rule per skos:Concept for plain-SKOS vocabularies.
+             AllConcepts does NOT find skos:Concept typed resources — only Semaphore-native concept types.
+             With AllConcepts, the publisher reports 0 Concepts and only 1 rule (the ConceptScheme). -->
+        <bean parent="AllResources">
           <!-- rulebaseClass sets the \${rulebaseClass} variable in the KID template.
                Without it, classification META elements have name="" and are silently dropped. -->
           <property name="rulebaseClass" value="{{MODEL_NAME}}"/>
@@ -1247,9 +1248,9 @@ export class SemaphoreClient {
    *
    * This method fixes that by:
    *   1. Downloading the current workspace config ZIP (or creating a fresh one)
-   *   2. Replacing AllResources → AllConcepts in the publisher XML
-   *      (AllConcepts generates one CLS rule per skos:Concept; AllResources only
-   *      generates rules at the ConceptScheme level)
+   *   2. Ensuring AllResources (not AllConcepts) is used in the publisher XML.
+   *      AllConcepts does NOT find skos:Concept typed resources — the publisher reports 0 Concepts
+   *      and generates only 1 rule (the ConceptScheme root). AllResources works correctly.
    *   3. Adding a PlainSkosModel bean that overrides the SPARQL queries to use
    *      plain skos:prefLabel and skos:altLabel instead of SKOS-XL reification
    *   4. Ensuring the ContextualCitation.kid rule template is present
@@ -1282,7 +1283,9 @@ export class SemaphoreClient {
       : "";
 
     // Check what needs to change
-    const alreadyHasAllConcepts = currentXml.includes('parent="AllConcepts"');
+    // AllResources (not AllConcepts) is required for plain-SKOS vocabularies.
+    // AllConcepts does NOT find skos:Concept typed resources and produces 0 rules.
+    const alreadyHasAllResources = currentXml.includes('parent="AllResources"');
     const alreadyHasPlainSkos = currentXml.includes("PlainSkosModel");
     // STRLANG normalization is required for regional language tags (e.g. @en-us, @pt-br).
     // Without it, the publisher assigns 0 labels for any vocab with regional subtags.
@@ -1296,7 +1299,7 @@ export class SemaphoreClient {
     // Labels in the model must be normalized to @en before publishing (en-us → en via SPARQL UPDATE).
     const alreadyHasLangFilter = currentXml.includes('LANG(?rawLabel) = "en"');
 
-    if (alreadyHasAllConcepts && alreadyHasPlainSkos && alreadyHasStrlang && alreadyHasRulebaseClass && alreadyHasLangFilter) {
+    if (alreadyHasAllResources && alreadyHasPlainSkos && alreadyHasStrlang && alreadyHasRulebaseClass && alreadyHasLangFilter) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
@@ -1304,8 +1307,8 @@ export class SemaphoreClient {
     }
 
     const changes: string[] = [];
-    if (!alreadyHasAllConcepts) {
-      changes.push("AllResources → AllConcepts (one rule per skos:Concept)");
+    if (!alreadyHasAllResources) {
+      changes.push("AllConcepts → AllResources (AllResources correctly finds skos:Concept resources)");
     }
     if (!alreadyHasPlainSkos) {
       changes.push(
