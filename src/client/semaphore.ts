@@ -132,6 +132,9 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
   <!-- Override SparqlEndpoint to use plain skos:prefLabel (no SKOS-XL reification).
        Required for vocabularies that use skos:prefLabel literals directly, e.g.
        UNESCO Thesaurus, EuroVoc, AGROVOC. -->
+  <!-- PlainSkosModel: override label SPARQL to use plain skos:prefLabel / skos:altLabel.
+       No LANG() filter here — the publisher SPARQL engine does not support LANG() reliably.
+       Language filtering is handled by the languageCodes property on the AllResources bean. -->
   <bean id="PlainSkosModel" parent="SparqlEndpoint">
     <property name="getPrefLabelsSparql">
       <value><![CDATA[
@@ -139,9 +142,7 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
         SELECT ?termUri ?prefLabelUri ?prefLabel ?prefLabelRelationship
         WHERE {
           BIND(skos:prefLabel AS ?prefLabelRelationship) .
-          ?termUri skos:prefLabel ?rawLabel .
-          FILTER(LANG(?rawLabel) = "en")
-          BIND(STRLANG(STR(?rawLabel), "en") AS ?prefLabel) .
+          ?termUri skos:prefLabel ?prefLabel .
           BIND(?termUri AS ?prefLabelUri) .
         }
       ]]></value>
@@ -151,9 +152,7 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
         PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
         SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
         WHERE {
-          ?termUri skos:altLabel ?rawLabel .
-          FILTER(LANG(?rawLabel) = "en")
-          BIND(STRLANG(STR(?rawLabel), "en") AS ?labelLiteral) .
+          ?termUri skos:altLabel ?labelLiteral .
           BIND(?termUri AS ?labelUri) .
         }
       ]]></value>
@@ -1287,19 +1286,17 @@ export class SemaphoreClient {
     // AllConcepts does NOT find skos:Concept typed resources and produces 0 rules.
     const alreadyHasAllResources = currentXml.includes('parent="AllResources"');
     const alreadyHasPlainSkos = currentXml.includes("PlainSkosModel");
-    // STRLANG normalization is required for regional language tags (e.g. @en-us, @pt-br).
-    // Without it, the publisher assigns 0 labels for any vocab with regional subtags.
-    const alreadyHasStrlang = currentXml.includes("STRLANG");
     // rulebaseClass is required so the KID template ${rulebaseClass} variable resolves to
     // a non-empty string. Without it, all classification META elements have name="" and
     // are silently dropped by CLS parsers.
     const alreadyHasRulebaseClass = currentXml.includes("rulebaseClass");
-    // Simple LANG() = "en" filter is required — LANGMATCHES and STRSTARTS do not work
-    // reliably in the Semaphore 5.10.1 publisher's SPARQL engine (returns 0 concepts).
-    // Labels in the model must be normalized to @en before publishing (en-us → en via SPARQL UPDATE).
-    const alreadyHasLangFilter = currentXml.includes('LANG(?rawLabel) = "en"');
+    // No LANG() filter in SPARQL — the publisher SPARQL engine does not support LANG() reliably
+    // (LANGMATCHES, STRSTARTS, and LANG() = "en" all return 0 concepts).
+    // Language filtering is handled by the languageCodes Java property on the AllResources bean.
+    // Detect that we're using the no-filter version by absence of STRLANG / FILTER(LANG
+    const alreadyHasNoLangFilter = !currentXml.includes("STRLANG") && !currentXml.includes("FILTER(LANG");
 
-    if (alreadyHasAllResources && alreadyHasPlainSkos && alreadyHasStrlang && alreadyHasRulebaseClass && alreadyHasLangFilter) {
+    if (alreadyHasAllResources && alreadyHasPlainSkos && alreadyHasRulebaseClass && alreadyHasNoLangFilter) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
