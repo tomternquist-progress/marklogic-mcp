@@ -1262,8 +1262,11 @@ export class SemaphoreClient {
     const alreadyHasAllResources = currentXml.includes('parent="AllResources"');
     const alreadyHasRulebaseClass = currentXml.includes("rulebaseClass");
     const alreadyHasNoPlainSkos = !currentXml.includes("PlainSkosModel");
+    // model ref="SparqlEndpoint" is required — without it, Publisher falls back to OE API
+    // mode and doesn't see SPARQL-inserted triples (e.g. skosxl:prefLabel nodes).
+    const alreadyHasSparqlEndpoint = currentXml.includes('ref="SparqlEndpoint"');
 
-    if (alreadyHasAllResources && alreadyHasRulebaseClass && alreadyHasNoPlainSkos) {
+    if (alreadyHasAllResources && alreadyHasRulebaseClass && alreadyHasNoPlainSkos && alreadyHasSparqlEndpoint) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
@@ -1276,6 +1279,9 @@ export class SemaphoreClient {
     }
     if (!alreadyHasNoPlainSkos) {
       changes.push("Removed PlainSkosModel SPARQL override — using default SKOS-XL SPARQL (skosxl:prefLabel triples added to model)");
+    }
+    if (!alreadyHasSparqlEndpoint) {
+      changes.push("Added model ref=\"SparqlEndpoint\" — forces SPARQL label lookup instead of OE API fallback");
     }
 
     // Write the canonical patched XML (replaces any existing XML config entirely)
