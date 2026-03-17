@@ -215,6 +215,49 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     }
   );
 
+  // ── semaphore_cls_languages ───────────────────────────────────────────────────
+  server.tool(
+    "semaphore_cls_languages",
+    "List available language packs in the Semaphore Classification Server.\n\n" +
+    "CLS language codes use an INDEXED format (e.g. 'en1', 'fr1') not standard ISO codes. " +
+    "You must use these indexed codes in classify() language parameters, not 'en' or 'en-US'.\n\n" +
+    "Use this tool to discover which language codes are installed and have rules defined. " +
+    "The default language is used automatically when no language is specified in classification requests.",
+    {},
+    async () => {
+      if (!semaphore.configured) {
+        return {
+          content: [{ type: "text", text: "Semaphore is not configured. Set SEMAPHORE_URL in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      try {
+        const languages = await semaphore.listClsLanguages();
+        if (languages.length === 0) {
+          return {
+            content: [{ type: "text", text: "No languages found. The Classification Server may have no language packs installed." }],
+          };
+        }
+        const lines = [
+          "CLS LANGUAGE PACKS",
+          "─".repeat(50),
+          "",
+          ...languages.map(l =>
+            `  ${l.default ? "★ DEFAULT" : "         "}  ${l.id.padEnd(8)}  ${l.name}${l.hasRules ? "  [rules loaded]" : "  [no rules]"}`
+          ),
+          "",
+          `Total: ${languages.length} language(s)`,
+          "",
+          "Use the 'id' value (e.g. 'en1') — not ISO codes like 'en' or 'en-US' — when specifying",
+          "a language in classification requests. The default language is used automatically.",
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
   // ── semaphore_kmm_models_list ─────────────────────────────────────────────────
   server.tool(
     "semaphore_kmm_models_list",
@@ -560,6 +603,16 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "Trigger a Semaphore KMM publish — compile the taxonomy model into CLS classification rules.\n\n" +
     "Publishing converts the RDF taxonomy in KMM into a .rules file that the Classification Server (CLS) " +
     "uses to classify text. You must re-publish after any change to model content or publisher config.\n\n" +
+    "PREREQUISITES (two one-time setup steps in Semaphore Studio):\n" +
+    "  1. PUBLISHER WORKSPACE: The model's Publisher tab must have been opened in Semaphore Studio\n" +
+    "     at least once — this initializes the workspace ZIP on the server. Without it,\n" +
+    "     semaphore_publish_config_fix_plain_skos will fail (HTTP 403).\n" +
+    "     Studio URL: http://<semaphore-host>:<kmm-port>/kmm/#/models/<modelName>/publisher\n\n" +
+    "  2. PUBLISHER ENVIRONMENT: A CLS server environment must be configured in Studio admin.\n" +
+    "     Without it, publish fails: HTTP 404 'Environment doesn't exist'.\n" +
+    "     Studio: Administration → Publisher → Classification Server Environments → Add\n" +
+    "     (Name: any label, Host: <cls-host>, Port: <cls-port>)\n" +
+    "     Then pass environment='<name>' to this tool.\n\n" +
     "ASYNC vs SYNC:\n" +
     "  Large models (500+ concepts) will time out on synchronous publish. " +
     "  Use async=true (the default) — the tool returns a job ID immediately. " +
@@ -583,7 +636,11 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "Config names are the names of publisher config files in the workspace ZIP."
       ),
       environment: z.string().optional().describe(
-        "Target environment name (optional). Leave blank to publish to all configured environments."
+        "Target publisher environment name (required if multiple environments configured, " +
+        "or if the server requires an explicit environment). " +
+        "Environments are configured in Semaphore Studio: " +
+        "Administration → Publisher → Classification Server Environments. " +
+        "If omitted and no default is set, publish fails with 'Environment doesn't exist'."
       ),
       language: z.string().optional().describe(
         "Language code to publish (default: 'en'). " +
@@ -593,8 +650,12 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "Use async publish (default: true). Recommended for all models — sync publish times out " +
         "for models with more than a few hundred concepts. Returns a job_id for status polling."
       ),
+      wait_for_completion: z.boolean().optional().describe(
+        "If true and async=true, poll the job status until the publish completes or times out (5 minute max). " +
+        "Returns a COMPLETE/FAILED/TIMEOUT status instead of returning immediately with a job ID."
+      ),
     },
-    async ({ model_uri, config, environment, language, async: useAsync }) => {
+    async ({ model_uri, config, environment, language, async: useAsync, wait_for_completion }) => {
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -626,7 +687,21 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           "",
         ].filter(s => s !== undefined);
 
-        if (result.jobId) {
+        if (result.jobId && (wait_for_completion === true)) {
+          const pollResult = await semaphore.waitForPublish(model_uri, result.jobId);
+          lines.push(`  Status: ${pollResult.status}`);
+          if (pollResult.message) lines.push(`  Message: ${pollResult.message}`);
+          lines.push("");
+          if (pollResult.status === "COMPLETE") {
+            lines.push("Publish completed. Verify the rule set:");
+            lines.push("  • semaphore_publish_sets  — confirm new rule set is active");
+            lines.push("  • semaphore_classify  threshold=0  content='<test text>'");
+          } else if (pollResult.status === "FAILED") {
+            lines.push("Publish FAILED. Check Semaphore Studio Publisher tab for error details.");
+          } else {
+            lines.push("Publish timed out (5 min). Check Semaphore Studio Publisher tab for status.");
+          }
+        } else if (result.jobId) {
           lines.push(`  Status: ${result.status ?? "ACCEPTED"}`);
           lines.push(`  Job ID: ${result.jobId}`);
           lines.push("");
@@ -672,13 +747,21 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "  that stores labels as skos:prefLabel literals on the concept node directly.\n" +
     "  Skip for: Vocabularies already using SKOS-XL (skosxl:prefLabel + skosxl:Label nodes).\n\n" +
     "BEFORE RUNNING:\n" +
-    "  Ensure concepts have sem:guid triples — use semaphore_kmm_sparql_update to add them:\n" +
-    "    PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>\n" +
-    "    PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n" +
-    "    INSERT { ?c sem:guid ?g }\n" +
-    "    WHERE { ?c a skos:Concept . FILTER NOT EXISTS { ?c sem:guid ?x } . BIND(STRUUID() AS ?g) }\n\n" +
+    "  1. WORKSPACE INITIALIZATION (required for new models):\n" +
+    "     Open Semaphore Studio and navigate to the model's Publisher tab — this creates the\n" +
+    "     publisher workspace ZIP on the server. Without this step, this tool returns HTTP 403.\n" +
+    "     Studio URL: http://<semaphore-host>:<kmm-port>/kmm/#/models/<modelName>/publisher\n\n" +
+    "  2. Ensure concepts have sem:guid triples — use semaphore_kmm_sparql_update:\n" +
+    "     PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>\n" +
+    "     PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n" +
+    "     INSERT { ?c sem:guid ?g }\n" +
+    "     WHERE { ?c a skos:Concept . FILTER NOT EXISTS { ?c sem:guid ?x } . BIND(STRUUID() AS ?g) }\n\n" +
+    "LABEL LANGUAGE MATCHING:\n" +
+    "  The patched config uses LANGMATCHES(LANG(?label), 'en') which matches both bare @en\n" +
+    "  and regional variants (@en-US, @en-GB, @en-AU). This is correct for IPTC Media Topics\n" +
+    "  (which uses @en-US labels) and also works for UNESCO Thesaurus (@en labels).\n\n" +
     "AFTER RUNNING:\n" +
-    "  Run semaphore_publish to rebuild the CLS rule set with the patched config.",
+    "  Run semaphore_publish (with environment=<name>) to rebuild the CLS rule set.",
     {
       model_uri: z.string().describe(
         "KMM model URI to patch, e.g. 'model:UNESCO'. " +
@@ -829,6 +912,69 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         lines.push("Then add a path range index on classification/categories/label for search facets.");
 
         return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_kmm_model_delete ────────────────────────────────────────────────
+  server.tool(
+    "semaphore_kmm_model_delete",
+    "Permanently delete a KMM taxonomy model and ALL its concepts from Semaphore Studio.\n\n" +
+    "⚠️  THIS ACTION IS IRREVERSIBLE. The model and all its triples are permanently removed.\n\n" +
+    "IMPORTANT NOTES:\n" +
+    "  • This does NOT remove published rule sets from the Classification Server (CLS).\n" +
+    "    Published rule sets remain active in the CLS until manually deactivated via the CLS API.\n" +
+    "  • You must set confirm=true to proceed — the tool will refuse without explicit confirmation.\n" +
+    "  • Use semaphore_kmm_models_list to verify the model URI before deleting.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI to delete, e.g. 'model:MyModel'. " +
+        "Get from semaphore_kmm_models_list."
+      ),
+      confirm: z.boolean().describe(
+        "Must be explicitly set to true to confirm deletion. " +
+        "The tool will refuse to delete without this confirmation."
+      ),
+    },
+    async ({ model_uri, confirm }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      if (!confirm) {
+        return {
+          content: [{
+            type: "text",
+            text:
+              `Deletion of ${model_uri} was NOT executed.\n\n` +
+              "Set confirm=true to proceed. This action is irreversible.",
+          }],
+        };
+      }
+      try {
+        await semaphore.kmmDeleteModel(model_uri);
+        return {
+          content: [{
+            type: "text",
+            text:
+              `KMM MODEL DELETED\n` +
+              "─".repeat(50) + "\n\n" +
+              `  Model URI: ${model_uri}\n\n` +
+              "The model and all its concepts have been permanently removed from KMM.\n\n" +
+              "NOTE: Any published CLS rule sets derived from this model remain active in the\n" +
+              "Classification Server until manually deactivated.",
+          }],
+        };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }

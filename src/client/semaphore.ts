@@ -33,8 +33,8 @@
  *          (Content-Type: application/sparql-update)              → SPARQL UPDATE / LOAD
  *     GET  model:<Name>/sparql?query=<encoded-SELECT>             → SPARQL SELECT (XML)
  *     POST /kmm/api?path=publisher/model:<Name>/publish&async=true → trigger publish
- *     GET  /kmm/api//<encoded-uri>/publisher/workspace/<encoded-uri>/config → ZIP config
- *     POST /kmm/api//<encoded-uri>/publisher/workspace/<encoded-uri>/config → upload ZIP
+ *     GET  /kmm/api/publisher/workspace/<encoded-uri>/config → ZIP config download
+ *     POST /kmm/api/publisher/workspace/<encoded-uri>/config → ZIP config upload (multipart/form-data)
  *
  *   Model URIs use the prefix  urn:x-evn-master:  (shorthand: model:<Name>).
  *   To load third-party SKOS (IPTC, EuroVoc, AGROVOC etc.) always pass
@@ -43,8 +43,35 @@
  *
  *   PLAIN SKOS (no SKOS-XL): The default publisher config uses SKOS-XL reification
  *   for label lookups. Vocabularies that use plain skos:prefLabel (UNESCO, EuroVoc,
- *   AGROVOC) need a patched publisher config. Use kmmPatchPublishConfigForPlainSkos()
+ *   AGROVOC, IPTC) need a patched publisher config. Use kmmPatchPublishConfigForPlainSkos()
  *   or the semaphore_publish_config_fix_plain_skos tool to apply the patch.
+ *
+ *   PUBLISHER WORKSPACE LIFECYCLE (important — read before calling workspace methods):
+ *     The publisher workspace is a ZIP stored on the Semaphore server filesystem.
+ *     It is created by the Semaphore Studio UI when you first open a model's
+ *     Publisher tab. The REST API can read (GET) and update (POST) an existing
+ *     workspace, but CANNOT create a new one via the API alone.
+ *
+ *     Workspace GET/POST endpoint (correct URL — no double-slash prefix):
+ *       GET  /kmm/api/publisher/workspace/{encodedUri}/config → ZIP download
+ *       POST /kmm/api/publisher/workspace/{encodedUri}/config → ZIP upload (multipart/form-data)
+ *     where {encodedUri} = encodeURIComponent("urn:x-evn-master:{ModelName}")
+ *
+ *     If workspace does not exist: GET returns 404, POST returns 403.
+ *     Solution: open Semaphore Studio → model → Publisher tab → initialize workspace.
+ *     After initialization, kmmPatchPublishConfigForPlainSkos() will succeed.
+ *
+ *   PUBLISHER ENVIRONMENTS (important — read before calling kmmPublish):
+ *     Semaphore publisher "environments" map named targets to sets of CLS/SES servers.
+ *     They are configured in Semaphore Studio: Admin → Publisher → Environments → Add.
+ *     The publish API requires a named environment; if none is configured,
+ *     publish fails with HTTP 404 "Environment doesn't exist: null".
+ *     The kmmPublish() method passes the environment name if provided, or omits it.
+ *
+ *     To configure an environment pointing to the CLS:
+ *       Studio → Administration → Publisher → Classification Server Environments → Add
+ *       Name: <any name>, Host: <cls-host>, Port: <cls-port>
+ *     Then pass that name as options.environment to kmmPublish().
  *
  * Flux classifier flags (for bulk classification at ingest time):
  *   --classifier-host <host>  --classifier-port <clsPort>  --classifier-path /
@@ -54,6 +81,17 @@
  *   xdmp.httpPost() from MarkLogic pods may be blocked by network policy from
  *   reaching the CLS. Prefer Flux (which runs outside MarkLogic) for server-side
  *   classification, or pre-classify from the application tier before insertion.
+ *
+ * CLS language codes use an indexed format ("en1", "fr1" etc.) not ISO codes.
+ * Use listClsLanguages() to discover available codes. The default is usually "en1".
+ *
+ * Publisher workspace notes (from KMM API reference):
+ *   - The workspace config endpoint uses a DOUBLE-SLASH: /kmm/api//{encodedUri}/...
+ *   - New models have no workspace until the Studio Publisher tab is accessed once
+ *     (or a publish is triggered that initialises it). The workspace config upload
+ *     (POST multipart) returns HTTP 415 until the workspace exists.
+ *   - The publish trigger endpoint encodes model URI colons (%3A) but NOT slashes
+ *     in the path parameter value: /kmm/api?path=publisher/model%3AName/publish
  */
 
 import axios, { type AxiosInstance } from "axios";
@@ -98,7 +136,7 @@ const PLAIN_SKOS_PUBLISHER_XML = `<?xml version="1.0" encoding="UTF-8"?>
         WHERE {
           BIND(skos:prefLabel AS ?prefLabelRelationship) .
           ?termUri skos:prefLabel ?prefLabel .
-          FILTER(LANG(?prefLabel) = "en")
+          FILTER(LANGMATCHES(LANG(?prefLabel), "en"))
           BIND(?termUri AS ?prefLabelUri) .
         }
       ]]></value>
@@ -109,7 +147,7 @@ const PLAIN_SKOS_PUBLISHER_XML = `<?xml version="1.0" encoding="UTF-8"?>
         SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
         WHERE {
           ?termUri skos:altLabel ?labelLiteral .
-          FILTER(LANG(?labelLiteral) = "en")
+          FILTER(LANGMATCHES(LANG(?labelLiteral), "en"))
           BIND(?termUri AS ?labelUri) .
         }
       ]]></value>
@@ -124,7 +162,7 @@ const PLAIN_SKOS_PUBLISHER_XML = `<?xml version="1.0" encoding="UTF-8"?>
              AllResources (the default) only generates rules at the ConceptScheme level. -->
         <bean parent="AllConcepts">
           <property name="languageCodes">
-            <list><value>en</value></list>
+            <list><value>en-US</value></list>
           </property>
           <property name="outputProcessors">
             <list>
@@ -234,6 +272,47 @@ function xmlAttrs(element: string): Record<string, string> {
   return attrs;
 }
 
+// ── Multipart body builder ────────────────────────────────────────────────────
+
+interface MultipartField {
+  name: string;
+  value: Buffer | string;
+  filename?: string;
+  contentType?: string;
+}
+
+/**
+ * Build a multipart/form-data body from an array of fields.
+ * Returns the raw Buffer and the Content-Type header (including boundary).
+ *
+ * Using manual construction instead of the Node.js built-in FormData to guarantee
+ * the Content-Type includes a boundary — required for Semaphore's JAX-RS/RESTEasy
+ * endpoints which return HTTP 415 when the boundary is absent.
+ */
+function buildMultipart(fields: MultipartField[]): { body: Buffer; contentType: string } {
+  const boundary = `----SemaphoreMCPBoundary${Date.now().toString(16)}`;
+  const CRLF = "\r\n";
+  const parts: Buffer[] = [];
+
+  for (const field of fields) {
+    let header = `--${boundary}${CRLF}`;
+    header += `Content-Disposition: form-data; name="${field.name}"`;
+    if (field.filename) header += `; filename="${field.filename}"`;
+    header += CRLF;
+    if (field.contentType) header += `Content-Type: ${field.contentType}${CRLF}`;
+    header += CRLF;
+
+    const value = Buffer.isBuffer(field.value) ? field.value : Buffer.from(field.value, "utf8");
+    parts.push(Buffer.from(header), value, Buffer.from(CRLF));
+  }
+  parts.push(Buffer.from(`--${boundary}--${CRLF}`));
+
+  return {
+    body: Buffer.concat(parts),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
 // ── Public types ─────────────────────────────────────────────────────────────
 
 export interface SemaphoreCategory {
@@ -243,7 +322,9 @@ export interface SemaphoreCategory {
   label: string;
   /** Stable concept UUID from the taxonomy */
   id: string;
-  /** Classification confidence score (0–100 scale) */
+  /** Classification confidence score as a float returned by the CLS (0.0–1.0).
+   *  Note: the `threshold` parameter uses a 0–100 integer scale (default 48),
+   *  but the XML response contains scores as 0.0–1.0 floats. */
   score: number;
 }
 
@@ -263,6 +344,17 @@ export interface SemaphorePublishSet {
 export interface SemaphoreClass {
   name: string;
   ruleCount: number;
+}
+
+export interface SemaphoreLanguage {
+  /** CLS language code, e.g. "en1", "fr1" — use this in classify() language param */
+  id: string;
+  /** Human-readable language name, e.g. "English" */
+  name: string;
+  /** True if this is the CLS default language */
+  default: boolean;
+  /** True if rules have been published for this language */
+  hasRules: boolean;
 }
 
 // ── Client ───────────────────────────────────────────────────────────────────
@@ -522,6 +614,27 @@ export class SemaphoreClient {
   }
 
   /**
+   * Delete a KMM model and all its triples permanently.
+   * THIS IS IRREVERSIBLE. Does not remove published CLS rule sets — deactivate
+   * those separately via the CLS publish-set API.
+   *
+   * @param modelUri  KMM model URI, e.g. "model:MyModel"
+   */
+  async kmmDeleteModel(modelUri: string): Promise<void> {
+    const token = await this.kmmApiKey();
+    const res = await this.kmmHttp.delete(
+      `/kmm/api/sys/${modelUri}`,
+      {
+        headers: { "x-api-key": token },
+        validateStatus: (s) => s < 500,
+      }
+    );
+    if (res.status !== 200 && res.status !== 204) {
+      throw new Error(`Failed to delete KMM model ${modelUri} (HTTP ${res.status}).`);
+    }
+  }
+
+  /**
    * Run a SPARQL SELECT query against a KMM model graph.
    * Calls GET /kmm/api/{graphUri}/sparql?query=<encoded>.
    *
@@ -600,14 +713,19 @@ export class SemaphoreClient {
       async?: boolean;
     } = {}
   ): Promise<{ accepted: boolean; jobId?: string; status?: string }> {
-    const params = new URLSearchParams({ path: `publisher/${modelUri}/publish` });
-    if (options.language) params.set("language", options.language);
-    if (options.config) params.set("config", options.config);
-    if (options.environment) params.set("environment", options.environment);
-    if (options.async !== false) params.set("async", "true");
+    // Build query string manually — URLSearchParams encodes slashes (%2F) inside
+    // the path parameter value, which prevents JAX-RS from routing the request.
+    // Colons in the model URI are encoded (%3A) but path separators are left as-is.
+    const encModelUri = modelUri.replace(/:/g, "%3A");
+    const pathValue = `publisher/${encModelUri}/publish`;
+    const qsParts = [`path=${pathValue}`];
+    if (options.language) qsParts.push(`language=${encodeURIComponent(options.language)}`);
+    if (options.config) qsParts.push(`config=${encodeURIComponent(options.config)}`);
+    if (options.environment) qsParts.push(`environment=${encodeURIComponent(options.environment)}`);
+    if (options.async !== false) qsParts.push("async=true");
 
-    const { status, data } = await this.kmmPost<{ status?: string; jobId?: string }>(
-      `/kmm/api?${params.toString()}`,
+    const { status, data } = await this.kmmPost<{ status?: string; jobId?: string; message?: string }>(
+      `/kmm/api?${qsParts.join("&")}`,
       "",
       "application/json"
     );
@@ -616,7 +734,28 @@ export class SemaphoreClient {
       const d = data ?? {};
       return { accepted: true, jobId: d.jobId, status: d.status };
     }
-    throw new Error(`Publish request returned HTTP ${status}. Check the model URI and publisher config.`);
+
+    // Detect "Environment doesn't exist" — this means no publisher environment is configured
+    // in Semaphore Studio. The environment must be set up via:
+    //   Studio → Administration → Publisher → Classification Server Environments → Add
+    //   (Name: any label, Host: cls-host, Port: cls-port)
+    // Then pass options.environment = "<that name>" to retry.
+    const msg = (data as Record<string, unknown>)?.message as string | undefined;
+    if (status === 404 && msg?.includes("Environment doesn't exist")) {
+      const envName = options.environment ?? "null (not specified)";
+      throw new Error(
+        `Publish failed: publisher environment "${envName}" not found.\n` +
+        `Publisher environments must be configured in Semaphore Studio:\n` +
+        `  Studio → Administration → Publisher → Classification Server Environments → Add\n` +
+        `  (Name: <any label>, Host: ${this.clsHost ?? "cls-host"}, Port: ${this.clsPort})\n` +
+        `Then retry: semaphore_publish model_uri="${modelUri}" environment="<name>"`
+      );
+    }
+
+    throw new Error(
+      `Publish request returned HTTP ${status}${msg ? `: ${msg}` : ""}. ` +
+      `Check the model URI, publisher config, and that a workspace exists (Studio → Publisher tab).`
+    );
   }
 
   /**
@@ -643,30 +782,61 @@ export class SemaphoreClient {
   }
 
   /**
+   * Poll a KMM publish job until it completes, fails, or times out.
+   *
+   * @param modelUri   KMM model URI used in kmmPublish()
+   * @param jobId      Job ID returned by kmmPublish()
+   * @param timeoutMs  Max wait time in ms (default: 300 000 = 5 min)
+   * @param pollMs     Polling interval in ms (default: 5 000 = 5 s)
+   */
+  async waitForPublish(
+    modelUri: string,
+    jobId: string,
+    timeoutMs = 300_000,
+    pollMs = 5_000
+  ): Promise<{ status: "COMPLETE" | "FAILED" | "TIMEOUT"; message?: string }> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+      const result = await this.kmmPublishJobStatus(modelUri, jobId);
+      if (result.status === "COMPLETE") return { status: "COMPLETE", message: result.message };
+      if (result.status === "FAILED") return { status: "FAILED", message: result.message };
+    }
+    return { status: "TIMEOUT" };
+  }
+
+  /**
    * Download the publisher workspace config ZIP for a model.
    *
    * The ZIP typically contains:
-   *   • A publisher XML config file (e.g. Semaphore-Publisher-CS-only.xml)
-   *   • Templates directory with .kid rule template files
+   *   • Publisher XML config file(s) (e.g. Semaphore-Publisher-CS-only.xml)
+   *   • templates/ directory with .kid rule template files
    *
-   * Note: The workspace API path uses a double-slash after /kmm/api/ —
-   * this is required; a single slash returns 404.
+   * Correct workspace endpoint (verified against Semaphore 5.10.1):
+   *   GET /kmm/api/publisher/workspace/{encodedUri}/config
+   * where encodedUri = encodeURIComponent("urn:x-evn-master:{ModelName}")
    *
-   * @returns ZIP buffer, or null if no config exists yet for this model.
+   * NOTE: A previous (incorrect) pattern used a double-slash prefix:
+   *   /kmm/api//{encodedUri}/publisher/workspace/{encodedUri}/config  ← WRONG
+   * That URL returns HTTP 400 "invalid uris: publisher" on current Semaphore builds.
+   *
+   * @returns ZIP buffer, or null if no workspace exists yet for this model.
    */
   async kmmDownloadPublishConfigZip(modelUri: string): Promise<Buffer | null> {
     const modelName = modelUri.replace(/^model:/, "");
     const encodedUri = encodeURIComponent(`urn:x-evn-master:${modelName}`);
     const token = await this.kmmApiKey();
     const res = await this.kmmHttp.get(
-      `/kmm/api//${encodedUri}/publisher/workspace/${encodedUri}/config`,
+      `/kmm/api/publisher/workspace/${encodedUri}/config`,
       {
         headers: { "x-api-key": token },
         responseType: "arraybuffer",
         validateStatus: (s) => s < 500,
       }
     );
-    if (res.status === 404) return null;
+    // 404 = workspace does not exist (never initialized via Studio UI)
+    // 400 = legacy double-slash URL used; no config either way — return null so caller creates fresh
+    if (res.status === 404 || res.status === 400) return null;
     if (res.status !== 200) {
       throw new Error(`Failed to download publish config (HTTP ${res.status}).`);
     }
@@ -675,27 +845,41 @@ export class SemaphoreClient {
 
   /**
    * Upload a publisher workspace config ZIP for a model.
-   * Uses multipart/form-data POST with field name "file".
+   *
+   * Uses multipart/form-data POST (field name "file") to the workspace config endpoint.
    * Returns on HTTP 204 (success) or throws on failure.
    *
-   * Note: Uses a double-slash path (required by the workspace API).
+   * PREREQUISITE: The workspace must already exist (i.e. the model's Publisher tab must
+   * have been opened in Semaphore Studio at least once). If not, POST returns HTTP 403
+   * with "permission: sempubpermissions:UploadModelConfiguration" — that message is
+   * misleading; the real issue is the workspace file doesn't exist on the server.
+   * Fix: open Studio → model → Publisher tab to initialize the workspace, then retry.
    */
   async kmmUploadPublishConfigZip(modelUri: string, zipBuffer: Buffer): Promise<void> {
     const modelName = modelUri.replace(/^model:/, "");
     const encodedUri = encodeURIComponent(`urn:x-evn-master:${modelName}`);
     const token = await this.kmmApiKey();
 
-    const formData = new FormData();
-    formData.append("file", new Blob([zipBuffer], { type: "application/zip" }), "config.zip");
+    const { body, contentType } = buildMultipart([
+      { name: "file", value: zipBuffer, filename: "config.zip", contentType: "application/zip" },
+    ]);
 
     const res = await this.kmmHttp.post(
-      `/kmm/api//${encodedUri}/publisher/workspace/${encodedUri}/config`,
-      formData,
+      `/kmm/api/publisher/workspace/${encodedUri}/config`,
+      body,
       {
-        headers: { "x-api-key": token },
+        headers: { "x-api-key": token, "Content-Type": contentType },
         validateStatus: (s) => s < 500,
       }
     );
+
+    if (res.status === 403) {
+      throw new Error(
+        `Publisher workspace for ${modelUri} has not been initialized. ` +
+        `Open Semaphore Studio, navigate to the model's Publisher tab to initialize the workspace, then retry. ` +
+        `(HTTP 403 "UploadModelConfiguration" — the workspace file simply does not exist yet.)`
+      );
+    }
 
     if (res.status !== 204 && res.status !== 200) {
       throw new Error(`Failed to upload publish config (HTTP ${res.status}).`);
@@ -858,6 +1042,30 @@ export class SemaphoreClient {
   }
 
   /**
+   * List available language packs in the Classification Server.
+   *
+   * CLS language codes use an indexed format (e.g. "en1", "fr1") not ISO codes.
+   * Use the returned `id` values for the `language` parameter in classify() calls.
+   * The default language (usually "en1") is used when no language is specified.
+   */
+  async listClsLanguages(): Promise<SemaphoreLanguage[]> {
+    const xml = await this.postXmlOp("listlanguages");
+    const languages: SemaphoreLanguage[] = [];
+    for (const el of xmlAll(xml, "language")) {
+      const a = xmlAttrs(el);
+      if (a.id) {
+        languages.push({
+          id: a.id,
+          name: a.name ?? a.id,
+          default: a.default === "true",
+          hasRules: a.has_rules_defined === "true",
+        });
+      }
+    }
+    return languages;
+  }
+
+  /**
    * Classify text content.
    *
    * @param content    Plain text or HTML to classify.
@@ -868,14 +1076,14 @@ export class SemaphoreClient {
     content: string,
     threshold = 48
   ): Promise<SemaphoreClassificationResult> {
-    const body = new URLSearchParams({
-      body: content,
-      threshold: String(threshold),
-      singlearticle: "1",
-    }).toString();
+    const { body, contentType } = buildMultipart([
+      { name: "body", value: content },
+      { name: "threshold", value: String(threshold) },
+      { name: "singlearticle", value: "true" },
+    ]);
 
     const res = await this.clsHttp.post<string>("/", body, {
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      headers: { "Content-Type": contentType },
       responseType: "text",
     });
 
@@ -902,16 +1110,19 @@ export class SemaphoreClient {
 
   // ── Private helpers ────────────────────────────────────────────────────────
 
-  private async postXmlOp(op: string): Promise<string> {
-    const xmlInput = `<?xml version="1.0" ?><request op="${op}"></request>`;
-    const res = await this.clsHttp.post<string>(
-      "/",
-      new URLSearchParams({ XML_INPUT: xmlInput }).toString(),
-      {
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        responseType: "text",
-      }
-    );
+  private async postXmlOp(op: string, publishSet?: string): Promise<string> {
+    let xmlInput = `<?xml version="1.0" ?><request op="${op}">`;
+    if (publishSet) xmlInput += `<publish_set>${publishSet}</publish_set>`;
+    xmlInput += "</request>";
+
+    const { body, contentType } = buildMultipart([
+      { name: "XML_INPUT", value: xmlInput },
+    ]);
+
+    const res = await this.clsHttp.post<string>("/", body, {
+      headers: { "Content-Type": contentType },
+      responseType: "text",
+    });
     return String(res.data);
   }
 }
