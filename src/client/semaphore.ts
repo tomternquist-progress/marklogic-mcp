@@ -32,11 +32,19 @@
  *     POST model:<Name>/sparql?checkConstraints=false&runEditRules=false
  *          (Content-Type: application/sparql-update)              → SPARQL UPDATE / LOAD
  *     GET  model:<Name>/sparql?query=<encoded-SELECT>             → SPARQL SELECT (XML)
+ *     POST /kmm/api?path=publisher/model:<Name>/publish&async=true → trigger publish
+ *     GET  /kmm/api//<encoded-uri>/publisher/workspace/<encoded-uri>/config → ZIP config
+ *     POST /kmm/api//<encoded-uri>/publisher/workspace/<encoded-uri>/config → upload ZIP
  *
  *   Model URIs use the prefix  urn:x-evn-master:  (shorthand: model:<Name>).
  *   To load third-party SKOS (IPTC, EuroVoc, AGROVOC etc.) always pass
  *     checkConstraints=false&runEditRules=false  — external vocabularies routinely
  *     use properties (e.g. ikos:hasFacet) that fail Semaphore's SHACL shapes.
+ *
+ *   PLAIN SKOS (no SKOS-XL): The default publisher config uses SKOS-XL reification
+ *   for label lookups. Vocabularies that use plain skos:prefLabel (UNESCO, EuroVoc,
+ *   AGROVOC) need a patched publisher config. Use kmmPatchPublishConfigForPlainSkos()
+ *   or the semaphore_publish_config_fix_plain_skos tool to apply the patch.
  *
  * Flux classifier flags (for bulk classification at ingest time):
  *   --classifier-host <host>  --classifier-port <clsPort>  --classifier-path /
@@ -49,8 +57,157 @@
  */
 
 import axios, { type AxiosInstance } from "axios";
+import JSZip from "jszip";
 import { logger } from "../utils/logger.js";
 import type { SemaphoreConfig } from "../config/schema.js";
+
+// ── Publisher config constants ────────────────────────────────────────────────
+
+/**
+ * Canonical publisher config XML for plain-SKOS models (skos:prefLabel, no SKOS-XL).
+ *
+ * Key differences from the Semaphore default:
+ *   • AllConcepts (not AllResources) — generates one CLS rule per skos:Concept
+ *   • PlainSkosModel bean overrides getPrefLabelsSparql / getAltLabelsForwardSparql
+ *     to use plain skos:prefLabel / skos:altLabel instead of SKOS-XL reification
+ *
+ * Required for: UNESCO Thesaurus, EuroVoc, AGROVOC, and any vocabulary that uses
+ * plain skos:prefLabel literals rather than skosxl:prefLabel + skosxl:Label nodes.
+ */
+const PLAIN_SKOS_PUBLISHER_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xmlns="http://www.springframework.org/schema/beans"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd" default-lazy-init="true">
+
+  <bean class="com.smartlogic.workbench.publisher.Configuration">
+    <property name="description" value="Publish to CS services only (plain SKOS labels)"/>
+    <property name="environments">
+      <list/>
+    </property>
+  </bean>
+
+  <!-- Override SparqlEndpoint to use plain skos:prefLabel (no SKOS-XL reification).
+       Required for vocabularies that use skos:prefLabel literals directly, e.g.
+       UNESCO Thesaurus, EuroVoc, AGROVOC. -->
+  <bean id="PlainSkosModel" parent="SparqlEndpoint">
+    <property name="getPrefLabelsSparql">
+      <value><![CDATA[
+        PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+        SELECT ?termUri ?prefLabelUri ?prefLabel ?prefLabelRelationship
+        WHERE {
+          BIND(skos:prefLabel AS ?prefLabelRelationship) .
+          ?termUri skos:prefLabel ?prefLabel .
+          FILTER(LANG(?prefLabel) = "en")
+          BIND(?termUri AS ?prefLabelUri) .
+        }
+      ]]></value>
+    </property>
+    <property name="getAltLabelsForwardSparql">
+      <value><![CDATA[
+        PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+        SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
+        WHERE {
+          ?termUri skos:altLabel ?labelLiteral .
+          FILTER(LANG(?labelLiteral) = "en")
+          BIND(?termUri AS ?labelUri) .
+        }
+      ]]></value>
+    </property>
+  </bean>
+
+  <bean class="com.smartlogic.publisher.Publisher">
+    <property name="model" ref="PlainSkosModel"/>
+    <property name="configurationSets">
+      <list>
+        <!-- AllConcepts: generates one CLS rule per skos:Concept.
+             AllResources (the default) only generates rules at the ConceptScheme level. -->
+        <bean parent="AllConcepts">
+          <property name="languageCodes">
+            <list><value>en</value></list>
+          </property>
+          <property name="outputProcessors">
+            <list>
+              <bean id="NamedEntityRules" parent="RulebaseWriterTemplate">
+                <property name="templateFileName" value="ContextualCitation.kid"/>
+              </bean>
+              <ref bean="environmentCSWriter"/>
+            </list>
+          </property>
+        </bean>
+      </list>
+    </property>
+    <property name="modelUpdater" ref="OEUpdater"/>
+  </bean>
+
+  <!-- The following import lines import many default configuration settings
+         that will not usually be altered.
+         Therefore be careful editing anything below here -->
+  <import resource="file:\${resources.directory}/import/ModelInterface.xml"/>
+  <import resource="file:\${resources.directory}/import/ModelDefinition.xml"/>
+  <import resource="file:\${resources.directory}/import/RulebaseStructure.xml"/>
+  <import resource="file:\${resources.directory}/import/SESConfiguration.xml"/>
+  <import resource="file:\${resources.directory}/import/ConfigurationSets.xml"/>
+
+</beans>
+`;
+
+/**
+ * ContextualCitation.kid — default Semaphore publisher template.
+ * Generates CLS rules that fire on exact phrase matches and near-word matches of
+ * preferred and alternative labels, with weighted contributions from related concepts.
+ */
+const CONTEXTUAL_CITATION_TEMPLATE = `<!-- Template: ContextualCitation.kid -->
+<rulebase language="\${language.iso_code}">
+
+\t<!--~~
+\t\tThis rulebase is designed to look for citations of preferred and alternative labels
+\t\tas well as contextual information from hierarchical and associative relationships.
+
+\t\tMentions of all the words near each other have a weight of 50. If the mention is
+\t\tand exact phrase mentions it has an additional weight of 20.
+\t\tDirect descendants each contribute 60% of their weight if they are firing. All associative
+\t\trelationships together contribute 50% of their weight, up to a total weight contribution of 30.
+
+\t\tA single mention, exact or near group, is sufficient for the rulebase to fire.
+\t\tIf the rulebase does not find direct evidence, the contribution of one highly scoring descendant
+\t\tor 2 moderately scoring descendants is sufficient for the rulebase to fire.
+\t\tContributions from associative relationships alone are never enough for the rulebase to fire.
+\t-->\
+
+\t<content>
+
+\t\t<!-- Firing category -->
+\t\t<category class="\${rulebaseClass}" name="\${resource.label}" id="\${resource.guid}">
+\t\t\t<link label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_FINAL"/>
+\t\t</category>
+
+\t\t<!-- Combine score from evidence and relationships -->
+\t\t<combine label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_FINAL" weight="100">
+\t\t\t<!-- Direct evidence contribution -->
+\t\t\t<link label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE"/>
+\t\t\t<!-- Contributions of associative relationships -->
+\t\t\t<combine weight="30">
+\t\t\t\t<linklist label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="50" relationshiptypes="Associative"/>
+\t\t\t</combine>
+\t\t\t<!-- Contributions of direct descendants -->
+\t\t\t<combine weight="100">
+\t\t\t\t<linklist label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="60" relationshiptypes="LowerInHierarchy"/>
+\t\t\t</combine>
+\t\t</combine>
+
+\t\t<!-- Evidence lookup -->
+\t\t<combine label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="100">
+\t\t\t<!-- All labels, as phrases, anywhere in the document-->
+\t\t\t<phraselist pos="0" stem="1" weight="20" foreach="1" />
+\t\t\t<!-- Constituent words of the labels, appearing near each other, anywhere in the document. -->
+\t\t\t<nearlist pos="0" stem="1" weight="50" foreach="1" />
+\t\t</combine>
+
+\t</content>
+
+</rulebase>
+`;
 
 // ── XML parsing helpers ──────────────────────────────────────────────────────
 
@@ -393,6 +550,245 @@ export class SemaphoreClient {
     }
 
     return { xml: xmlStr, rows };
+  }
+
+  /**
+   * Run a SPARQL UPDATE (INSERT DATA / DELETE DATA / DELETE+INSERT / LOAD) against a KMM model.
+   * Unlike kmmSparqlQuery (SELECT only), this modifies model triples.
+   *
+   * Always passes checkConstraints=false&runEditRules=false so that standard SPARQL
+   * UPDATE operations work without triggering Semaphore's SHACL validation.
+   *
+   * Common use cases:
+   *   • Add sem:guid to concepts (required by ContextualCitation.kid template)
+   *   • Fix or backfill labels
+   *   • Remove unwanted triples before publishing
+   *
+   * @param modelUri  KMM model URI, e.g. "model:UNESCO"
+   * @param sparql    SPARQL UPDATE string (INSERT DATA / DELETE DATA / etc.)
+   */
+  async kmmSparqlUpdate(modelUri: string, sparql: string): Promise<void> {
+    const { status } = await this.kmmPost(
+      `/kmm/api/${modelUri}/sparql?checkConstraints=false&runEditRules=false`,
+      sparql,
+      "application/sparql-update"
+    );
+    if (status !== 200 && status !== 204) {
+      throw new Error(`SPARQL UPDATE returned HTTP ${status}. Check the query syntax and model URI.`);
+    }
+  }
+
+  /**
+   * Trigger a KMM publisher run for a model, pushing rules to the Classification Server.
+   *
+   * Always uses async=true by default because large models (1000+ concepts) time out
+   * on synchronous publish calls. The job ID can be polled with kmmPublishJobStatus().
+   *
+   * @param modelUri    KMM model URI, e.g. "model:UNESCO"
+   * @param options     Optional publish parameters:
+   *   config       — publisher config name (default: use the model's active config)
+   *   environment  — target environment name (default: the model's configured environment)
+   *   language     — language code (default: "en")
+   *   async        — use async publish (default: true; set false only for tiny test models)
+   */
+  async kmmPublish(
+    modelUri: string,
+    options: {
+      config?: string;
+      environment?: string;
+      language?: string;
+      async?: boolean;
+    } = {}
+  ): Promise<{ accepted: boolean; jobId?: string; status?: string }> {
+    const params = new URLSearchParams({ path: `publisher/${modelUri}/publish` });
+    if (options.language) params.set("language", options.language);
+    if (options.config) params.set("config", options.config);
+    if (options.environment) params.set("environment", options.environment);
+    if (options.async !== false) params.set("async", "true");
+
+    const { status, data } = await this.kmmPost<{ status?: string; jobId?: string }>(
+      `/kmm/api?${params.toString()}`,
+      "",
+      "application/json"
+    );
+
+    if (status === 202 || status === 200 || status === 204) {
+      const d = data ?? {};
+      return { accepted: true, jobId: d.jobId, status: d.status };
+    }
+    throw new Error(`Publish request returned HTTP ${status}. Check the model URI and publisher config.`);
+  }
+
+  /**
+   * Check the status of an async publish job.
+   * Poll this after kmmPublish() to wait for completion.
+   *
+   * Typical status values: ACCEPTED, RUNNING, COMPLETE, FAILED.
+   *
+   * @param modelUri  KMM model URI used in the original kmmPublish() call
+   * @param jobId     Job ID returned by kmmPublish()
+   */
+  async kmmPublishJobStatus(
+    modelUri: string,
+    jobId: string
+  ): Promise<{ status: string; message?: string }> {
+    try {
+      const data = await this.kmmGet<{ status?: string; message?: string }>(
+        `/kmm/api?path=publisher/${modelUri}/job/${jobId}`
+      );
+      return { status: data.status ?? "UNKNOWN", message: data.message };
+    } catch {
+      return { status: "UNKNOWN" };
+    }
+  }
+
+  /**
+   * Download the publisher workspace config ZIP for a model.
+   *
+   * The ZIP typically contains:
+   *   • A publisher XML config file (e.g. Semaphore-Publisher-CS-only.xml)
+   *   • Templates directory with .kid rule template files
+   *
+   * Note: The workspace API path uses a double-slash after /kmm/api/ —
+   * this is required; a single slash returns 404.
+   *
+   * @returns ZIP buffer, or null if no config exists yet for this model.
+   */
+  async kmmDownloadPublishConfigZip(modelUri: string): Promise<Buffer | null> {
+    const modelName = modelUri.replace(/^model:/, "");
+    const encodedUri = encodeURIComponent(`urn:x-evn-master:${modelName}`);
+    const token = await this.kmmApiKey();
+    const res = await this.kmmHttp.get(
+      `/kmm/api//${encodedUri}/publisher/workspace/${encodedUri}/config`,
+      {
+        headers: { "x-api-key": token },
+        responseType: "arraybuffer",
+        validateStatus: (s) => s < 500,
+      }
+    );
+    if (res.status === 404) return null;
+    if (res.status !== 200) {
+      throw new Error(`Failed to download publish config (HTTP ${res.status}).`);
+    }
+    return Buffer.from(res.data as ArrayBuffer);
+  }
+
+  /**
+   * Upload a publisher workspace config ZIP for a model.
+   * Uses multipart/form-data POST with field name "file".
+   * Returns on HTTP 204 (success) or throws on failure.
+   *
+   * Note: Uses a double-slash path (required by the workspace API).
+   */
+  async kmmUploadPublishConfigZip(modelUri: string, zipBuffer: Buffer): Promise<void> {
+    const modelName = modelUri.replace(/^model:/, "");
+    const encodedUri = encodeURIComponent(`urn:x-evn-master:${modelName}`);
+    const token = await this.kmmApiKey();
+
+    const formData = new FormData();
+    formData.append("file", new Blob([zipBuffer], { type: "application/zip" }), "config.zip");
+
+    const res = await this.kmmHttp.post(
+      `/kmm/api//${encodedUri}/publisher/workspace/${encodedUri}/config`,
+      formData,
+      {
+        headers: { "x-api-key": token },
+        validateStatus: (s) => s < 500,
+      }
+    );
+
+    if (res.status !== 204 && res.status !== 200) {
+      throw new Error(`Failed to upload publish config (HTTP ${res.status}).`);
+    }
+  }
+
+  /**
+   * Patch the publisher workspace config ZIP for a plain-SKOS model.
+   *
+   * Standard Semaphore publisher configs use SKOS-XL reification (skosxl:prefLabel
+   * + skosxl:Label nodes) for label lookups. Plain-SKOS vocabularies that use
+   * skos:prefLabel literals directly (UNESCO, EuroVoc, AGROVOC) will generate only
+   * a single rule (for the ConceptScheme) with the default config.
+   *
+   * This method fixes that by:
+   *   1. Downloading the current workspace config ZIP (or creating a fresh one)
+   *   2. Replacing AllResources → AllConcepts in the publisher XML
+   *      (AllConcepts generates one CLS rule per skos:Concept; AllResources only
+   *      generates rules at the ConceptScheme level)
+   *   3. Adding a PlainSkosModel bean that overrides the SPARQL queries to use
+   *      plain skos:prefLabel and skos:altLabel instead of SKOS-XL reification
+   *   4. Ensuring the ContextualCitation.kid rule template is present
+   *   5. Re-uploading the patched ZIP
+   *
+   * @returns Human-readable summary of what was changed (or a no-op message if already patched).
+   */
+  async kmmPatchPublishConfigForPlainSkos(modelUri: string): Promise<string> {
+    // Try to download the existing workspace config ZIP
+    let zip: JSZip;
+    const existing = await this.kmmDownloadPublishConfigZip(modelUri);
+    if (existing) {
+      zip = await JSZip.loadAsync(existing);
+      logger.debug("Downloaded existing publisher config ZIP", { modelUri, size: existing.length });
+    } else {
+      zip = new JSZip();
+      logger.debug("No existing publisher config — creating fresh ZIP", { modelUri });
+    }
+
+    // Find the main publisher XML config file (skip sub-directory imports)
+    const xmlFilename = Object.keys(zip.files).find(
+      (f) =>
+        f.endsWith(".xml") &&
+        !f.includes("/import/") &&
+        !zip.files[f].dir
+    );
+
+    const currentXml = xmlFilename
+      ? await zip.files[xmlFilename].async("string")
+      : "";
+
+    // Check what needs to change
+    const alreadyHasAllConcepts = currentXml.includes('parent="AllConcepts"');
+    const alreadyHasPlainSkos = currentXml.includes("PlainSkosModel");
+
+    if (alreadyHasAllConcepts && alreadyHasPlainSkos) {
+      return (
+        `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
+        "No changes needed — proceed with semaphore_publish to rebuild the rule set."
+      );
+    }
+
+    const changes: string[] = [];
+    if (!alreadyHasAllConcepts) {
+      changes.push("AllResources → AllConcepts (one rule per skos:Concept)");
+    }
+    if (!alreadyHasPlainSkos) {
+      changes.push(
+        "Added PlainSkosModel bean — overrides label SPARQL to use skos:prefLabel / skos:altLabel"
+      );
+    }
+
+    // Write the canonical patched XML (replaces any existing XML config entirely)
+    const targetFilename = xmlFilename ?? "Semaphore-Publisher-CS-only.xml";
+    zip.file(targetFilename, PLAIN_SKOS_PUBLISHER_XML);
+
+    // Ensure the ContextualCitation.kid template is present
+    if (!zip.files["templates/ContextualCitation.kid"]) {
+      zip.file("templates/ContextualCitation.kid", CONTEXTUAL_CITATION_TEMPLATE);
+      changes.push("Added templates/ContextualCitation.kid");
+    }
+
+    // Generate and upload patched ZIP
+    const zipBuffer = Buffer.from(
+      await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" })
+    );
+    await this.kmmUploadPublishConfigZip(modelUri, zipBuffer);
+
+    logger.debug("Uploaded patched publisher config ZIP", { modelUri, changes });
+    return (
+      `Publisher config for ${modelUri} patched and uploaded successfully.\n` +
+      `Changes applied:\n${changes.map((c) => `  • ${c}`).join("\n")}\n\n` +
+      "Next step: run semaphore_publish to rebuild the CLS rule set with the new config."
+    );
   }
 
   // ── CLS methods ─────────────────────────────────────────────────────────────

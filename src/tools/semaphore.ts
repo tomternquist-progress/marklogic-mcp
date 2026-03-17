@@ -271,7 +271,8 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "After creation, use semaphore_kmm_skos_load to populate it with concepts from a public RDF/SKOS URL.\n\n" +
     "Returns the new model URI (e.g. 'model:IPTCMediaTopics') which is required for semaphore_kmm_skos_load and semaphore_kmm_sparql.\n\n" +
     "NEXT STEP: After creating a model, load taxonomy content with semaphore_kmm_skos_load, " +
-    "then publish it from Semaphore Studio UI so it becomes a CLS rule set available to semaphore_classify.",
+    "then use semaphore_publish_config_fix_plain_skos (for plain skos:prefLabel vocabularies) and " +
+    "semaphore_publish to build the CLS rule set. Use semaphore_classify to test results.",
     {
       name: z.string().describe(
         "Short identifier used as the model name and URI suffix. " +
@@ -308,10 +309,16 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           description ? `  Description:       ${description}` : "",
           "",
           "NEXT STEPS:",
-          `  1. Load SKOS content:   semaphore_kmm_skos_load  modelUri="${modelUri}"  skos_url="<rdf-url>"`,
-          `  2. Verify concepts:     semaphore_kmm_sparql     modelUri="${modelUri}"  query="SELECT ?s ?label WHERE { ?s a skos:Concept ; skos:prefLabel ?label } LIMIT 10"`,
-          "  3. Publish to CLS:      Open Semaphore Studio → Publish tab → publish the new model",
-          "  4. Verify in CLS:       semaphore_publish_sets (after publish completes)",
+          `  1. Load SKOS:       semaphore_kmm_skos_load  model_uri="${modelUri}"  skos_url="<rdf-url>"`,
+          `  2. Verify concepts: semaphore_kmm_sparql     model_uri="${modelUri}"`,
+          `                      query: SELECT (COUNT(?s) AS ?n) WHERE { ?s a <http://www.w3.org/2004/02/skos/core#Concept> }`,
+          "  3. Add sem:guid:    semaphore_kmm_sparql_update — add sem:guid to each concept (required for",
+          "                      ContextualCitation.kid template). Use a SPARQL INSERT with UUID generation.",
+          "  4. Fix plain SKOS:  semaphore_publish_config_fix_plain_skos  model_uri=\"" + modelUri + "\"",
+          "                      (Skip if vocabulary uses SKOS-XL reification; required for plain skos:prefLabel)",
+          `  5. Publish to CLS:  semaphore_publish  model_uri="${modelUri}"  async=true`,
+          "  6. Verify in CLS:   semaphore_publish_sets → confirm new rule set is active",
+          "  7. Test:            semaphore_classify  threshold=0  content=\"<sample text>\"",
         ].filter(Boolean);
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
@@ -370,15 +377,25 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           `  Source:   ${skos_url}`,
           "",
           "NEXT STEPS:",
-          `  1. Verify concept count: semaphore_kmm_sparql  modelUri="${model_uri}"`,
+          `  1. Verify concept count:`,
+          `     semaphore_kmm_sparql  model_uri="${model_uri}"`,
           `     query: SELECT (COUNT(?s) AS ?n) WHERE { ?s a <http://www.w3.org/2004/02/skos/core#Concept> }`,
           "  2. Spot-check labels:    semaphore_kmm_sparql with LIMIT 20 SELECT ?s ?label",
-          "  3. Publish to CLS:       Open Semaphore Studio → publish the model as a rule set",
-          "  4. Verify in CLS:        semaphore_publish_sets → confirm new rule set is active",
-          "  5. Test classification:  semaphore_classify with sample text (threshold=0 to see all results)",
+          "  3. Add sem:guid (required by ContextualCitation.kid template):",
+          `     semaphore_kmm_sparql_update  model_uri="${model_uri}"`,
+          "     sparql: PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>",
+          "             PREFIX skos: <http://www.w3.org/2004/02/skos/core#>",
+          "             INSERT { ?c sem:guid ?g } WHERE {",
+          "               ?c a skos:Concept . FILTER NOT EXISTS { ?c sem:guid ?x }",
+          "               BIND(STRUUID() AS ?g) }",
+          "  4. Fix plain SKOS config (if vocabulary uses plain skos:prefLabel, not SKOS-XL):",
+          `     semaphore_publish_config_fix_plain_skos  model_uri="${model_uri}"`,
+          `  5. Publish to CLS:  semaphore_publish  model_uri="${model_uri}"  async=true`,
+          "  6. Verify in CLS:   semaphore_publish_sets → confirm new rule set is active",
+          "  7. Test:            semaphore_classify  threshold=0  content=\"<sample text>\"",
           "",
-          "NOTE: After publishing, CLS scores may be 0 for newly loaded models until the Semaphore",
-          "Publisher service finishes indexing. Re-run semaphore_classify after publish completes.",
+          "NOTE: After publishing, classification scores may be 0 while the Publisher service",
+          "finishes building the rulenet index. Re-run semaphore_classify after publish completes.",
         ];
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
@@ -466,6 +483,240 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           lines.push(`… ${rows.length - 100} more rows omitted`);
         }
 
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_kmm_sparql_update ───────────────────────────────────────────────
+  server.tool(
+    "semaphore_kmm_sparql_update",
+    "Run a SPARQL UPDATE (INSERT DATA / DELETE DATA / DELETE+INSERT / LOAD) against a KMM model graph.\n\n" +
+    "Unlike semaphore_kmm_sparql (SELECT only), this tool modifies model triples. " +
+    "It always passes checkConstraints=false&runEditRules=false to bypass Semaphore SHACL validation — " +
+    "required for bulk updates like adding sem:guid to concepts.\n\n" +
+    "COMMON USE CASES:\n\n" +
+    "1. Add sem:guid to every concept (REQUIRED before publishing with ContextualCitation.kid template):\n" +
+    "   PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>\n" +
+    "   PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n" +
+    "   INSERT { ?c sem:guid ?g }\n" +
+    "   WHERE { ?c a skos:Concept . FILTER NOT EXISTS { ?c sem:guid ?x } . BIND(STRUUID() AS ?g) }\n\n" +
+    "2. Delete unwanted triples:\n" +
+    "   DELETE { ?s <http://purl.org/dc/terms/created> ?o } WHERE { ?s <http://purl.org/dc/terms/created> ?o }\n\n" +
+    "3. Load additional RDF from a URL:\n" +
+    "   LOAD <https://example.com/extra-labels.ttl>\n\n" +
+    "NOTE: Very large updates (100k+ triples) may time out. Use LIMIT in WHERE clauses to batch.\n" +
+    "After updating labels, re-publish with semaphore_publish to rebuild the CLS rule set.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI to update, e.g. 'model:UNESCO'. " +
+        "Get from semaphore_kmm_models_list."
+      ),
+      sparql: z.string().describe(
+        "SPARQL UPDATE string. Supported: INSERT DATA, DELETE DATA, DELETE/INSERT, LOAD, CLEAR. " +
+        "Always declare prefixes inline (PREFIX skos: ...). " +
+        "Always passes checkConstraints=false — no need to add that."
+      ),
+    },
+    async ({ model_uri, sparql }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      try {
+        await semaphore.kmmSparqlUpdate(model_uri, sparql);
+        return {
+          content: [{
+            type: "text",
+            text:
+              "SPARQL UPDATE COMPLETE\n" +
+              "─".repeat(50) + "\n\n" +
+              `  Model: ${model_uri}\n\n` +
+              "The update was applied successfully (HTTP 204).\n\n" +
+              "NEXT STEPS:\n" +
+              `  • Verify the change: semaphore_kmm_sparql  model_uri="${model_uri}"  query="SELECT ..."  \n` +
+              `  • Re-publish if labels changed: semaphore_publish  model_uri="${model_uri}"`,
+          }],
+        };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_publish ─────────────────────────────────────────────────────────
+  server.tool(
+    "semaphore_publish",
+    "Trigger a Semaphore KMM publish — compile the taxonomy model into CLS classification rules.\n\n" +
+    "Publishing converts the RDF taxonomy in KMM into a .rules file that the Classification Server (CLS) " +
+    "uses to classify text. You must re-publish after any change to model content or publisher config.\n\n" +
+    "ASYNC vs SYNC:\n" +
+    "  Large models (500+ concepts) will time out on synchronous publish. " +
+    "  Use async=true (the default) — the tool returns a job ID immediately. " +
+    "  Poll the job status by calling this tool again with job_id to check completion.\n\n" +
+    "PLAIN SKOS MODELS:\n" +
+    "  If the model uses plain skos:prefLabel (not SKOS-XL), run " +
+    "semaphore_publish_config_fix_plain_skos BEFORE publishing. " +
+    "  Without the fix, the publisher will only generate 1 rule (for the ConceptScheme) " +
+    "instead of one rule per concept.\n\n" +
+    "AFTER PUBLISH:\n" +
+    "  • Check semaphore_publish_sets to confirm the new rule set is loaded\n" +
+    "  • Run semaphore_classify with threshold=0 to test classification\n" +
+    "  • If all scores are 0, the rulenet index is still building — wait a minute and retry",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI to publish, e.g. 'model:UNESCO'. " +
+        "Get from semaphore_kmm_models_list."
+      ),
+      config: z.string().optional().describe(
+        "Publisher config name to use (optional). Leave blank to use the model's default config. " +
+        "Config names are the names of publisher config files in the workspace ZIP."
+      ),
+      environment: z.string().optional().describe(
+        "Target environment name (optional). Leave blank to publish to all configured environments."
+      ),
+      language: z.string().optional().describe(
+        "Language code to publish (default: 'en'). " +
+        "Must match the language codes configured in the publisher config."
+      ),
+      async: z.boolean().optional().describe(
+        "Use async publish (default: true). Recommended for all models — sync publish times out " +
+        "for models with more than a few hundred concepts. Returns a job_id for status polling."
+      ),
+    },
+    async ({ model_uri, config, environment, language, async: useAsync }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      try {
+        const result = await semaphore.kmmPublish(model_uri, {
+          config,
+          environment,
+          language: language ?? "en",
+          async: useAsync !== false,
+        });
+
+        const lines = [
+          "SEMAPHORE PUBLISH TRIGGERED",
+          "─".repeat(50),
+          "",
+          `  Model:       ${model_uri}`,
+          `  Language:    ${language ?? "en"}`,
+          config       ? `  Config:      ${config}` : "",
+          environment  ? `  Environment: ${environment}` : "",
+          "",
+        ].filter(s => s !== undefined);
+
+        if (result.jobId) {
+          lines.push(`  Status: ${result.status ?? "ACCEPTED"}`);
+          lines.push(`  Job ID: ${result.jobId}`);
+          lines.push("");
+          lines.push("The publish job is running asynchronously.");
+          lines.push("After a minute or two, verify completion:");
+          lines.push("  • semaphore_publish_sets  — confirm new rule set appears as active");
+          lines.push("  • semaphore_classes       — confirm class names are present");
+          lines.push("  • semaphore_classify  threshold=0  content='<test text>'");
+          lines.push("");
+          lines.push("If classification scores are all 0, the rulenet index is still building.");
+          lines.push("Wait 1-2 minutes and retry semaphore_classify.");
+        } else {
+          lines.push("  Status: COMPLETE (synchronous publish)");
+          lines.push("");
+          lines.push("Publish complete. Run semaphore_publish_sets to confirm the rule set is active.");
+        }
+
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_publish_config_fix_plain_skos ────────────────────────────────────
+  server.tool(
+    "semaphore_publish_config_fix_plain_skos",
+    "Fix the Semaphore publisher workspace config for a plain-SKOS model (one that uses skos:prefLabel literals, not SKOS-XL).\n\n" +
+    "PROBLEM THIS SOLVES:\n" +
+    "  The default Semaphore publisher config uses AllResources + SKOS-XL reification for label lookups. " +
+    "  When publishing a vocabulary with plain skos:prefLabel (e.g. UNESCO Thesaurus, EuroVoc, AGROVOC), " +
+    "  this produces only 1 CLS rule (for the ConceptScheme root) instead of one rule per concept. " +
+    "  Classification then returns no results because no concept-level rules exist.\n\n" +
+    "WHAT THIS TOOL DOES:\n" +
+    "  1. Downloads the current publisher workspace config ZIP from KMM (or creates a fresh one)\n" +
+    "  2. Replaces AllResources with AllConcepts — generates one rule per skos:Concept\n" +
+    "  3. Adds a PlainSkosModel bean that overrides the label SPARQL queries to use\n" +
+    "     plain skos:prefLabel / skos:altLabel instead of SKOS-XL reification\n" +
+    "  4. Ensures the ContextualCitation.kid rule template is present\n" +
+    "  5. Re-uploads the patched ZIP to the KMM workspace\n\n" +
+    "WHEN TO USE THIS:\n" +
+    "  Use for: UNESCO Thesaurus, EuroVoc, AGROVOC, IPTC rdfxml format, and any SKOS vocabulary\n" +
+    "  that stores labels as skos:prefLabel literals on the concept node directly.\n" +
+    "  Skip for: Vocabularies already using SKOS-XL (skosxl:prefLabel + skosxl:Label nodes).\n\n" +
+    "BEFORE RUNNING:\n" +
+    "  Ensure concepts have sem:guid triples — use semaphore_kmm_sparql_update to add them:\n" +
+    "    PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>\n" +
+    "    PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n" +
+    "    INSERT { ?c sem:guid ?g }\n" +
+    "    WHERE { ?c a skos:Concept . FILTER NOT EXISTS { ?c sem:guid ?x } . BIND(STRUUID() AS ?g) }\n\n" +
+    "AFTER RUNNING:\n" +
+    "  Run semaphore_publish to rebuild the CLS rule set with the patched config.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI to patch, e.g. 'model:UNESCO'. " +
+        "Get from semaphore_kmm_models_list."
+      ),
+    },
+    async ({ model_uri }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      try {
+        const summary = await semaphore.kmmPatchPublishConfigForPlainSkos(model_uri);
+        const lines = [
+          "PUBLISHER CONFIG FIX — PLAIN SKOS",
+          "─".repeat(50),
+          "",
+          summary,
+          "",
+          "NEXT STEPS:",
+          `  1. Publish to CLS:  semaphore_publish  model_uri="${model_uri}"  async=true`,
+          "  2. Verify rules:    semaphore_publish_sets → confirm the rule set is active",
+          "  3. Test:            semaphore_classify  threshold=0  content=\"<test text>\"",
+          "",
+          "TIP: If classification results are empty after publish, check that sem:guid was",
+          "added to all concepts before publishing (required by ContextualCitation.kid):",
+          `  semaphore_kmm_sparql  model_uri="${model_uri}"`,
+          "  query: PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>",
+          "         SELECT (COUNT(?c) AS ?n) WHERE { ?c sem:guid ?g }",
+        ];
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
