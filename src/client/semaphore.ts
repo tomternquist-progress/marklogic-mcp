@@ -46,6 +46,14 @@
  *   AGROVOC, IPTC) need a patched publisher config. Use kmmPatchPublishConfigForPlainSkos()
  *   or the semaphore_publish_config_fix_plain_skos tool to apply the patch.
  *
+ *   GRAPH CLAUSE REQUIRED: The publisher's SparqlEndpoint connects to a global SPARQL
+ *   endpoint shared across all models. Each model's data lives in a named graph:
+ *     urn:x-evn-master:{ModelName}  (e.g. urn:x-evn-master:IPTCMediaTopics)
+ *   Without an explicit GRAPH clause in the label SPARQL queries, all queries hit the
+ *   empty default graph and return zero rows — the publisher then generates only the
+ *   auto-produced ConceptScheme root rule (1 rule total) instead of one rule per concept.
+ *   kmmPatchPublishConfigForPlainSkos() now injects the correct GRAPH clause automatically.
+ *
  *   PUBLISHER WORKSPACE LIFECYCLE (important — read before calling workspace methods):
  *     The publisher workspace is a ZIP stored on the Semaphore server filesystem.
  *     It is created by the Semaphore Studio UI when you first open a model's
@@ -132,17 +140,24 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
        The publisher requires exactly 4 SELECT columns for getPrefLabelsSparql:
          ?termUri, ?prefLabelUri, ?prefLabel, ?prefLabelRelationship
        For plain SKOS (no intermediate label node), bind ?termUri as ?prefLabelUri.
-       LANGMATCHES matches @en, @en-US, @en-GB, and all English regional variants. -->
+
+       CRITICAL — GRAPH clause: the publisher's SparqlEndpoint connects to a global SPARQL
+       endpoint shared across all models. Each model's data lives in a named graph:
+         urn:x-evn-master:{ModelName}  (the "master" branch graph)
+       Without the explicit GRAPH clause all queries hit the empty default graph and return
+       zero rows, producing only the auto-generated ConceptScheme root rule. -->
   <bean id="PlainSkosModel" parent="SparqlEndpoint">
     <property name="getPrefLabelsSparql">
       <value><![CDATA[
         PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
         SELECT ?termUri ?prefLabelUri ?prefLabel ?prefLabelRelationship
         WHERE {
-          BIND(skos:prefLabel AS ?prefLabelRelationship) .
-          ?termUri skos:prefLabel ?prefLabel .
-          FILTER(LANGMATCHES(LANG(?prefLabel), "en"))
-          BIND(?termUri AS ?prefLabelUri) .
+          GRAPH <urn:x-evn-master:{{MODEL_NAME}}> {
+            BIND(skos:prefLabel AS ?prefLabelRelationship) .
+            ?termUri skos:prefLabel ?prefLabel .
+            FILTER(LANG(?prefLabel) = "en")
+            BIND(?termUri AS ?prefLabelUri) .
+          }
         }
       ]]></value>
     </property>
@@ -151,9 +166,11 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
         PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
         SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
         WHERE {
-          ?termUri skos:altLabel ?labelLiteral .
-          FILTER(LANGMATCHES(LANG(?labelLiteral), "en"))
-          BIND(?termUri AS ?labelUri) .
+          GRAPH <urn:x-evn-master:{{MODEL_NAME}}> {
+            ?termUri skos:altLabel ?labelLiteral .
+            FILTER(LANG(?labelLiteral) = "en")
+            BIND(?termUri AS ?labelUri) .
+          }
         }
       ]]></value>
     </property>
@@ -1291,21 +1308,25 @@ export class SemaphoreClient {
       : "";
 
     // Check what needs to change.
-    // Canonical config: AllConcepts + PlainSkosModel bean with plain skos:prefLabel SPARQL queries.
-    // This is the same pattern that successfully published the UNESCO Thesaurus (4,408 rules).
-    // LANGMATCHES is required for @en-US / @en-GB language tags (e.g. IPTC Media Topics).
-    // Canonical config checks — must match the template exactly:
-    // - AllConcepts (not AllResources)
-    // - PlainSkosModel bean with 4-column SELECT (prefLabelUri required)
-    // - LANGMATCHES for English regional variants
-    // - No rulebaseClass (let Semaphore auto-name from model name)
+    // Canonical config: AllConcepts + PlainSkosModel with explicit GRAPH clause.
+    //
+    // ROOT CAUSE (discovered 2026-03-17): the publisher's SparqlEndpoint connects to a
+    // global SPARQL endpoint shared across all models. Each model's data lives in the
+    // named graph urn:x-evn-master:{ModelName}. Without an explicit GRAPH clause, all
+    // label queries hit the empty default graph and return 0 rows, so the publisher
+    // generates only the auto-produced ConceptScheme root rule (1 rule total instead of
+    // one rule per concept).
+    //
+    // Fix: add GRAPH <urn:x-evn-master:{ModelName}> { ... } around all WHERE clauses.
+    const modelName = modelUri.replace(/^model:/, "");
+    const graphUri = `urn:x-evn-master:${modelName}`;
     const alreadyHasAllConcepts = currentXml.includes('parent="AllConcepts"');
     const alreadyHasPlainSkosModel = currentXml.includes("PlainSkosModel");
-    const alreadyHasLangmatches = currentXml.includes("LANGMATCHES");
+    const alreadyHasGraphClause = currentXml.includes(graphUri);
     const alreadyHasPrefLabelUri = currentXml.includes("?prefLabelUri");
     const alreadyHasPrefLabelRelationship = currentXml.includes("?prefLabelRelationship");
 
-    if (alreadyHasAllConcepts && alreadyHasPlainSkosModel && alreadyHasLangmatches &&
+    if (alreadyHasAllConcepts && alreadyHasPlainSkosModel && alreadyHasGraphClause &&
         alreadyHasPrefLabelUri && alreadyHasPrefLabelRelationship) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
@@ -1320,15 +1341,14 @@ export class SemaphoreClient {
     if (!alreadyHasPlainSkosModel) {
       changes.push("Added PlainSkosModel bean with plain skos:prefLabel / skos:altLabel SPARQL queries");
     }
-    if (!alreadyHasLangmatches) {
-      changes.push("Added LANGMATCHES filter (matches @en, @en-US, @en-GB, all English variants)");
+    if (!alreadyHasGraphClause) {
+      changes.push(`Added GRAPH <${graphUri}> clause (publisher uses global SPARQL endpoint; data is in named graph, not default graph)`);
     }
     if (!alreadyHasPrefLabelUri || !alreadyHasPrefLabelRelationship) {
       changes.push("Fixed getPrefLabelsSparql to return all 4 required columns (?termUri ?prefLabelUri ?prefLabel ?prefLabelRelationship)");
     }
 
     // Write the canonical patched XML to the target file
-    const modelName = modelUri.replace(/^model:/, "");
     zip.file(xmlFilename, buildPlainSkosPublisherXml(modelName));
 
     // Ensure the ContextualCitation.kid template is present
