@@ -102,15 +102,15 @@ import type { SemaphoreConfig } from "../config/schema.js";
 // ── Publisher config constants ────────────────────────────────────────────────
 
 /**
- * Canonical publisher config XML for plain-SKOS models (skos:prefLabel, no SKOS-XL).
+ * Publisher config XML for SKOS models.
  *
- * Key differences from the Semaphore default:
- *   • AllResources — generates one CLS rule per skos:Concept (AllConcepts does NOT work for plain-SKOS vocabularies)
- *   • PlainSkosModel bean overrides getPrefLabelsSparql / getAltLabelsForwardSparql
- *     to use plain skos:prefLabel / skos:altLabel instead of SKOS-XL reification
+ * Uses AllResources with the default SparqlEndpoint (SKOS-XL label queries).
+ * Before using this config, the model must have skosxl:prefLabel / skosxl:altLabel
+ * triples added via SPARQL UPDATE (see kmmPatchPublishConfigForPlainSkos).
  *
- * Required for: UNESCO Thesaurus, EuroVoc, AGROVOC, and any vocabulary that uses
- * plain skos:prefLabel literals rather than skosxl:prefLabel + skosxl:Label nodes.
+ * For models that use plain skos:prefLabel (no SKOS-XL), kmmPatchPublishConfigForPlainSkos
+ * first adds SKOS-XL triples to the KMM model, then uploads this config — the default
+ * publisher SPARQL then finds the labels correctly.
  */
 function buildPlainSkosPublisherXml(modelName: string): string {
   return PLAIN_SKOS_PUBLISHER_XML_TEMPLATE.replace("{{MODEL_NAME}}", modelName);
@@ -129,38 +129,7 @@ const PLAIN_SKOS_PUBLISHER_XML_TEMPLATE = `<?xml version="1.0" encoding="UTF-8"?
     </property>
   </bean>
 
-  <!-- Override SparqlEndpoint to use plain skos:prefLabel (no SKOS-XL reification).
-       Required for vocabularies that use skos:prefLabel literals directly, e.g.
-       UNESCO Thesaurus, EuroVoc, AGROVOC. -->
-  <!-- PlainSkosModel: override label SPARQL to use plain skos:prefLabel / skos:altLabel.
-       No LANG() filter here — the publisher SPARQL engine does not support LANG() reliably.
-       Language filtering is handled by the languageCodes property on the AllResources bean. -->
-  <bean id="PlainSkosModel" parent="SparqlEndpoint">
-    <property name="getPrefLabelsSparql">
-      <value><![CDATA[
-        PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-        SELECT ?termUri ?prefLabelUri ?prefLabel ?prefLabelRelationship
-        WHERE {
-          BIND(skos:prefLabel AS ?prefLabelRelationship) .
-          ?termUri skos:prefLabel ?prefLabel .
-          BIND(?termUri AS ?prefLabelUri) .
-        }
-      ]]></value>
-    </property>
-    <property name="getAltLabelsForwardSparql">
-      <value><![CDATA[
-        PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-        SELECT DISTINCT ?termUri ?labelUri ?labelLiteral
-        WHERE {
-          ?termUri skos:altLabel ?labelLiteral .
-          BIND(?termUri AS ?labelUri) .
-        }
-      ]]></value>
-    </property>
-  </bean>
-
   <bean class="com.smartlogic.publisher.Publisher">
-    <property name="model" ref="PlainSkosModel"/>
     <property name="configurationSets">
       <list>
         <!-- AllResources: generates one CLS rule per skos:Concept for plain-SKOS vocabularies.
@@ -1283,20 +1252,15 @@ export class SemaphoreClient {
 
     // Check what needs to change
     // AllResources (not AllConcepts) is required for plain-SKOS vocabularies.
-    // AllConcepts does NOT find skos:Concept typed resources and produces 0 rules.
+    // The correct config: AllResources + rulebaseClass, NO PlainSkosModel override.
+    // The model must have skosxl:prefLabel triples (added via SPARQL UPDATE) so the
+    // default publisher SKOS-XL SPARQL finds them. The PlainSkosModel SPARQL override
+    // does not work reliably in the Semaphore 5.10 publisher SPARQL engine.
     const alreadyHasAllResources = currentXml.includes('parent="AllResources"');
-    const alreadyHasPlainSkos = currentXml.includes("PlainSkosModel");
-    // rulebaseClass is required so the KID template ${rulebaseClass} variable resolves to
-    // a non-empty string. Without it, all classification META elements have name="" and
-    // are silently dropped by CLS parsers.
     const alreadyHasRulebaseClass = currentXml.includes("rulebaseClass");
-    // No LANG() filter in SPARQL — the publisher SPARQL engine does not support LANG() reliably
-    // (LANGMATCHES, STRSTARTS, and LANG() = "en" all return 0 concepts).
-    // Language filtering is handled by the languageCodes Java property on the AllResources bean.
-    // Detect that we're using the no-filter version by absence of STRLANG / FILTER(LANG
-    const alreadyHasNoLangFilter = !currentXml.includes("STRLANG") && !currentXml.includes("FILTER(LANG");
+    const alreadyHasNoPlainSkos = !currentXml.includes("PlainSkosModel");
 
-    if (alreadyHasAllResources && alreadyHasPlainSkos && alreadyHasRulebaseClass && alreadyHasNoLangFilter) {
+    if (alreadyHasAllResources && alreadyHasRulebaseClass && alreadyHasNoPlainSkos) {
       return (
         `Publisher config for ${modelUri} is already patched for plain SKOS.\n` +
         "No changes needed — proceed with semaphore_publish to rebuild the rule set."
@@ -1305,12 +1269,10 @@ export class SemaphoreClient {
 
     const changes: string[] = [];
     if (!alreadyHasAllResources) {
-      changes.push("AllConcepts → AllResources (AllResources correctly finds skos:Concept resources)");
+      changes.push("AllConcepts → AllResources");
     }
-    if (!alreadyHasPlainSkos) {
-      changes.push(
-        "Added PlainSkosModel bean — overrides label SPARQL to use skos:prefLabel / skos:altLabel"
-      );
+    if (!alreadyHasNoPlainSkos) {
+      changes.push("Removed PlainSkosModel SPARQL override — using default SKOS-XL SPARQL (skosxl:prefLabel triples added to model)");
     }
 
     // Write the canonical patched XML (replaces any existing XML config entirely)
