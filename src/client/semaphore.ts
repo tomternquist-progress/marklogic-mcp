@@ -266,7 +266,12 @@ function xmlText(xml: string, tag: string): string | undefined {
 
 /** Extract all occurrences of an XML element as raw strings. */
 function xmlAll(xml: string, tag: string): string[] {
-  const re = new RegExp(`<${tag}[^/]*?/>|<${tag}[^>]*>[\\s\\S]*?</${tag}>`, "gi");
+  // The self-closing pattern must handle quoted attribute values (which can contain "/" and ">").
+  // [^>"'] matches unquoted content; "[^"]*" and '[^']*' match quoted attribute values.
+  const re = new RegExp(
+    `<${tag}(?:[^>"']|"[^"]*"|'[^']*')*/>|<${tag}[^>]*>[\\s\\S]*?</${tag}>`,
+    "gi"
+  );
   return xml.match(re) ?? [];
 }
 
