@@ -115,7 +115,7 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals). NOTE: The URL must be reachable from the flux runner host, not your local machine. .gz files are passed to Flux as-is and decompressed by Spark natively. ZIP (.zip) files are automatically extracted by the runner — all files inside the ZIP are extracted to a temp directory and that directory is passed as --path. WARNING: Socrata /rows.json endpoints return an array-of-arrays format (not an array of objects) — use /rows.csv with import-delimited-files instead for one-document-per-record imports."),
       collections: z.array(z.string()).optional().describe("MarkLogic collections to assign to imported documents"),
       permissions: z.string().optional().describe("Comma-separated role:capability pairs, e.g. 'rest-reader:read,rest-writer:update'. Valid MarkLogic capabilities: read, insert, update, execute, node-update. Must be lowercase."),
-      uri_template: z.string().optional().describe("URI template for document naming, e.g. '/import/{filename}'. Template variables must exactly match the CSV/JSON field names. WARNING: field names with spaces (e.g. 'State Abbreviation') cannot be used in URI templates — Flux will silently produce malformed URIs. Sanitize column names first (use column_names to rename headers, or import without a uri_template and rely on auto-generated URIs)."),
+      uri_template: z.string().optional().describe("URI template for document naming, e.g. '/import/{filename}'. Template variables must exactly match the CSV/JSON field names. WARNING: field names with spaces (e.g. 'State Abbreviation') cannot be used in URI templates — Flux will silently produce malformed URIs. Sanitize column names first (use column_names to rename headers, or import without a uri_template and rely on auto-generated URIs). IMPORTANT — import-files limitation: with import-files, template variables resolve from file-level metadata (e.g. {filename}, {filepath}) — NOT from fields inside the JSON document content. To build URIs from a JSON document field (e.g. an 'id' field), use extra_args: ['--uri-replace', \".*/source-dir/\",\"'/target-prefix/'\",\".json$\",\"''\"] instead of uri_template."),
       database: z.string().optional().describe("Target MarkLogic database (defaults to configured database)"),
       jdbc_url: z.string().optional().describe("JDBC URL for import-jdbc, e.g. 'jdbc:postgresql://host/db'"),
       jdbc_driver: z.string().optional().describe("JDBC driver class, e.g. 'org.postgresql.Driver'"),
@@ -123,7 +123,7 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       thread_count: z.number().int().positive().optional().describe("Parallel writer threads (default: 4)"),
       batch_size: z.number().int().positive().optional().describe("Documents per batch (default: 100)"),
       column_names: z.array(z.string()).optional().describe("Column names for headerless delimited files. When set, the runner prepends these as a header row before importing — so each document gets proper field names instead of _c0, _c1, etc. Use with import-delimited-files when the source has no header (e.g. GDELT events, many government open-data exports)."),
-      local_file: z.string().optional().describe("⚠ HOST RESTRICTION: Absolute path to a file that exists on the MCP SERVER HOST — NOT your local development machine and NOT the flux runner container. If you are connecting to a remote MCP server, this path must be on that remote host; files on your laptop will cause 'File not found' errors. FALLBACK when files are local-only: use ml_eval_javascript with the vars parameter to pass data inline (avoids the host restriction entirely). Cannot be combined with http_url or path."),
+      local_file: z.string().optional().describe("⚠ HOST RESTRICTION: Absolute path to a file that exists on the MCP SERVER HOST — NOT your local development machine and NOT the flux runner container. If you are connecting to a remote MCP server, this path must be on that remote host; files on your laptop will cause 'File not found' errors. SANDBOX ISOLATION: The MCP server runs in its own container/process. Files written by shell commands (e.g. via Bash tool) land on the host filesystem, NOT inside the MCP server container — so local_file will fail with 'File not found' even though the file appears to exist. FALLBACKS: (1) serve the file via HTTP and use http_url instead, or (2) use ml_eval_javascript with the vars parameter to pass data inline for small payloads (<100 KB). Cannot be combined with http_url or path."),
       extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim. Common flags for import-delimited-files: ['--delimiter', '|'] for pipe-delimited, ['--encoding', 'ISO-8859-1'] for non-UTF-8 files. To force compression: ['--spark-prop', 'compression=gzip']. Run flux_help with subcommand='import-delimited-files' to see all accepted flags."),
       generate_tde: z.boolean().optional().describe("After a successful import, auto-generate a TDE template by sampling the imported collection and writing it to the Schemas database. Requires collections to be set. The template is written to /tde/<tde_schema>/<tde_view>.json."),
       tde_schema: z.string().optional().describe("Schema name for the auto-generated TDE view (used with generate_tde). Defaults to the first collection name with non-alphanumeric chars replaced by underscores."),
@@ -134,7 +134,17 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "(--classifier-host, --classifier-port, --classifier-path /) so that every imported document " +
         "is classified at ingest time. Requires SEMAPHORE_HOST (and optionally SEMAPHORE_SCS_PORT) " +
         "to be configured in the MCP server .env. For bulk classification this is the most efficient " +
-        "approach — Flux calls the SCS inline without a separate reprocess step."
+        "approach — Flux calls the SCS inline without a separate reprocess step.\n\n" +
+        "CLASSIFICATION OUTPUT STRUCTURE: Semaphore adds a nested object to each document:\n" +
+        "  classification.STRUCTUREDDOCUMENT.META[]  — array of {name, value, id, score}\n" +
+        "  name = taxonomy class (e.g. 'IPTCMediaTopics-http://cv.iptc.org/newscodes/mediatopic/')\n" +
+        "  value = matched concept label, id = concept UUID, score = float 0–1\n\n" +
+        "TDE FOR CLASSIFIED DOCUMENTS: To create a view with one row per (document × category):\n" +
+        "  context: 'classification/STRUCTUREDDOCUMENT/META'  (iterates over each tag)\n" +
+        "  To reference the parent document's fields from within a META element, navigate UP:\n" +
+        "    parent field 'id':      '../../../../id'       (4 levels: elem→array→SD-obj→class-obj→root)\n" +
+        "    parent field 'section': '../../../../section'\n" +
+        "  Direct META element fields: 'name', 'value', 'id', 'score' (declare score as float, not string)"
       ),
     },
     async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore }) => {
@@ -293,8 +303,30 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       // ── PATH_NOT_FOUND: explain runner-local paths ──
       if (!result.success && condensedOutput.includes("PATH_NOT_FOUND")) {
         const enhanced = condensedOutput +
-          "\n\nNOTE: --path must exist on the flux runner host, not your local machine. " +
-          "Use local_file to upload a file from this machine to the runner, or use http_url to download from a URL.";
+          "\n\nNOTE: --path must exist on the flux runner host (inside the flux runner container), " +
+          "not your local machine or the MCP server container.\n" +
+          "  • Files written by shell commands land on the host OS, not inside either container.\n" +
+          "  • Files placed via 'docker cp' into the runner container ARE visible to the runner's\n" +
+          "    filesystem (docker exec ls confirms this), but the runner's HTTP API spawns the Flux\n" +
+          "    subprocess with a different classpath context that may not resolve the same path.\n" +
+          "    Workaround: run Flux directly with 'docker exec <runner-container> /flux/bin/flux ...'\n" +
+          "  • Best alternative for local data: serve the file over HTTP and use http_url instead.";
+        return { content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: enhanced }) }], isError: true };
+      }
+
+      // ── Pre-processing failed: runner tried to download http_url but got null ──
+      if (!result.success && condensedOutput.includes("Pre-processing failed")) {
+        const enhanced = condensedOutput +
+          "\n\nNOTE: The flux runner's pre-processor failed to download the http_url.\n" +
+          "  'Pre-processing failed: null' typically means the Java HttpClient in the runner\n" +
+          "  received a null response — even if the URL is reachable (e.g. via wget from inside\n" +
+          "  the container). This is a known runner limitation for certain URL patterns.\n" +
+          "  Workarounds:\n" +
+          "  1. docker cp the file into the runner container, then use 'docker exec' to run\n" +
+          "     /flux/bin/flux directly (bypasses the runner HTTP API).\n" +
+          "  2. Use a well-known public URL (e.g. raw.githubusercontent.com) — these are known\n" +
+          "     to work with the runner's Java HttpClient.\n" +
+          "  3. For small datasets (<100 KB), pass data inline via ml_eval_javascript + vars.";
         return { content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: enhanced }) }], isError: true };
       }
 
@@ -395,7 +427,25 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
           `\n    3. Generate a TDE over that collection (flux_import generate_tde=true or ml_document_put to Schemas).`;
       }
 
-      const finalOutput = condensedOutput + colNote + tdeGenNote + rdfNote;
+      // ── Semaphore classification post-note ──────────────────────────────────
+      let classifyNote = "";
+      if (classify_with_semaphore && result.success) {
+        classifyNote =
+          "\n\nCLASSIFICATION COMPLETE. Each document now has:\n" +
+          "  classification.STRUCTUREDDOCUMENT.META[]  — array of {name, value, id, score}\n" +
+          "  'name'  = taxonomy class string (e.g. 'IPTCMediaTopics-...' or 'UNESCOThesaurus-...')\n" +
+          "  'value' = matched concept label\n" +
+          "  'id'    = stable concept UUID\n" +
+          "  'score' = confidence float (0–1); threshold 0.48+ is production-quality\n\n" +
+          "TO QUERY CLASSIFICATIONS WITH OPTIC — create a TDE with:\n" +
+          "  context: 'classification/STRUCTUREDDOCUMENT/META'\n" +
+          "  META fields: name → 'name', label → 'value', concept_id → 'id', score → 'score' (float)\n" +
+          "  Parent doc fields from META context — navigate UP 4 levels:\n" +
+          "    '../../../../<fieldName>'  (META elem → META array → SD object → classification object → doc root)\n" +
+          "  Filter to one taxonomy: where class_system = 'IPTCMediaTopics-http://cv.iptc.org/newscodes/mediatopic/'";
+      }
+
+      const finalOutput = condensedOutput + colNote + tdeGenNote + rdfNote + classifyNote;
       return {
         content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: finalOutput }) }],
         isError: !result.success,

@@ -550,6 +550,14 @@ function inferTdeScalarType(field: FieldDescriptor): string {
     }
     case "boolean": return "int";
     case "date":    return "string"; // keep as string; TDE dateTime requires strict ISO format
+    case "string": {
+      // If every non-null example value looks like a decimal number (e.g. "0.84", "1.0"),
+      // infer float rather than string. This catches Semaphore classifier score fields and
+      // any other numeric-string columns where string type would silently break comparisons.
+      const examples = field.exampleValues.filter((v) => v !== null && v !== undefined && v !== "");
+      if (examples.length > 0 && examples.every((v) => /^-?[0-9]*\.?[0-9]+$/.test(String(v)))) return "float";
+      return "string";
+    }
     default:        return "string";
   }
 }
