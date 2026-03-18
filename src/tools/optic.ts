@@ -142,7 +142,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
     {
       database: z.string().optional().describe("Database name (schemas are always read from the Schemas DB)"),
     },
-    async () => {
+    async ({ database: _database }) => {
       try {
         const views = await clients.schema.listViews();
         if (views.length === 0) {
