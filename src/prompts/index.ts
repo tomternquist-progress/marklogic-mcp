@@ -1603,8 +1603,8 @@ b. JSON structure showing where classification data lives, e.g.:
        "threshold": 48,
        "categoryCount": 3,
        "categories": [
-         { "className": "IPTC-MediaTopics", "label": "Sport", "id": "...", "score": 87.5 },
-         { "className": "IPTC-MediaTopics", "label": "Football", "id": "...", "score": 72.1 }
+         { "className": "IPTC-MediaTopics", "label": "Sport", "id": "...", "score": 0.875 },
+         { "className": "IPTC-MediaTopics", "label": "Football", "id": "...", "score": 0.721 }
        ],
        "topCategory": { "className": "IPTC-MediaTopics", "label": "Sport", "id": "..." }
      }
@@ -1647,6 +1647,8 @@ else {
   var xml = String(resp[1]);
 
   // Parse <META name="ClassName" value="Label" id="uuid" score="float"/>
+  // CLS @score is a 0.0–1.0 float (e.g. "0.84" = 84% confidence). Do NOT divide by 100.
+  // The threshold parameter sent to CLS uses a 0–100 integer scale — different from the returned score.
   var categories = [];
   var re = /<META\s+[^>]*name="([^"]+)"[^>]*value="([^"]+)"[^>]*id="([^"]+)"[^>]*score="([^"]+)"[^>]*\/>/g;
   var m;

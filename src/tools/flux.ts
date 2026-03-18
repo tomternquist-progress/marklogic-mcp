@@ -641,7 +641,9 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "SCOPING TO SPECIFIC TAXONOMIES: Use classifier_publish_sets to restrict results to named " +
         "publish sets. Flux injects --classifier-prop publish_set_name_list=<pipe-separated> so the " +
         "CLS only returns results from those sets. Without this, all active publish sets are combined. " +
-        "Classification is stored in classification.STRUCTUREDDOCUMENT.META[]."
+        "Classification is stored in classification.STRUCTUREDDOCUMENT.META[]. " +
+        "Score in META @score is a 0.0–1.0 float (e.g. 0.84 = 84% confidence). " +
+        "Declare the score TDE column as scalarType 'float', not 'string'."
       ),
       classifier_publish_sets: z.array(z.string()).optional().describe(
         "Restrict Flux classification to specific publish sets (e.g. ['iptcmediatopics', 'unescothesaurus']). " +

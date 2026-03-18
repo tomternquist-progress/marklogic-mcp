@@ -1626,8 +1626,10 @@ export class SemaphoreClient {
    * Classify text content.
    *
    * @param content      Plain text or HTML to classify.
-   * @param threshold    Minimum score (0–100, default: 48). Lower = more results.
+   * @param threshold    Minimum confidence threshold, integer 0–100 (default: 48). Lower = more results.
    *                     Use 0 to return all candidates regardless of score.
+   *                     Note: the threshold is on a 0–100 integer scale, but the CLS XML @score
+   *                     attribute is a 0.0–1.0 float (e.g. threshold=48 filters below score 0.48).
    * @param publishSet   Restrict to a single publish set (e.g. "softwareengineering").
    *                     Passed as a multipart form field "publish_set".
    * @param publishSets  Restrict to multiple publish sets (e.g. ["iptcmediatopics", "unescothesaurus"]).

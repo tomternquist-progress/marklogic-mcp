@@ -978,7 +978,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "HOW IT WORKS:\n" +
     "  The CLS parses your text, matches it against the loaded classification rules (publish sets),\n" +
     "  and returns categories above the threshold score. Each category has a class name (taxonomy domain),\n" +
-    "  a label (concept name), a stable UUID, and a score (0–100).\n\n" +
+    "  a label (concept name), a stable UUID, and a score (0.0–1.0 float).\n\n" +
     "USE THIS TOOL WHEN:\n" +
     "  - Testing classification output on sample text before building a pipeline\n" +
     "  - Classifying a small number of documents individually (for bulk, use Flux)\n" +
@@ -990,9 +990,10 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "  --classifier-prop publish_set_name_list=name1|name2 so the CLS only returns those sets.\n" +
     "  Publish set names are lowercase model names — use semaphore_publish_sets to list them.\n\n" +
     "THRESHOLD GUIDANCE:\n" +
-    "  Default threshold is 48. Score range is 0–100.\n" +
+    "  Default threshold is 48. The threshold parameter uses an integer 0–100 scale.\n" +
+    "  Returned scores are 0.0–1.0 floats (threshold=48 filters out results below score 0.48).\n" +
     "  Use threshold=0 to see all candidate categories regardless of confidence.\n" +
-    "  Production pipelines typically use 48–70 depending on precision requirements.\n\n" +
+    "  Production pipelines typically use threshold 48–70 depending on precision requirements.\n\n" +
     "SCORE=0 NOTE:\n" +
     "  A freshly published rule set may return score=0 for all categories while the\n" +
     "  Semaphore Publisher service finishes building the rulenet index. If every category\n" +
@@ -1001,8 +1002,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     {
       content: z.string().describe("Plain text or HTML content to classify"),
       threshold: z.number().int().min(0).max(100).optional().describe(
-        "Minimum score (0–100) for a category to be included. Default: 0 (return all candidates). " +
-        "The SCS default threshold is 48 — use 0 here to see all results for exploration."
+        "Minimum confidence threshold, integer 0–100 (e.g. 48 = filter out results below score 0.48). " +
+        "Default: 0 (return all candidates). The SCS default is 48 — use 0 here to see all results for exploration. " +
+        "Note: the threshold is 0–100 integer but returned scores are 0.0–1.0 floats — different scales."
       ),
       publish_set: z.string().optional().describe(
         "Restrict classification to a single publish set (e.g. 'iptcmediatopics'). " +
