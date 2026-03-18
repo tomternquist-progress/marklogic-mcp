@@ -313,6 +313,24 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "A model is the container for a taxonomy or ontology — it must exist before loading any SKOS content. " +
     "After creation, use semaphore_kmm_skos_load to populate it with concepts from a public RDF/SKOS URL.\n\n" +
     "Returns the new model URI (e.g. 'model:IPTCMediaTopics') which is required for semaphore_kmm_skos_load and semaphore_kmm_sparql.\n\n" +
+    "SKOS HIERARCHY DESIGN — BEST PRACTICES:\n" +
+    "  When building a taxonomy from scratch, follow proper SKOS modeling:\n" +
+    "  ✓ USE skos:narrower / skos:broader for hierarchy — child concepts must be proper narrower concepts,\n" +
+    "    not synonyms. Each named service, product, or entity deserves its own skos:Concept node.\n" +
+    "  ✓ USE skos:altLabel for genuine synonyms and abbreviations of THAT concept only\n" +
+    "    (e.g. aws:EC2 skos:altLabel 'Elastic Compute Cloud', 'virtual machine', 'instance')\n" +
+    "  ✗ DO NOT list child concept names as altLabels on a parent concept — this is a flat anti-pattern\n" +
+    "    (e.g. putting 'EC2', 'Lambda', 'S3' as altLabels on an 'AWS' top concept is WRONG)\n" +
+    "  ✓ USE skos:related for cross-cutting relationships between sibling branches\n" +
+    "  ✓ Tag ALL labels with @en (or relevant language tag) — required for Semaphore CLS publishing\n\n" +
+    "  RECOMMENDED STRUCTURE per concept:\n" +
+    "    <ns:EC2> a skos:Concept ;\n" +
+    "        skos:inScheme <ns:MyScheme> ;\n" +
+    "        skos:broader <ns:Compute> ;\n" +
+    "        skos:prefLabel \"Amazon EC2\"@en ;\n" +
+    "        skos:altLabel \"EC2\"@en, \"Elastic Compute Cloud\"@en, \"virtual machine\"@en .\n\n" +
+    "  Use semaphore_taxonomy_scaffold to generate a properly structured SKOS skeleton,\n" +
+    "  and semaphore_taxonomy_validate to check an existing model for structural issues.\n\n" +
     "NEXT STEP: After creating a model, load taxonomy content with semaphore_kmm_skos_load " +
     "(pass skos_content with the Turtle text for locally created taxonomies, or skos_url for public vocabulary endpoints). " +
     "then use semaphore_publish_config_fix_plain_skos (for plain skos:prefLabel vocabularies) and " +
@@ -399,10 +417,17 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "SKOS URL EXAMPLES:\n" +
     "  IPTC Media Topics (RDF/XML): https://cv.iptc.org/newscodes/mediatopic/?lang=x-all&format=rdfxml\n" +
     "  Note: check the vocabulary's download API for the correct RDF URL — HTML endpoints return HTML.\n\n" +
+    "SKOS HIERARCHY BEST PRACTICES:\n" +
+    "  Before loading, ensure the taxonomy uses proper hierarchy (skos:narrower/skos:broader) rather\n" +
+    "  than a flat structure. The flat anti-pattern stuffs all child names as skos:altLabel on a parent —\n" +
+    "  instead, give each named concept its own skos:Concept node with skos:broader pointing to the parent.\n" +
+    "  Use semaphore_taxonomy_validate after loading to check for structural issues.\n" +
+    "  Use semaphore_taxonomy_scaffold to generate a properly structured SKOS skeleton before loading.\n\n" +
     "AFTER LOADING:\n" +
-    "  1. Run semaphore_publish_config_fix_plain_skos (for plain skos:prefLabel vocabularies)\n" +
-    "  2. Run semaphore_publish to build the CLS rule set\n" +
-    "  3. Run semaphore_classify to test classification",
+    "  1. Run semaphore_taxonomy_validate to check hierarchy quality\n" +
+    "  2. Run semaphore_publish_config_fix_plain_skos (for plain skos:prefLabel vocabularies)\n" +
+    "  3. Run semaphore_publish to build the CLS rule set\n" +
+    "  4. Run semaphore_classify to test classification",
     {
       model_uri: z.string().describe(
         "KMM model URI to import into, e.g. 'model:IPTCMediaTopics'. " +
@@ -1521,6 +1546,322 @@ LIMIT 500`;
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
+    }
+  );
+
+  // ── semaphore_taxonomy_validate ───────────────────────────────────────────────
+  server.tool(
+    "semaphore_taxonomy_validate",
+    "Run structural quality checks on a SKOS taxonomy loaded in KMM. " +
+    "Executes SPARQL queries to detect common modeling anti-patterns and report hierarchy health.\n\n" +
+    "CHECKS PERFORMED:\n" +
+    "  1. Concept counts — total concepts, top concepts, leaf concepts (no narrower)\n" +
+    "  2. Flat suspects — concepts that have many altLabels (≥5) but NO skos:narrower children;\n" +
+    "     these are candidates for anti-pattern refactoring (child names stuffed as altLabels)\n" +
+    "  3. Orphan concepts — concepts with no skos:broader and not declared skos:topConceptOf\n" +
+    "  4. Missing @en labels — concepts lacking an English skos:prefLabel (breaks CLS publishing)\n" +
+    "  5. Duplicate altLabels — the same altLabel string appearing on multiple concepts\n" +
+    "  6. Hierarchy depth — how many concepts exist at each depth level (1 = top, 2 = children, etc.)\n\n" +
+    "Run this after semaphore_kmm_skos_load and before semaphore_publish to catch issues early.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI to validate, e.g. 'model:AWSServices'. " +
+        "Get from semaphore_kmm_models_list."
+      ),
+      flat_suspect_threshold: z.number().int().min(1).optional().describe(
+        "Minimum number of altLabels on a concept before it is flagged as a flat suspect. Default: 5."
+      ),
+    },
+    async ({ model_uri, flat_suspect_threshold = 5 }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return { content: [{ type: "text", text: "KMM is not configured." }], isError: true };
+      }
+      try {
+        const SKOS = "http://www.w3.org/2004/02/skos/core#";
+
+        // 1. Total concepts
+        const totalResult = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <${SKOS}>
+           SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE { ?c a skos:Concept }`
+        );
+        const totalConcepts = parseInt(totalResult.rows[0]?.n ?? "0", 10);
+
+        // 2. Top concepts
+        const topResult = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <${SKOS}>
+           SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE { ?c skos:topConceptOf ?s }`
+        );
+        const topConcepts = parseInt(topResult.rows[0]?.n ?? "0", 10);
+
+        // 3. Leaf concepts (no narrower children)
+        const leafResult = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <${SKOS}>
+           SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE {
+             ?c a skos:Concept .
+             FILTER NOT EXISTS { ?c skos:narrower ?child }
+             FILTER NOT EXISTS { ?child skos:broader ?c }
+           }`
+        );
+        const leafConcepts = parseInt(leafResult.rows[0]?.n ?? "0", 10);
+
+        // 4. Flat suspects: many altLabels, no narrower
+        const flatResult = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <${SKOS}>
+           SELECT ?c ?label (COUNT(?alt) AS ?altCount) WHERE {
+             ?c a skos:Concept ;
+                skos:prefLabel ?label ;
+                skos:altLabel ?alt .
+             FILTER NOT EXISTS { ?c skos:narrower ?child }
+             FILTER NOT EXISTS { ?child2 skos:broader ?c }
+             FILTER(LANG(?label) = "en")
+           }
+           GROUP BY ?c ?label
+           HAVING (COUNT(?alt) >= ${flat_suspect_threshold})
+           ORDER BY DESC(COUNT(?alt))`
+        );
+
+        // 5. Orphan concepts
+        const orphanResult = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <${SKOS}>
+           SELECT ?c ?label WHERE {
+             ?c a skos:Concept .
+             OPTIONAL { ?c skos:prefLabel ?label . FILTER(LANG(?label) = "en") }
+             FILTER NOT EXISTS { ?c skos:broader ?parent }
+             FILTER NOT EXISTS { ?c skos:topConceptOf ?scheme }
+           }`
+        );
+
+        // 6. Missing @en prefLabel
+        const missingLangResult = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <${SKOS}>
+           SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE {
+             ?c a skos:Concept .
+             FILTER NOT EXISTS {
+               ?c skos:prefLabel ?l .
+               FILTER(LANG(?l) = "en")
+             }
+           }`
+        );
+        const missingLang = parseInt(missingLangResult.rows[0]?.n ?? "0", 10);
+
+        // 7. Hierarchy depth counts (depth 1 = topConcept, depth 2 = direct child, depth 3+ = deeper)
+        const depth1Result = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <${SKOS}>
+           SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE { ?c skos:topConceptOf ?s }`
+        );
+        const depth2Result = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <${SKOS}>
+           SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE {
+             ?c skos:broader ?parent .
+             ?parent skos:topConceptOf ?s .
+           }`
+        );
+        const depth3Result = await semaphore.kmmSparqlQuery(model_uri,
+          `PREFIX skos: <${SKOS}>
+           SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE {
+             ?c skos:broader ?parent .
+             ?parent skos:broader ?gp .
+             ?gp skos:topConceptOf ?s .
+           }`
+        );
+        const d1 = parseInt(depth1Result.rows[0]?.n ?? "0", 10);
+        const d2 = parseInt(depth2Result.rows[0]?.n ?? "0", 10);
+        const d3 = parseInt(depth3Result.rows[0]?.n ?? "0", 10);
+
+        // Build report
+        const lines: string[] = [
+          "TAXONOMY VALIDATION REPORT",
+          "─".repeat(50),
+          "",
+          `  Model:          ${model_uri}`,
+          `  Total concepts: ${totalConcepts}`,
+          `  Top concepts:   ${topConcepts}  (depth 1)`,
+          `  Depth 2:        ${d2} concepts`,
+          `  Depth 3+:       ${d3} concepts`,
+          `  Leaf concepts:  ${leafConcepts} (no children)`,
+          "",
+        ];
+
+        // Missing @en
+        if (missingLang === 0) {
+          lines.push("  ✓ All concepts have an @en skos:prefLabel");
+        } else {
+          lines.push(`  ✗ MISSING @en prefLabel: ${missingLang} concept(s) — will break CLS publishing`);
+        }
+
+        // Orphans
+        if (orphanResult.rows.length === 0) {
+          lines.push("  ✓ No orphan concepts (all have skos:broader or skos:topConceptOf)");
+        } else {
+          lines.push(`  ✗ ORPHAN concepts: ${orphanResult.rows.length} concept(s) with no broader/topConceptOf:`);
+          orphanResult.rows.slice(0, 10).forEach(r => {
+            lines.push(`      ${r.label ?? r.c}`);
+          });
+          if (orphanResult.rows.length > 10) lines.push(`      ... and ${orphanResult.rows.length - 10} more`);
+        }
+
+        // Flat suspects
+        lines.push("");
+        if (flatResult.rows.length === 0) {
+          lines.push(`  ✓ No flat suspects (no leaf concepts with ≥${flat_suspect_threshold} altLabels)`);
+        } else {
+          lines.push(`  ⚠ FLAT SUSPECTS (leaf concepts with ≥${flat_suspect_threshold} altLabels — possible anti-pattern):`);
+          lines.push("    These concepts have many altLabels but no narrower children.");
+          lines.push("    Consider: are any altLabels actually distinct sub-concepts that deserve their own skos:Concept?");
+          lines.push("");
+          flatResult.rows.forEach(r => {
+            lines.push(`      "${r.label}"  (${r.altCount} altLabels)`);
+          });
+        }
+
+        lines.push("");
+        lines.push("NEXT STEPS:");
+        if (missingLang > 0) {
+          lines.push(`  - Fix missing @en labels: use semaphore_concept_labels_update for each affected concept`);
+        }
+        if (orphanResult.rows.length > 0) {
+          lines.push(`  - Fix orphans: add skos:broader or skos:topConceptOf via semaphore_kmm_sparql_update`);
+        }
+        if (flatResult.rows.length > 0) {
+          lines.push(`  - Review flat suspects: refactor by adding skos:narrower sub-concepts where appropriate`);
+        }
+        if (missingLang === 0 && orphanResult.rows.length === 0) {
+          lines.push(`  - Taxonomy looks structurally sound — proceed with semaphore_publish`);
+        }
+
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_taxonomy_scaffold ───────────────────────────────────────────────
+  server.tool(
+    "semaphore_taxonomy_scaffold",
+    "Generate a properly structured SKOS Turtle skeleton for a new taxonomy, following best practices. " +
+    "Returns ready-to-load Turtle text that can be passed directly to semaphore_kmm_skos_load.\n\n" +
+    "WHAT THIS GENERATES:\n" +
+    "  - A skos:ConceptScheme with skos:hasTopConcept links\n" +
+    "  - Top-level concepts with skos:topConceptOf and skos:narrower links\n" +
+    "  - Narrower (child) concepts with skos:broader back-links\n" +
+    "  - Placeholder skos:definition on top concepts\n" +
+    "  - All labels tagged @en\n" +
+    "  - skos:altLabel stubs on child concepts (to be filled in with synonyms, NOT child names)\n\n" +
+    "SKOS BEST PRACTICES REMINDER:\n" +
+    "  ✓ skos:narrower/skos:broader = hierarchy (child concept IS-A parent)\n" +
+    "  ✓ skos:altLabel = synonyms/abbreviations for THAT concept only\n" +
+    "  ✗ Do NOT list narrower concept names as altLabels on the parent\n" +
+    "  ✓ Use skos:related for cross-cutting associations between sibling branches\n\n" +
+    "After generating, edit the Turtle to add meaningful altLabels to each child concept, " +
+    "then pass to semaphore_kmm_skos_load using the skos_content parameter.",
+    {
+      scheme_name: z.string().describe(
+        "Human-readable name for the concept scheme, e.g. 'AWS Services Taxonomy'."
+      ),
+      scheme_id: z.string().describe(
+        "CamelCase identifier for the scheme and namespace, e.g. 'AWSServices'. " +
+        "Used to build concept URIs like <ns:AWSServices> and <ns:EC2>."
+      ),
+      namespace: z.string().describe(
+        "Base namespace URI for the taxonomy, e.g. 'http://example.com/taxonomy/aws/'. " +
+        "Must end with '/' or '#'."
+      ),
+      top_concepts: z.array(z.object({
+        id: z.string().describe("CamelCase identifier for this top concept, e.g. 'Compute'."),
+        label: z.string().describe("Human-readable preferred label, e.g. 'Compute'."),
+        definition: z.string().optional().describe("Optional definition for this top concept."),
+        narrower: z.array(z.object({
+          id: z.string().describe("CamelCase identifier, e.g. 'EC2'."),
+          label: z.string().describe("Preferred label, e.g. 'Amazon EC2'."),
+          alt_labels: z.array(z.string()).optional().describe(
+            "Synonyms and abbreviations for THIS concept (not its children), e.g. ['EC2', 'Elastic Compute Cloud']."
+          ),
+        })).optional().describe("Narrower (child) concepts under this top concept."),
+      })).describe("Top-level concept definitions with optional narrower children."),
+    },
+    async ({ scheme_name, scheme_id, namespace, top_concepts }) => {
+      const ns = namespace.endsWith("/") || namespace.endsWith("#") ? namespace : namespace + "/";
+      const prefix = scheme_id.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+      const lines: string[] = [
+        `@prefix skos: <http://www.w3.org/2004/02/skos/core#> .`,
+        `@prefix ${prefix}: <${ns}> .`,
+        "",
+        `${prefix}:${scheme_id}Taxonomy a skos:ConceptScheme ;`,
+        `    skos:prefLabel "${scheme_name}"@en ;`,
+        `    skos:definition "Hierarchical taxonomy of ${scheme_name}"@en ;`,
+      ];
+
+      // hasTopConcept list
+      const topIds = top_concepts.map(tc => `${prefix}:${tc.id}`);
+      lines.push(`    skos:hasTopConcept ${topIds.join(", ")} .`);
+      lines.push("");
+
+      for (const tc of top_concepts) {
+        const narrowerIds = (tc.narrower ?? []).map(n => `${prefix}:${n.id}`);
+
+        lines.push(`# ── TOP CONCEPT: ${tc.label.toUpperCase()} ${"─".repeat(Math.max(0, 50 - tc.label.length))}`);
+        lines.push("");
+        lines.push(`${prefix}:${tc.id} a skos:Concept ;`);
+        lines.push(`    skos:inScheme ${prefix}:${scheme_id}Taxonomy ;`);
+        lines.push(`    skos:topConceptOf ${prefix}:${scheme_id}Taxonomy ;`);
+        lines.push(`    skos:prefLabel "${tc.label}"@en ;`);
+        if (tc.definition) {
+          lines.push(`    skos:definition "${tc.definition.replace(/"/g, '\\"')}"@en ;`);
+        } else {
+          lines.push(`    skos:definition "TODO: Add definition for ${tc.label}"@en ;`);
+        }
+        if (narrowerIds.length > 0) {
+          lines.push(`    skos:narrower ${narrowerIds.join(", ")} .`);
+        } else {
+          lines.push(`    skos:narrower ${prefix}:TODO_AddChildConcepts .  # Replace with actual narrower concepts`);
+        }
+        lines.push("");
+
+        for (const child of (tc.narrower ?? [])) {
+          const altLabels = (child.alt_labels ?? []).map(a => `"${a.replace(/"/g, '\\"')}"@en`);
+          lines.push(`${prefix}:${child.id} a skos:Concept ;`);
+          lines.push(`    skos:inScheme ${prefix}:${scheme_id}Taxonomy ;`);
+          lines.push(`    skos:broader ${prefix}:${tc.id} ;`);
+          lines.push(`    skos:prefLabel "${child.label}"@en ;`);
+          if (altLabels.length > 0) {
+            lines.push(`    skos:altLabel ${altLabels.join(", ")} .`);
+          } else {
+            lines.push(`    skos:altLabel "TODO: Add synonyms for ${child.label}"@en .  # Replace with real altLabels`);
+          }
+          lines.push("");
+        }
+      }
+
+      const turtle = lines.join("\n");
+      const conceptCount = top_concepts.length + top_concepts.reduce((sum, tc) => sum + (tc.narrower?.length ?? 0), 0);
+
+      const output = [
+        "TAXONOMY SCAFFOLD GENERATED",
+        "─".repeat(50),
+        "",
+        `  Scheme:        ${scheme_name}`,
+        `  Namespace:     ${ns}`,
+        `  Top concepts:  ${top_concepts.length}`,
+        `  Total concepts: ${conceptCount} (including ${conceptCount - top_concepts.length} narrower)`,
+        "",
+        "TURTLE CONTENT (pass to semaphore_kmm_skos_load as skos_content):",
+        "─".repeat(50),
+        turtle,
+        "─".repeat(50),
+        "",
+        "NEXT STEPS:",
+        "  1. Edit the Turtle above — fill in meaningful skos:altLabel synonyms on child concepts",
+        "  2. Add skos:related links for cross-cutting relationships between sibling branches",
+        "  3. Replace any TODO placeholders",
+        "  4. semaphore_kmm_skos_load  model_uri='<your-model>'  skos_content='<turtle above>'",
+        "  5. semaphore_taxonomy_validate  model_uri='<your-model>'  (check structure)",
+        "  6. semaphore_publish_config_fix_plain_skos  model_uri='<your-model>'",
+        "  7. semaphore_publish  model_uri='<your-model>'",
+      ];
+
+      return { content: [{ type: "text", text: output.join("\n") }] };
     }
   );
 }
