@@ -440,6 +440,50 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         lines.push("");
         if (pollResult.status === "COMPLETE") {
           lines.push("✓ Import COMPLETE");
+
+          // ── @en language tag check ──────────────────────────────────────────
+          // The Semaphore Publisher SPARQL uses FILTER(LANG(?prefLabel) = "en").
+          // If labels have no language tag (bare literals), 0 rules are published.
+          // Check now and warn with the fix command.
+          try {
+            const PREFIX = "PREFIX skos: <http://www.w3.org/2004/02/skos/core#> ";
+            const [totalRes, enRes] = await Promise.all([
+              semaphore.kmmSparqlQuery(model_uri,
+                PREFIX + "SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ?s a skos:Concept }"),
+              semaphore.kmmSparqlQuery(model_uri,
+                PREFIX + "SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ?s a skos:Concept ; skos:prefLabel ?l FILTER(LANG(?l) = \"en\") }"),
+            ]);
+            const totalConcepts = parseInt(totalRes?.rows?.[0]?.n ?? "0", 10);
+            const enConcepts    = parseInt(enRes?.rows?.[0]?.n ?? "0", 10);
+            lines.push("");
+            lines.push(`LABEL LANGUAGE CHECK: ${enConcepts}/${totalConcepts} concepts have @en prefLabel`);
+            if (totalConcepts > 0 && enConcepts === 0) {
+              lines.push("⚠ WARNING: NO @en language tags found on prefLabels!");
+              lines.push("  The Semaphore Publisher SPARQL uses FILTER(LANG(?prefLabel) = \"en\"),");
+              lines.push("  so publishing this vocabulary AS-IS will produce only 1 rule (0 matches).");
+              lines.push("  Run this SPARQL UPDATE via semaphore_kmm_sparql_update to add @en tags:");
+              lines.push("");
+              lines.push("  -- Fix prefLabels:");
+              lines.push("  DELETE { ?c skos:prefLabel ?l }");
+              lines.push("  INSERT { ?c skos:prefLabel ?lEn }");
+              lines.push("  WHERE  { ?c skos:prefLabel ?l . FILTER(LANG(?l) = \"\") . BIND(STRLANG(?l,\"en\") AS ?lEn) }");
+              lines.push("");
+              lines.push("  -- Fix altLabels:");
+              lines.push("  DELETE { ?c skos:altLabel ?l }");
+              lines.push("  INSERT { ?c skos:altLabel ?lEn }");
+              lines.push("  WHERE  { ?c skos:altLabel ?l . FILTER(LANG(?l) = \"\") . BIND(STRLANG(?l,\"en\") AS ?lEn) }");
+              lines.push("");
+              lines.push("  After running the updates, re-run semaphore_publish.");
+            } else if (totalConcepts > 0 && enConcepts < totalConcepts) {
+              lines.push(`⚠  ${totalConcepts - enConcepts} concept(s) still lack @en prefLabel — those will not be classified.`);
+            } else if (enConcepts > 0) {
+              lines.push("✓ All concepts have @en prefLabel — ready for publish.");
+            }
+          } catch {
+            // Non-fatal: SPARQL check failure should not block the success response
+            lines.push("  (Could not perform @en label check — verify manually with semaphore_kmm_sparql)");
+          }
+
           lines.push("");
           lines.push("NEXT STEPS:");
           lines.push(`  1. Fix plain SKOS config (for plain skos:prefLabel vocabularies):`);

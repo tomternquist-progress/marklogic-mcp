@@ -99,18 +99,19 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
   // ── flux_import ──────────────────────────────────────────────────────────────
   server.tool(
     "flux_import",
-    "Import data into MarkLogic using Flux. The FIRST-CHOICE tool for any bulk or URL-based data loading task — prefer this over ml_eval_javascript or ml_document_put for anything beyond ~5 documents.\n\nCAP ABILITIES: bulk-import, http-fetch, csv, tsv, json, json-lines, parquet, avro, orc, jdbc, s3, zip-extract, gzip-extract, tde-generation, column-mapping, headerless-csv, uri-template, rdf-turtle, rdf-ntriples, rdf-jsonld\n\nUSE THIS TOOL WHEN:\n- Loading data from an HTTP/HTTPS URL (open data portals, Socrata, GDELT, government datasets)\n- Importing CSV, TSV, JSON-Lines, Parquet, Avro, ORC, or MLCP archives (compressed or not)\n- Importing RDF files (Turtle, N-Triples, JSON-LD, RDF/XML) into named graphs — use subcommand='import-rdf-files'\n- Fetching from a JDBC database (PostgreSQL, MySQL, Oracle, SQL Server, etc.)\n- You need one MarkLogic document per source row/record\n- You want automatic TDE view generation (set generate_tde=true)\n- The source file has no header row — use column_names to inject field names\n- Batch size, thread count, or URI templates need configuring\n\nUSE ml_graph_put INSTEAD WHEN: you have a small RDF string (< ~1 MB) to load directly into a named graph without going through Flux.\nUSE ml_document_put INSTEAD WHEN: inserting fewer than ~10 individual documents, or writing a TDE template / SJS module to the Schemas or Modules database.\nUSE ml_eval_javascript INSTEAD WHEN: running server-side logic, calling MarkLogic built-ins, or custom in-database transforms — NOT for bulk insert.\n\nCANONICAL RECIPES:\n\n1. Import CSV from public URL with auto-TDE (most common):\n   subcommand=\"import-delimited-files\", http_url=\"https://example.com/data.csv\", collections=[\"my-data\"], generate_tde=true, tde_schema=\"myschema\", tde_view=\"myview\"\n\n2. Import Socrata open data — two valid options:\n   a) CSV (recommended for large imports): subcommand=\"import-delimited-files\", http_url=\"https://data.wa.gov/resource/abc.csv?$limit=50000\"\n   b) JSON resource API (returns proper objects): subcommand=\"import-files\", http_url=\"https://data.wa.gov/resource/abc.json?$limit=50000\"\n   WARNING: Use /resource/{id}.csv or /resource/{id}.json — NOT /rows.json (the Socrata bulk export). /rows.json returns array-of-arrays, not objects.\n\n3. Import headerless CSV (e.g. GDELT events — no column headers in source file):\n   subcommand=\"import-delimited-files\", http_url=\"https://...\", column_names=[\"Col1\",\"Col2\",...], extra_args=[\"--delimiter\",\"\\t\",\"--ignore-null-fields\"]\n\n4. Import from JDBC database:\n   subcommand=\"import-jdbc\", jdbc_url=\"jdbc:postgresql://host/db\", jdbc_driver=\"org.postgresql.Driver\", query=\"SELECT * FROM mytable\", collections=[\"my-data\"], generate_tde=true\n\n5. Import JSON or XML files from S3:\n   subcommand=\"import-files\", path=\"s3a://my-bucket/data/\", collections=[\"my-data\"]\n\n6. Import a Turtle/RDF file into a named graph:\n   subcommand=\"import-rdf-files\", http_url=\"https://example.org/data.ttl\", extra_args=[\"--graph\",\"http://example.org/mygraph\"]\n\nWARNING: Only the Socrata bulk export endpoint (/rows.json) returns array-of-arrays — avoid that. The resource API (/resource/{id}.csv or /resource/{id}.json?$limit=N) returns proper records and works correctly with flux_import.",
+    "Import data into MarkLogic using Flux. The FIRST-CHOICE tool for any bulk or URL-based data loading task — prefer this over ml_eval_javascript or ml_document_put for anything beyond ~5 documents.\n\nCAP ABILITIES: bulk-import, http-fetch, csv, tsv, json, json-lines, parquet, avro, orc, jdbc, s3, zip-extract, gzip-extract, tde-generation, column-mapping, headerless-csv, uri-template, rdf-turtle, rdf-ntriples, rdf-jsonld\n\nUSE THIS TOOL WHEN:\n- Loading data from an HTTP/HTTPS URL (open data portals, Socrata, GDELT, government datasets)\n- Importing CSV, TSV, JSON-Lines, Parquet, Avro, ORC, or MLCP archives (compressed or not)\n- Importing RDF files (Turtle, N-Triples, JSON-LD, RDF/XML) into named graphs — use subcommand='import-rdf-files'\n- Fetching from a JDBC database (PostgreSQL, MySQL, Oracle, SQL Server, etc.)\n- You need one MarkLogic document per source row/record\n- You want automatic TDE view generation (set generate_tde=true)\n- The source file has no header row — use column_names to inject field names\n- Batch size, thread count, or URI templates need configuring\n\nUSE ml_graph_put INSTEAD WHEN: you have a small RDF string (< ~1 MB) to load directly into a named graph without going through Flux.\nUSE ml_document_put INSTEAD WHEN: inserting fewer than ~10 individual documents, or writing a TDE template / SJS module to the Schemas or Modules database.\nUSE ml_eval_javascript INSTEAD WHEN: running server-side logic, calling MarkLogic built-ins, or custom in-database transforms — NOT for bulk insert.\n\nCANONICAL RECIPES:\n\n1. Import CSV from public URL with auto-TDE (most common):\n   subcommand=\"import-delimited-files\", http_url=\"https://example.com/data.csv\", collections=[\"my-data\"], generate_tde=true, tde_schema=\"myschema\", tde_view=\"myview\"\n\n2. Import Socrata open data — two valid options:\n   a) CSV (recommended for large imports): subcommand=\"import-delimited-files\", http_url=\"https://data.wa.gov/resource/abc.csv?$limit=50000\"\n   b) JSON resource API (returns proper objects): subcommand=\"import-files\", http_url=\"https://data.wa.gov/resource/abc.json?$limit=50000\"\n   WARNING: Use /resource/{id}.csv or /resource/{id}.json — NOT /rows.json (the Socrata bulk export). /rows.json returns array-of-arrays, not objects.\n\n3. Import headerless CSV (e.g. GDELT events — no column headers in source file):\n   subcommand=\"import-delimited-files\", http_url=\"https://...\", column_names=[\"Col1\",\"Col2\",...], extra_args=[\"--delimiter\",\"\\t\",\"--ignore-null-fields\"]\n\n4. Import from JDBC database:\n   subcommand=\"import-jdbc\", jdbc_url=\"jdbc:postgresql://host/db\", jdbc_driver=\"org.postgresql.Driver\", query=\"SELECT * FROM mytable\", collections=[\"my-data\"], generate_tde=true\n\n5. Import JSON or XML files from S3:\n   subcommand=\"import-files\", path=\"s3a://my-bucket/data/\", collections=[\"my-data\"]\n\n6. Import a Turtle/RDF file into a named graph:\n   subcommand=\"import-rdf-files\", http_url=\"https://example.org/data.ttl\", extra_args=[\"--graph\",\"http://example.org/mygraph\"]\n\n7. Import a JSON file that contains an array of records (e.g. openFDA results[], Socrata .json export):\n   subcommand=\"import-aggregate-json-files\", http_url=\"https://api.fda.gov/drug/event.json?limit=100\", extra_args=[\"--json-lines\"], collections=[\"fda-adverse-events\"]\n   NOTE: 'import-aggregate-json-files --json-lines' unwraps a top-level JSON array into one document per element.\n   Use when the file is { \"results\": [...] } or an array [...] — NOT for JSONL (one object per line), which uses import-files.\n\nWARNING: Only the Socrata bulk export endpoint (/rows.json) returns array-of-arrays — avoid that. The resource API (/resource/{id}.csv or /resource/{id}.json?$limit=N) returns proper records and works correctly with flux_import.",
     {
       subcommand: z.enum([
         "import-delimited-files",
         "import-files",
+        "import-aggregate-json-files",
         "import-parquet-files",
         "import-avro-files",
         "import-orc-files",
         "import-jdbc",
         "import-mlcp-archive",
         "import-rdf-files",
-      ]).describe("Flux import subcommand"),
+      ]).describe("Flux import subcommand. Use 'import-aggregate-json-files' when a single JSON file contains an array of records (e.g. openFDA results[], Socrata JSON). Use 'import-files' for JSONL (one object per line) or single-object JSON files."),
       path: z.string().optional().describe("Local path or S3 URI (s3a://bucket/key) to read from. For import-jdbc, omit this. Use http_url instead to download from a URL first."),
       http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals). NOTE: The URL must be reachable from the flux runner host, not your local machine. .gz files are passed to Flux as-is and decompressed by Spark natively. ZIP (.zip) files are automatically extracted by the runner — all files inside the ZIP are extracted to a temp directory and that directory is passed as --path. WARNING: Socrata /rows.json endpoints return an array-of-arrays format (not an array of objects) — use /rows.csv with import-delimited-files instead for one-document-per-record imports."),
       collections: z.array(z.string()).optional().describe("MarkLogic collections to assign to imported documents"),
@@ -541,7 +542,7 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
     "batching, parallel execution, and error recovery — a single xdmp.invoke transaction times out on large\n" +
     "collections (> ~1 000 docs).\n\n" +
     "TWO-PHASE PATTERN (required for scale) — always split into two modules:\n\n" +
-    "  PHASE 1 — READER MODULE (read_module parameter, --read-documents-javascript):\n" +
+    "  PHASE 1 — READER (read_module parameter → --read-invoke, OR collections → --read-javascript inline):\n" +
     "  Collects the URIs/IRIs that Flux will distribute across threads. No declareUpdate().\n" +
     "  Must return a Sequence or Array of URI strings.\n" +
     "    'use strict';\n" +
@@ -549,22 +550,33 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
     "    var GRAPH = 'http://example.org/graph';\n" +
     "    var rows = sem.sparql('SELECT DISTINCT ?s FROM NAMED <' + GRAPH + '> WHERE { GRAPH <' + GRAPH + '> { ?s a ?type } }');\n" +
     "    Array.from(rows).map(function(r) { return String(r.s); });\n\n" +
-    "  PHASE 2 — TRANSFORM MODULE (invoke_module parameter, --invoke):\n" +
-    "  Receives ONE URI per invocation injected by Flux. Writes exactly one output document.\n" +
+    "  PHASE 2 — TRANSFORM MODULE (invoke_module parameter → --write-invoke):\n" +
+    "  Receives ONE URI per invocation in external variable 'URI' (Flux flag: --external-variable-name URI).\n" +
+    "  Must start with declareUpdate() and wrap code in an IIFE to allow early returns.\n" +
     "    'use strict';\n" +
     "    declareUpdate(); // must be at the TOP of the file\n" +
-    "    var URI; // injected by Flux — one URI/IRI from the reader module\n" +
-    "    // ... SPARQL scoped to URI, build entity doc ...\n" +
-    "    xdmp.documentInsert(outputUri, doc, { permissions: [...], collections: [...] });\n\n" +
+    "    var URI; // injected by Flux via --external-variable-name URI\n" +
+    "    (function run() {\n" +
+    "      var doc = cts.doc(URI).toObject();\n" +
+    "      if (!doc) { return; } // bare return only works inside a function — IIFE required\n" +
+    "      // ... build transformed doc ...\n" +
+    "      xdmp.documentInsert(URI, doc, { permissions: xdmp.documentGetPermissions(URI),\n" +
+    "                                      collections: Array.from(xdmp.documentGetCollections(URI)) });\n" +
+    "    })();\n\n" +
+    "MODULE CONSTRAINTS:\n" +
+    "  - Top-level bare 'return' is a SyntaxError in strict-mode SJS — always wrap in an IIFE\n" +
+    "  - batch_size defaults to 1 — each invoke gets exactly one URI in the 'URI' variable\n" +
+    "  - With batch_size > 1 multiple URIs are joined by --external-variable-delimiter (\\n by default);\n" +
+    "    the module must split them. Keep batch_size=1 unless you handle splitting explicitly.\n\n" +
     "WHY TWO MODULES MATTER:\n" +
     "  A monolithic script that queries ALL subjects and iterates them in one transaction will hit\n" +
     "  MarkLogic's transaction timeout (default 600 s) on any non-trivial dataset and cannot use\n" +
     "  Flux's parallel threads. The two-phase split lets Flux distribute work across thread_count\n" +
     "  threads with batch_size URIs per transaction — the only approach that scales.\n\n" +
     "WORKFLOW:\n" +
-    "1. Write the reader module to Modules DB: ml_document_put (database='Modules').\n" +
-    "2. Write the transform module to Modules DB: ml_document_put (database='Modules').\n" +
-    "3. Call flux_reprocess with read_module + invoke_module (no --collections needed when using a reader).\n\n" +
+    "1. Write the transform module to Modules DB: ml_document_put (database='Modules').\n" +
+    "2. Optionally write a reader module to Modules DB for custom URI selection logic.\n" +
+    "3. Call flux_reprocess with invoke_module + (collections OR read_module).\n\n" +
     "RDF USE CASE — building hybrid entity documents from a named graph:\n" +
     "  Reader: SPARQL SELECT DISTINCT ?subject → returns subject IRIs as array.\n" +
     "  Transform: receives one IRI as URI, SPARQL for that subject's predicates, writes one JSON\n" +
@@ -577,9 +589,9 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
     "  This applies to every optional predicate (skos:broader, dcterms:description, owl:sameAs, etc.).\n" +
     "  Empty-string values pollute search indexes, break range queries, and create misleading TDE rows.",
     {
-      invoke_module: z.string().describe("URI of the transform module in the Modules database (Phase 2). Receives one URI per invocation via the injected 'var URI' variable. e.g. /transforms/build-entity.sjs"),
-      read_module: z.string().optional().describe("URI of the reader/collector module in the Modules database (Phase 1, --read-documents-javascript). Must return a Sequence or Array of URI strings. Use this instead of 'collections' when URIs come from SPARQL or custom logic rather than an existing collection. e.g. /transforms/gather-subject-uris.sjs"),
-      collections: z.array(z.string()).optional().describe("Reprocess documents in these collections (Phase 1 alternative to read_module — use when the URIs to reprocess already exist as MarkLogic documents in a known collection)"),
+      invoke_module: z.string().describe("URI of the transform module in the Modules database (Phase 2, --write-invoke). Receives one URI per invocation via the injected 'var URI' variable (Flux flag: --external-variable-name URI). e.g. /transforms/build-entity.sjs"),
+      read_module: z.string().optional().describe("URI of the reader/collector module in the Modules database (Phase 1, --read-invoke). Must return a Sequence or Array of URI strings. Use this instead of 'collections' when URIs come from SPARQL or custom logic rather than an existing collection. e.g. /transforms/gather-subject-uris.sjs"),
+      collections: z.array(z.string()).optional().describe("Reprocess documents in these collections (Phase 1 alternative to read_module — generates --read-javascript with cts.uris(). Use when the URIs to reprocess already exist as MarkLogic documents in a known collection)"),
       query: z.string().optional().describe("CTS query to select documents to reprocess (Phase 1 alternative to read_module)"),
       database: z.string().optional().describe("MarkLogic database (defaults to configured database)"),
       thread_count: z.number().int().positive().optional().describe("Parallel threads — set to 4–16 for large datasets; each thread processes batch_size URIs per transaction"),
@@ -596,11 +608,18 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "reprocess",
         "--connection-string", flux.connectionString(database),
         "--auth-type", flux.authType,
-        "--invoke", invoke_module,
+        "--write-invoke", invoke_module,
+        "--external-variable-name", "URI",
       ];
 
-      if (read_module) args.push("--read-documents-javascript", read_module);
-      if (collections?.length) args.push("--collections", collections.join(","));
+      if (read_module) args.push("--read-invoke", read_module);
+      if (collections?.length) {
+        // flux reprocess does not support --collections; generate inline --read-javascript using cts.uris()
+        const colQuery = collections.length === 1
+          ? `cts.collectionQuery(${JSON.stringify(collections[0])})`
+          : `cts.orQuery([${collections.map(c => `cts.collectionQuery(${JSON.stringify(c)})`).join(",")}])`;
+        args.push("--read-javascript", `cts.uris(null,null,${colQuery})`);
+      }
       if (query) args.push("--query", query);
       if (thread_count) args.push("--thread-count", String(thread_count));
       if (batch_size) args.push("--batch-size", String(batch_size));
