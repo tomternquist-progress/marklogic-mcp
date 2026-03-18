@@ -99,7 +99,7 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
   // ── flux_import ──────────────────────────────────────────────────────────────
   server.tool(
     "flux_import",
-    "Import data into MarkLogic using Flux. The FIRST-CHOICE tool for any bulk or URL-based data loading task — prefer this over ml_eval_javascript or ml_document_put for anything beyond ~5 documents.\n\nCAP ABILITIES: bulk-import, http-fetch, csv, tsv, json, json-lines, parquet, avro, orc, jdbc, s3, zip-extract, gzip-extract, tde-generation, column-mapping, headerless-csv, uri-template, rdf-turtle, rdf-ntriples, rdf-jsonld\n\nUSE THIS TOOL WHEN:\n- Loading data from an HTTP/HTTPS URL (open data portals, Socrata, GDELT, government datasets)\n- Importing CSV, TSV, JSON-Lines, Parquet, Avro, ORC, or MLCP archives (compressed or not)\n- Importing RDF files (Turtle, N-Triples, JSON-LD, RDF/XML) into named graphs — use subcommand='import-rdf-files'\n- Fetching from a JDBC database (PostgreSQL, MySQL, Oracle, SQL Server, etc.)\n- You need one MarkLogic document per source row/record\n- You want automatic TDE view generation (set generate_tde=true)\n- The source file has no header row — use column_names to inject field names\n- Batch size, thread count, or URI templates need configuring\n\nUSE ml_graph_put INSTEAD WHEN: you have a small RDF string (< ~1 MB) to load directly into a named graph without going through Flux.\nUSE ml_document_put INSTEAD WHEN: inserting fewer than ~10 individual documents, or writing a TDE template / SJS module to the Schemas or Modules database.\nUSE ml_eval_javascript INSTEAD WHEN: running server-side logic, calling MarkLogic built-ins, or custom in-database transforms — NOT for bulk insert.\n\nCANONICAL RECIPES:\n\n1. Import CSV from public URL with auto-TDE (most common):\n   subcommand=\"import-delimited-files\", http_url=\"https://example.com/data.csv\", collections=[\"my-data\"], generate_tde=true, tde_schema=\"myschema\", tde_view=\"myview\"\n\n2. Import Socrata open data — two valid options:\n   a) CSV (recommended for large imports): subcommand=\"import-delimited-files\", http_url=\"https://data.wa.gov/resource/abc.csv?$limit=50000\"\n   b) JSON resource API (returns proper objects): subcommand=\"import-files\", http_url=\"https://data.wa.gov/resource/abc.json?$limit=50000\"\n   WARNING: Use /resource/{id}.csv or /resource/{id}.json — NOT /rows.json (the Socrata bulk export). /rows.json returns array-of-arrays, not objects.\n\n3. Import headerless CSV (e.g. GDELT events — no column headers in source file):\n   subcommand=\"import-delimited-files\", http_url=\"https://...\", column_names=[\"Col1\",\"Col2\",...], extra_args=[\"--delimiter\",\"\\t\",\"--ignore-null-fields\"]\n\n4. Import from JDBC database:\n   subcommand=\"import-jdbc\", jdbc_url=\"jdbc:postgresql://host/db\", jdbc_driver=\"org.postgresql.Driver\", query=\"SELECT * FROM mytable\", collections=[\"my-data\"], generate_tde=true\n\n5. Import JSON or XML files from S3:\n   subcommand=\"import-files\", path=\"s3a://my-bucket/data/\", collections=[\"my-data\"]\n\n6. Import a Turtle/RDF file into a named graph:\n   subcommand=\"import-rdf-files\", http_url=\"https://example.org/data.ttl\", extra_args=[\"--graph\",\"http://example.org/mygraph\"]\n\n7. Import a JSON file that contains an array of records (e.g. openFDA results[], Socrata .json export):\n   subcommand=\"import-aggregate-json-files\", http_url=\"https://api.fda.gov/drug/event.json?limit=100\", extra_args=[\"--json-lines\"], collections=[\"fda-adverse-events\"]\n   NOTE: 'import-aggregate-json-files --json-lines' unwraps a top-level JSON array into one document per element.\n   Use when the file is { \"results\": [...] } or an array [...] — NOT for JSONL (one object per line), which uses import-files.\n\nWARNING: Only the Socrata bulk export endpoint (/rows.json) returns array-of-arrays — avoid that. The resource API (/resource/{id}.csv or /resource/{id}.json?$limit=N) returns proper records and works correctly with flux_import.",
+    "Import data into MarkLogic using Flux. The FIRST-CHOICE tool for any bulk or URL-based data loading task — prefer this over ml_eval_javascript or ml_document_put for anything beyond ~5 documents.\n\nCAP ABILITIES: bulk-import, http-fetch, csv, tsv, json, json-lines, parquet, avro, orc, jdbc, s3, zip-extract, gzip-extract, tde-generation, column-mapping, headerless-csv, uri-template, rdf-turtle, rdf-ntriples, rdf-jsonld\n\nUSE THIS TOOL WHEN:\n- Loading data from an HTTP/HTTPS URL (open data portals, Socrata, GDELT, government datasets)\n- Importing CSV, TSV, JSON-Lines, Parquet, Avro, ORC, or MLCP archives (compressed or not)\n- Importing RDF files (Turtle, N-Triples, JSON-LD, RDF/XML) into named graphs — use subcommand='import-rdf-files'\n- Fetching from a JDBC database (PostgreSQL, MySQL, Oracle, SQL Server, etc.)\n- You need one MarkLogic document per source row/record\n- You want automatic TDE view generation (set generate_tde=true)\n- The source file has no header row — use column_names to inject field names\n- Batch size, thread count, or URI templates need configuring\n\nUSE ml_graph_put INSTEAD WHEN: you have a small RDF string (< ~1 MB) to load directly into a named graph without going through Flux.\nUSE ml_document_put INSTEAD WHEN: inserting fewer than ~10 individual documents, or writing a TDE template / SJS module to the Schemas or Modules database.\nUSE ml_eval_javascript INSTEAD WHEN: running server-side logic, calling MarkLogic built-ins, or custom in-database transforms — NOT for bulk insert.\n\nCANONICAL RECIPES:\n\n1. Import CSV from public URL with auto-TDE (most common):\n   subcommand=\"import-delimited-files\", http_url=\"https://example.com/data.csv\", collections=[\"my-data\"], generate_tde=true, tde_schema=\"myschema\", tde_view=\"myview\"\n\n2. Import Socrata open data — two valid options:\n   a) CSV (recommended for large imports): subcommand=\"import-delimited-files\", http_url=\"https://data.wa.gov/resource/abc.csv?$limit=50000\"\n   b) JSON resource API (returns proper objects): subcommand=\"import-files\", http_url=\"https://data.wa.gov/resource/abc.json?$limit=50000\"\n   WARNING: Use /resource/{id}.csv or /resource/{id}.json — NOT /rows.json (the Socrata bulk export). /rows.json returns array-of-arrays, not objects.\n\n3. Import headerless CSV (e.g. GDELT events — no column headers in source file):\n   subcommand=\"import-delimited-files\", http_url=\"https://...\", column_names=[\"Col1\",\"Col2\",...], extra_args=[\"--delimiter\",\"\\t\",\"--ignore-null-fields\"]\n\n4. Import from JDBC database:\n   subcommand=\"import-jdbc\", jdbc_url=\"jdbc:postgresql://host/db\", jdbc_driver=\"org.postgresql.Driver\", query=\"SELECT * FROM mytable\", collections=[\"my-data\"], generate_tde=true\n\n5. Import JSON or XML files from S3:\n   subcommand=\"import-files\", path=\"s3a://my-bucket/data/\", collections=[\"my-data\"]\n\n6. Import a Turtle/RDF file into a named graph:\n   subcommand=\"import-rdf-files\", http_url=\"https://example.org/data.ttl\", extra_args=[\"--graph\",\"http://example.org/mygraph\"]\n\n7. Import a JSON file that contains an array of records OR a JSONL file (one object per line):\n   Both cases use subcommand=\"import-aggregate-json-files\":\n   a) Nested JSON array (e.g. openFDA {\"results\":[...]}, Socrata .json export):\n      subcommand=\"import-aggregate-json-files\", http_url=\"https://api.fda.gov/drug/event.json?limit=100\", collections=[\"fda-events\"]\n   b) JSONL / JSON Lines (one JSON object per line — the format written by Python scripts fetching API data):\n      subcommand=\"import-aggregate-json-files\", path=\"/tmp/data.jsonl\", extra_args=[\"--json-lines\"], uri_template=\"/data/{id}.json\", collections=[\"my-data\"]\n   NOTE: import-files treats each line as a separate file URI — it does NOT parse JSON inside lines. Always use import-aggregate-json-files for multi-record JSON files.\n\nWARNING: Only the Socrata bulk export endpoint (/rows.json) returns array-of-arrays — avoid that. The resource API (/resource/{id}.csv or /resource/{id}.json?$limit=N) returns proper records and works correctly with flux_import.",
     {
       subcommand: z.enum([
         "import-delimited-files",
@@ -134,8 +134,14 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "When true, automatically injects Semaphore Classification Server flags into the Flux command " +
         "(--classifier-host, --classifier-port, --classifier-path /) so that every imported document " +
         "is classified at ingest time. Requires SEMAPHORE_HOST (and optionally SEMAPHORE_SCS_PORT) " +
-        "to be configured in the MCP server .env. For bulk classification this is the most efficient " +
-        "approach — Flux calls the SCS inline without a separate reprocess step.\n\n" +
+        "to be configured in the MCP server .env.\n\n" +
+        "FLUX-FIRST PRINCIPLE: This is the preferred approach for classification — Flux classifies " +
+        "every document inline during import with no separate reprocess step needed. Works with all " +
+        "import subcommands including import-aggregate-json-files --json-lines.\n\n" +
+        "TARGETING A SPECIFIC TAXONOMY: By default (--classifier-path /), Flux sends each document " +
+        "to all active publish sets — results from every loaded taxonomy appear in the META array. " +
+        "To restrict classification to a single taxonomy, set classifier_path to /<publishSetName> " +
+        "(e.g. '/softwareengineering'). Use semaphore_publish_sets to list available names.\n\n" +
         "CLASSIFICATION OUTPUT STRUCTURE: Semaphore adds a nested object to each document:\n" +
         "  classification.STRUCTUREDDOCUMENT.META[]  — array of {name, value, id, score}\n" +
         "  name = taxonomy class (e.g. 'IPTCMediaTopics-http://cv.iptc.org/newscodes/mediatopic/')\n" +
@@ -147,8 +153,15 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "    parent field 'section': '../../../../section'\n" +
         "  Direct META element fields: 'name', 'value', 'id', 'score' (declare score as float, not string)"
       ),
+      classifier_path: z.string().optional().describe(
+        "CLS URL path for Flux classification. Only used when classify_with_semaphore=true. " +
+        "Default: '/' (all active publish sets). " +
+        "Set to '/<publishSetName>' to restrict classification to a single taxonomy — " +
+        "e.g. '/softwareengineering' classifies only against the SoftwareEngineering ruleset. " +
+        "Publish set names are lowercase model names — use semaphore_publish_sets to list them."
+      ),
     },
-    async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore }) => {
+    async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore, classifier_path }) => {
       // Validate and convert permissions
       let fluxPermissions: string | undefined;
       if (permissions) {
@@ -267,10 +280,11 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
             isError: true,
           };
         }
+        const clsPath = classifier_path ?? "/";
         args.push(
           "--classifier-host", semaphore.scsHost,
           "--classifier-port", String(semaphore.scsPort),
-          "--classifier-path", "/"
+          "--classifier-path", clsPath
         );
         // --classifier-http is required when the CLS endpoint is plain HTTP (not HTTPS)
         if (!semaphore.baseUrl.startsWith("https")) {
@@ -564,10 +578,25 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
     "                                      collections: Array.from(xdmp.documentGetCollections(URI)) });\n" +
     "    })();\n\n" +
     "MODULE CONSTRAINTS:\n" +
+    "  ⚠ declareUpdate() POSITION: must be the very first statement in the file, BEFORE any function\n" +
+    "    or IIFE. Placing it inside an IIFE compiles without error but the transaction is never marked\n" +
+    "    as an update — xdmp.documentInsert() calls silently do nothing. Always write it at the top:\n" +
+    "      WRONG:  (function run() { declareUpdate(); ... })();\n" +
+    "      CORRECT: declareUpdate(); (function run() { ... })();\n" +
     "  - Top-level bare 'return' is a SyntaxError in strict-mode SJS — always wrap in an IIFE\n" +
+    "  - 'var URI' must be declared at the top level of the module (not inside the IIFE) — Flux injects\n" +
+    "    the value via --external-variable-name. Do NOT use 'external.URI' (only works in certain\n" +
+    "    invocation contexts; fails with ReferenceError when called from xdmp.invoke() in eval).\n" +
     "  - batch_size defaults to 1 — each invoke gets exactly one URI in the 'URI' variable\n" +
     "  - With batch_size > 1 multiple URIs are joined by --external-variable-delimiter (\\n by default);\n" +
     "    the module must split them. Keep batch_size=1 unless you handle splitting explicitly.\n\n" +
+    "TESTING A MODULE BEFORE BATCH RUN:\n" +
+    "  You cannot test reprocess modules via xdmp.invoke() in ml_eval_javascript — 'var URI' and\n" +
+    "  'external.URI' are not populated in that context. Test by running flux_reprocess on a single\n" +
+    "  URI using a read-javascript that returns one item:\n" +
+    "    read_module: omit, collections: omit\n" +
+    "    extra_args: [\"--read-javascript\", \"Sequence.from(['/path/to/one/doc.json'])\"]\n" +
+    "  Then check the document with ml_document_get before running the full collection.\n\n" +
     "WHY TWO MODULES MATTER:\n" +
     "  A monolithic script that queries ALL subjects and iterates them in one transaction will hit\n" +
     "  MarkLogic's transaction timeout (default 600 s) on any non-trivial dataset and cannot use\n" +
@@ -600,10 +629,21 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       classify_with_semaphore: z.boolean().optional().describe(
         "When true, automatically injects Semaphore Classification Server flags " +
         "(--classifier-host, --classifier-port, --classifier-path /) so that every reprocessed document " +
-        "is classified as part of the reprocess pipeline. Requires SEMAPHORE_HOST to be configured."
+        "is classified as part of the reprocess pipeline. Requires SEMAPHORE_HOST to be configured.\n\n" +
+        "NOTE — ALL ACTIVE RULESETS: Flux sends each document to the CLS and gets results from every " +
+        "published taxonomy. Classification is stored in classification.STRUCTUREDDOCUMENT.META[]. " +
+        "If you only need one taxonomy or want a custom document structure (e.g. seClassification.topCategory), " +
+        "call the CLS directly from your SJS transform module instead of using this flag."
+      ),
+      classifier_path: z.string().optional().describe(
+        "CLS URL path for Flux classification. Only used when classify_with_semaphore=true. " +
+        "Default: '/' (all active publish sets). " +
+        "Set to '/<publishSetName>' to restrict classification to a single taxonomy — " +
+        "e.g. '/softwareengineering' classifies only against the SoftwareEngineering ruleset. " +
+        "Publish set names are lowercase model names — use semaphore_publish_sets to list them."
       ),
     },
-    async ({ invoke_module, read_module, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore }) => {
+    async ({ invoke_module, read_module, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore, classifier_path }) => {
       const args: string[] = [
         "reprocess",
         "--connection-string", flux.connectionString(database),
@@ -641,10 +681,11 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
             isError: true,
           };
         }
+        const clsPath = classifier_path ?? "/";
         args.push(
           "--classifier-host", semaphore.scsHost,
           "--classifier-port", String(semaphore.scsPort),
-          "--classifier-path", "/"
+          "--classifier-path", clsPath
         );
         // --classifier-http is required when the CLS endpoint is plain HTTP (not HTTPS)
         if (!semaphore.baseUrl.startsWith("https")) {

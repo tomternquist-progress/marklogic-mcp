@@ -945,13 +945,15 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "  - Verifying that a publish set produces the expected categories\n" +
     "  - Designing the MarkLogic document model for storing classification results\n\n" +
     "FOR BULK CLASSIFICATION (preferred for production):\n" +
-    "  Use flux_import with extra_args to classify every document at ingest time:\n" +
-    "    extra_args: [\"--classifier-host\", \"<host>\", \"--classifier-port\", \"<port>\",\n" +
-    "                 \"--classifier-path\", \"/\", \"--classifier-http\"]\n" +
-    "  Add --classifier-http when the CLS endpoint is plain HTTP (not HTTPS).\n" +
-    "  Or use flux_reprocess with an SJS transform — but note that xdmp.httpPost() from MarkLogic\n" +
-    "  pods may be blocked by Kubernetes network policy from reaching the CLS. Prefer Flux or\n" +
-    "  pre-classify from the application tier.\n\n" +
+    "  Use flux_import with classify_with_semaphore=true (or classifier_path) to classify every document at ingest time:\n" +
+    "    classify_with_semaphore: true               — uses all active publish sets (all taxonomies)\n" +
+    "    classify_with_semaphore: true, classifier_path: '/softwareengineering'  — single taxonomy only\n" +
+    "  The classifier_path value (Flux --classifier-path flag) selects the publish set via URL path:\n" +
+    "    \"/\"                    → all active publish sets (default)\n" +
+    "    \"/softwareengineering\" → only the 'softwareengineering' publish set\n" +
+    "  NOTE: For semaphore_classify, publish set selection uses the multipart 'publish_set' form field,\n" +
+    "  not the URL path — the URL-path approach does not filter when called directly.\n" +
+    "  Publish set names are lowercase model names — use semaphore_publish_sets to list them.\n\n" +
     "THRESHOLD GUIDANCE:\n" +
     "  Default threshold is 48. Score range is 0–100.\n" +
     "  Use threshold=0 to see all candidate categories regardless of confidence.\n" +
@@ -967,8 +969,14 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "Minimum score (0–100) for a category to be included. Default: 0 (return all candidates). " +
         "The SCS default threshold is 48 — use 0 here to see all results for exploration."
       ),
+      publish_set: z.string().optional().describe(
+        "Optional publish set name to restrict classification to a single taxonomy " +
+        "(e.g. 'softwareengineering', 'unescothesaurus'). When omitted, all active publish sets " +
+        "are used and results from every loaded taxonomy appear in the output. " +
+        "Use semaphore_publish_sets to list available names."
+      ),
     },
-    async ({ content, threshold }) => {
+    async ({ content, threshold, publish_set }) => {
       if (!semaphore.configured) {
         return {
           content: [{ type: "text", text: "Semaphore is not configured. Set SEMAPHORE_URL in the MCP server .env." }],
@@ -976,7 +984,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         };
       }
       try {
-        const result = await semaphore.classify(content, threshold ?? 0);
+        const result = await semaphore.classify(content, threshold ?? 0, publish_set);
         const cats = result.categories;
 
         if (cats.length === 0) {
