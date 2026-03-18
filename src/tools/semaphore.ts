@@ -510,47 +510,62 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         if (pollResult.status === "COMPLETE") {
           lines.push("✓ Import COMPLETE");
 
-          // ── @en language tag check ──────────────────────────────────────────
-          // The Semaphore Publisher SPARQL uses FILTER(LANG(?prefLabel) = "en").
-          // If labels have no language tag (bare literals), 0 rules are published.
-          // Check now and warn with the fix command.
+          // ── Language tag check ──────────────────────────────────────────────
+          // Detect which language the vocabulary uses, then verify all concepts
+          // have a prefLabel in that language. Bare (untagged) literals will
+          // produce 0 rules when the publisher SPARQL filters by language.
           try {
             const PREFIX = "PREFIX skos: <http://www.w3.org/2004/02/skos/core#> ";
-            const [totalRes, enRes] = await Promise.all([
+            // Find the dominant prefLabel language in the imported data
+            const langRes = await semaphore.kmmSparqlQuery(model_uri,
+              PREFIX + "SELECT (LANG(?l) AS ?lang) (COUNT(?l) AS ?n) WHERE { ?s a skos:Concept ; skos:prefLabel ?l } GROUP BY LANG(?l) ORDER BY DESC(COUNT(?l)) LIMIT 5"
+            );
+            const langRows = langRes?.rows ?? [];
+            const dominantLang = langRows.find(r => r.lang && r.lang !== "")?.lang ?? null;
+            const untaggedCount = parseInt(langRows.find(r => !r.lang || r.lang === "")?.n ?? "0", 10);
+
+            const [totalRes, taggedRes] = await Promise.all([
               semaphore.kmmSparqlQuery(model_uri,
                 PREFIX + "SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ?s a skos:Concept }"),
-              semaphore.kmmSparqlQuery(model_uri,
-                PREFIX + "SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ?s a skos:Concept ; skos:prefLabel ?l FILTER(LANG(?l) = \"en\") }"),
+              dominantLang
+                ? semaphore.kmmSparqlQuery(model_uri,
+                    PREFIX + `SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ?s a skos:Concept ; skos:prefLabel ?l FILTER(LANG(?l) = "${dominantLang}") }`)
+                : Promise.resolve({ rows: [{ n: "0" }] }),
             ]);
-            const totalConcepts = parseInt(totalRes?.rows?.[0]?.n ?? "0", 10);
-            const enConcepts    = parseInt(enRes?.rows?.[0]?.n ?? "0", 10);
+            const totalConcepts  = parseInt(totalRes?.rows?.[0]?.n ?? "0", 10);
+            const taggedConcepts = parseInt(taggedRes?.rows?.[0]?.n ?? "0", 10);
+
             lines.push("");
-            lines.push(`LABEL LANGUAGE CHECK: ${enConcepts}/${totalConcepts} concepts have @en prefLabel`);
-            if (totalConcepts > 0 && enConcepts === 0) {
-              lines.push("⚠ WARNING: NO @en language tags found on prefLabels!");
-              lines.push("  The Semaphore Publisher SPARQL uses FILTER(LANG(?prefLabel) = \"en\"),");
-              lines.push("  so publishing this vocabulary AS-IS will produce only 1 rule (0 matches).");
-              lines.push("  Run this SPARQL UPDATE via semaphore_kmm_sparql_update to add @en tags:");
+            if (dominantLang) {
+              lines.push(`LABEL LANGUAGE CHECK: ${taggedConcepts}/${totalConcepts} concepts have @${dominantLang} prefLabel`);
+              if (totalConcepts > 0 && taggedConcepts < totalConcepts) {
+                lines.push(`⚠  ${totalConcepts - taggedConcepts} concept(s) lack a @${dominantLang} prefLabel — those will not produce CLS rules.`);
+              } else if (taggedConcepts > 0) {
+                lines.push(`✓ All concepts have @${dominantLang} prefLabel — ready for publish.`);
+              }
+            } else if (untaggedCount > 0) {
+              lines.push(`LABEL LANGUAGE CHECK: ${totalConcepts} concept(s) have UNTAGGED prefLabels (no language tag)`);
+              lines.push("⚠ WARNING: Bare string literals found — no language tags on prefLabels!");
+              lines.push("  The Semaphore Publisher SPARQL filters by language, so bare literals will produce only 1 rule.");
+              lines.push("  Run this SPARQL UPDATE via semaphore_kmm_sparql_update to tag labels (replace 'en' with your language):");
               lines.push("");
               lines.push("  -- Fix prefLabels:");
               lines.push("  DELETE { ?c skos:prefLabel ?l }");
-              lines.push("  INSERT { ?c skos:prefLabel ?lEn }");
-              lines.push("  WHERE  { ?c skos:prefLabel ?l . FILTER(LANG(?l) = \"\") . BIND(STRLANG(?l,\"en\") AS ?lEn) }");
+              lines.push("  INSERT { ?c skos:prefLabel ?lTagged }");
+              lines.push("  WHERE  { ?c skos:prefLabel ?l . FILTER(LANG(?l) = \"\") . BIND(STRLANG(?l,\"en\") AS ?lTagged) }");
               lines.push("");
               lines.push("  -- Fix altLabels:");
               lines.push("  DELETE { ?c skos:altLabel ?l }");
-              lines.push("  INSERT { ?c skos:altLabel ?lEn }");
-              lines.push("  WHERE  { ?c skos:altLabel ?l . FILTER(LANG(?l) = \"\") . BIND(STRLANG(?l,\"en\") AS ?lEn) }");
+              lines.push("  INSERT { ?c skos:altLabel ?lTagged }");
+              lines.push("  WHERE  { ?c skos:altLabel ?l . FILTER(LANG(?l) = \"\") . BIND(STRLANG(?l,\"en\") AS ?lTagged) }");
               lines.push("");
               lines.push("  After running the updates, re-run semaphore_publish.");
-            } else if (totalConcepts > 0 && enConcepts < totalConcepts) {
-              lines.push(`⚠  ${totalConcepts - enConcepts} concept(s) still lack @en prefLabel — those will not be classified.`);
-            } else if (enConcepts > 0) {
-              lines.push("✓ All concepts have @en prefLabel — ready for publish.");
+            } else {
+              lines.push("LABEL LANGUAGE CHECK: no concepts found yet.");
             }
           } catch {
             // Non-fatal: SPARQL check failure should not block the success response
-            lines.push("  (Could not perform @en label check — verify manually with semaphore_kmm_sparql)");
+            lines.push("  (Could not perform label language check — verify manually with semaphore_kmm_sparql)");
           }
 
           lines.push("");
@@ -1082,7 +1097,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "Diagnose why a Semaphore taxonomy publish produced too few classification rules.\n\n" +
     "Compares three counts and flags any mismatch:\n" +
     "  • KMM concept count  — how many skos:Concept instances exist in the model (OE API)\n" +
-    "  • Labeled concept count — how many concepts have an English skos:prefLabel (SPARQL)\n" +
+    "  • Labeled concept count — how many concepts have a skos:prefLabel in the model's language (SPARQL)\n" +
     "  • CLS rule count     — how many rules are currently loaded in the Classification Server\n\n" +
     "A healthy publish of N concepts should load ~N rules. The classic failure mode is:\n" +
     "  KMM: 1392 concepts, Labels: 1391, CLS rules: 1\n" +
@@ -1095,8 +1110,12 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "KMM model URI to diagnose, e.g. 'model:IPTCMediaTopics'. " +
         "Get from semaphore_kmm_models_list."
       ),
+      language: z.string().optional().describe(
+        "BCP 47 language tag of the model's prefLabels, e.g. 'en', 'fr', 'de', 'nl'. " +
+        "If omitted, the dominant language is auto-detected from the model's existing prefLabels."
+      ),
     },
-    async ({ model_uri }) => {
+    async ({ model_uri, language }) => {
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -1114,23 +1133,38 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       const kmmCount = await semaphore.kmmConceptCount(model_uri);
       lines.push(`  KMM concept count (OE API):     ${kmmCount >= 0 ? kmmCount : "ERROR — could not query"}`);
 
-      // 2. Labeled concept count via SPARQL
+      // 2. Auto-detect or use supplied language, then count labeled concepts via SPARQL
+      let lang = language;
       let labelCount = -1;
       try {
         const modelName = model_uri.replace(/^model:/, "");
+        if (!lang) {
+          const langRes = await semaphore.kmmSparqlQuery(model_uri,
+            `PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+             SELECT (LANG(?l) AS ?lang) (COUNT(?l) AS ?n) WHERE {
+               GRAPH <urn:x-evn-master:${modelName}> {
+                 ?c a skos:Concept ; skos:prefLabel ?l .
+                 FILTER(LANG(?l) != "")
+               }
+             } GROUP BY LANG(?l) ORDER BY DESC(COUNT(?l)) LIMIT 1`
+          );
+          lang = langRes.rows[0]?.lang ?? "en";
+        }
         const r = await semaphore.kmmSparqlQuery(model_uri,
           `PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
            SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE {
              GRAPH <urn:x-evn-master:${modelName}> {
                ?c a skos:Concept ; skos:prefLabel ?l .
-               FILTER(LANG(?l) = "en")
+               FILTER(LANG(?l) = "${lang}")
              }
            }`
         );
         const n = r.rows[0]?.["n"];
         labelCount = n !== undefined ? parseInt(String(n), 10) : -1;
       } catch { /* ignore */ }
-      lines.push(`  English prefLabels (SPARQL):     ${labelCount >= 0 ? labelCount : "ERROR — could not query"}`);
+      const langLabel = lang ?? "en";
+      lines.push(`  Language:                       @${langLabel}${language ? "" : "  (auto-detected)"}`);
+      lines.push(`  Labeled concepts (SPARQL):      ${labelCount >= 0 ? labelCount : "ERROR — could not query"}`);
 
       // 3. CLS rule count
       const publishSetName = model_uri.replace(/^model:/, "").toLowerCase();
@@ -1156,7 +1190,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         lines.push(`    1. semaphore_publish_config_fix_plain_skos  model_uri="${model_uri}"`);
         lines.push(`    2. semaphore_publish  model_uri="${model_uri}"  wait_for_completion=true`);
       } else if (labelCount >= 0 && labelCount === 0 && kmmCount > 0) {
-        lines.push("✗ PROBLEM DETECTED: " + kmmCount + " concepts exist but none have English prefLabels.");
+        lines.push("✗ PROBLEM DETECTED: " + kmmCount + " concepts exist but none have @" + langLabel + " prefLabels.");
         lines.push("  Check the language tags on your skos:prefLabel triples.");
         lines.push("  Run: semaphore_kmm_sparql to inspect what LANG() values are present:");
         lines.push(`    model_uri="${model_uri}"`);
@@ -1559,25 +1593,49 @@ LIMIT 500`;
     "  2. Flat suspects — concepts that have many altLabels (≥5) but NO skos:narrower children;\n" +
     "     these are candidates for anti-pattern refactoring (child names stuffed as altLabels)\n" +
     "  3. Orphan concepts — concepts with no skos:broader and not declared skos:topConceptOf\n" +
-    "  4. Missing @en labels — concepts lacking an English skos:prefLabel (breaks CLS publishing)\n" +
+    "  4. Missing prefLabels in the model's language — concepts lacking a skos:prefLabel in the expected language (breaks CLS publishing)\n" +
     "  5. Duplicate altLabels — the same altLabel string appearing on multiple concepts\n" +
     "  6. Hierarchy depth — how many concepts exist at each depth level (1 = top, 2 = children, etc.)\n\n" +
-    "Run this after semaphore_kmm_skos_load and before semaphore_publish to catch issues early.",
+    "Run this after semaphore_kmm_skos_load and before semaphore_publish to catch issues early.\n\n" +
+    "LANGUAGE: If omitted, the dominant prefLabel language is auto-detected from the model. " +
+    "Override with the 'language' parameter if the auto-detection picks the wrong tag (e.g. if the model " +
+    "has a mix of languages and you want to validate a specific one).",
     {
       model_uri: z.string().describe(
         "KMM model URI to validate, e.g. 'model:AWSServices'. " +
         "Get from semaphore_kmm_models_list."
       ),
+      language: z.string().optional().describe(
+        "BCP 47 language tag to validate prefLabels against, e.g. 'en', 'fr', 'de', 'nl'. " +
+        "If omitted, the dominant language is auto-detected from the model's existing prefLabels."
+      ),
       flat_suspect_threshold: z.number().int().min(1).optional().describe(
         "Minimum number of altLabels on a concept before it is flagged as a flat suspect. Default: 5."
       ),
     },
-    async ({ model_uri, flat_suspect_threshold = 5 }) => {
+    async ({ model_uri, language, flat_suspect_threshold = 5 }) => {
       if (!semaphore.kmmBaseUrl) {
         return { content: [{ type: "text", text: "KMM is not configured." }], isError: true };
       }
       try {
         const SKOS = "http://www.w3.org/2004/02/skos/core#";
+
+        // Auto-detect dominant prefLabel language if not specified
+        let lang = language;
+        if (!lang) {
+          try {
+            const langRes = await semaphore.kmmSparqlQuery(model_uri,
+              `PREFIX skos: <${SKOS}>
+               SELECT (LANG(?l) AS ?lang) (COUNT(?l) AS ?n) WHERE {
+                 ?c a skos:Concept ; skos:prefLabel ?l .
+                 FILTER(LANG(?l) != "")
+               } GROUP BY LANG(?l) ORDER BY DESC(COUNT(?l)) LIMIT 1`
+            );
+            lang = langRes.rows[0]?.lang ?? "en";
+          } catch {
+            lang = "en";
+          }
+        }
 
         // 1. Total concepts
         const totalResult = await semaphore.kmmSparqlQuery(model_uri,
@@ -1613,7 +1671,7 @@ LIMIT 500`;
                 skos:altLabel ?alt .
              FILTER NOT EXISTS { ?c skos:narrower ?child }
              FILTER NOT EXISTS { ?child2 skos:broader ?c }
-             FILTER(LANG(?label) = "en")
+             FILTER(LANG(?label) = "${lang}")
            }
            GROUP BY ?c ?label
            HAVING (COUNT(?alt) >= ${flat_suspect_threshold})
@@ -1625,20 +1683,20 @@ LIMIT 500`;
           `PREFIX skos: <${SKOS}>
            SELECT ?c ?label WHERE {
              ?c a skos:Concept .
-             OPTIONAL { ?c skos:prefLabel ?label . FILTER(LANG(?label) = "en") }
+             OPTIONAL { ?c skos:prefLabel ?label . FILTER(LANG(?label) = "${lang}") }
              FILTER NOT EXISTS { ?c skos:broader ?parent }
              FILTER NOT EXISTS { ?c skos:topConceptOf ?scheme }
            }`
         );
 
-        // 6. Missing @en prefLabel
+        // 6. Missing prefLabel in model language
         const missingLangResult = await semaphore.kmmSparqlQuery(model_uri,
           `PREFIX skos: <${SKOS}>
            SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE {
              ?c a skos:Concept .
              FILTER NOT EXISTS {
                ?c skos:prefLabel ?l .
-               FILTER(LANG(?l) = "en")
+               FILTER(LANG(?l) = "${lang}")
              }
            }`
         );
@@ -1674,6 +1732,7 @@ LIMIT 500`;
           "─".repeat(50),
           "",
           `  Model:          ${model_uri}`,
+          `  Language:       @${lang}${language ? "" : "  (auto-detected)"}`,
           `  Total concepts: ${totalConcepts}`,
           `  Top concepts:   ${topConcepts}  (depth 1)`,
           `  Depth 2:        ${d2} concepts`,
@@ -1682,11 +1741,11 @@ LIMIT 500`;
           "",
         ];
 
-        // Missing @en
+        // Missing prefLabel in model language
         if (missingLang === 0) {
-          lines.push("  ✓ All concepts have an @en skos:prefLabel");
+          lines.push(`  ✓ All concepts have a @${lang} skos:prefLabel`);
         } else {
-          lines.push(`  ✗ MISSING @en prefLabel: ${missingLang} concept(s) — will break CLS publishing`);
+          lines.push(`  ✗ MISSING @${lang} prefLabel: ${missingLang} concept(s) — will break CLS publishing`);
         }
 
         // Orphans
@@ -1717,7 +1776,7 @@ LIMIT 500`;
         lines.push("");
         lines.push("NEXT STEPS:");
         if (missingLang > 0) {
-          lines.push(`  - Fix missing @en labels: use semaphore_concept_labels_update for each affected concept`);
+          lines.push(`  - Fix missing @${lang} labels: use semaphore_concept_labels_update for each affected concept`);
         }
         if (orphanResult.rows.length > 0) {
           lines.push(`  - Fix orphans: add skos:broader or skos:topConceptOf via semaphore_kmm_sparql_update`);
@@ -1746,7 +1805,7 @@ LIMIT 500`;
     "  - Top-level concepts with skos:topConceptOf and skos:narrower links\n" +
     "  - Narrower (child) concepts with skos:broader back-links\n" +
     "  - Placeholder skos:definition on top concepts\n" +
-    "  - All labels tagged @en\n" +
+    "  - All labels tagged with the specified language (default: @en)\n" +
     "  - skos:altLabel stubs on child concepts (to be filled in with synonyms, NOT child names)\n\n" +
     "SKOS BEST PRACTICES REMINDER:\n" +
     "  ✓ skos:narrower/skos:broader = hierarchy (child concept IS-A parent)\n" +
@@ -1767,6 +1826,10 @@ LIMIT 500`;
         "Base namespace URI for the taxonomy, e.g. 'http://example.com/taxonomy/aws/'. " +
         "Must end with '/' or '#'."
       ),
+      language: z.string().optional().describe(
+        "BCP 47 language tag for all generated labels, e.g. 'en', 'fr', 'de', 'nl'. " +
+        "Defaults to 'en'. Use the primary language of the taxonomy content."
+      ),
       top_concepts: z.array(z.object({
         id: z.string().describe("CamelCase identifier for this top concept, e.g. 'Compute'."),
         label: z.string().describe("Human-readable preferred label, e.g. 'Compute'."),
@@ -1780,17 +1843,18 @@ LIMIT 500`;
         })).optional().describe("Narrower (child) concepts under this top concept."),
       })).describe("Top-level concept definitions with optional narrower children."),
     },
-    async ({ scheme_name, scheme_id, namespace, top_concepts }) => {
+    async ({ scheme_name, scheme_id, namespace, language, top_concepts }) => {
       const ns = namespace.endsWith("/") || namespace.endsWith("#") ? namespace : namespace + "/";
       const prefix = scheme_id.toLowerCase().replace(/[^a-z0-9]/g, "");
+      const lang = language ?? "en";
 
       const lines: string[] = [
         `@prefix skos: <http://www.w3.org/2004/02/skos/core#> .`,
         `@prefix ${prefix}: <${ns}> .`,
         "",
         `${prefix}:${scheme_id}Taxonomy a skos:ConceptScheme ;`,
-        `    skos:prefLabel "${scheme_name}"@en ;`,
-        `    skos:definition "Hierarchical taxonomy of ${scheme_name}"@en ;`,
+        `    skos:prefLabel "${scheme_name}"@${lang} ;`,
+        `    skos:definition "Hierarchical taxonomy of ${scheme_name}"@${lang} ;`,
       ];
 
       // hasTopConcept list
@@ -1806,11 +1870,11 @@ LIMIT 500`;
         lines.push(`${prefix}:${tc.id} a skos:Concept ;`);
         lines.push(`    skos:inScheme ${prefix}:${scheme_id}Taxonomy ;`);
         lines.push(`    skos:topConceptOf ${prefix}:${scheme_id}Taxonomy ;`);
-        lines.push(`    skos:prefLabel "${tc.label}"@en ;`);
+        lines.push(`    skos:prefLabel "${tc.label}"@${lang} ;`);
         if (tc.definition) {
-          lines.push(`    skos:definition "${tc.definition.replace(/"/g, '\\"')}"@en ;`);
+          lines.push(`    skos:definition "${tc.definition.replace(/"/g, '\\"')}"@${lang} ;`);
         } else {
-          lines.push(`    skos:definition "TODO: Add definition for ${tc.label}"@en ;`);
+          lines.push(`    skos:definition "TODO: Add definition for ${tc.label}"@${lang} ;`);
         }
         if (narrowerIds.length > 0) {
           lines.push(`    skos:narrower ${narrowerIds.join(", ")} .`);
@@ -1820,15 +1884,15 @@ LIMIT 500`;
         lines.push("");
 
         for (const child of (tc.narrower ?? [])) {
-          const altLabels = (child.alt_labels ?? []).map(a => `"${a.replace(/"/g, '\\"')}"@en`);
+          const altLabels = (child.alt_labels ?? []).map(a => `"${a.replace(/"/g, '\\"')}"@${lang}`);
           lines.push(`${prefix}:${child.id} a skos:Concept ;`);
           lines.push(`    skos:inScheme ${prefix}:${scheme_id}Taxonomy ;`);
           lines.push(`    skos:broader ${prefix}:${tc.id} ;`);
-          lines.push(`    skos:prefLabel "${child.label}"@en ;`);
+          lines.push(`    skos:prefLabel "${child.label}"@${lang} ;`);
           if (altLabels.length > 0) {
             lines.push(`    skos:altLabel ${altLabels.join(", ")} .`);
           } else {
-            lines.push(`    skos:altLabel "TODO: Add synonyms for ${child.label}"@en .  # Replace with real altLabels`);
+            lines.push(`    skos:altLabel "TODO: Add synonyms for ${child.label}"@${lang} .  # Replace with real altLabels`);
           }
           lines.push("");
         }
