@@ -89,10 +89,11 @@ export class SearchClient {
     return normalizeSearchResponse(raw);
   }
 
-  async suggest(partialQ: string, options?: string, database?: string): Promise<string[]> {
-    const qp: Record<string, string> = { "partial-q": partialQ, format: "json" };
+  async suggest(partialQ: string, options?: string, database?: string, limit?: number): Promise<string[]> {
+    const qp: Record<string, string | number> = { "partial-q": partialQ, format: "json" };
     if (options) qp.options = options;
     if (database) qp.database = database;
+    if (limit != null) qp.limit = limit;
     const raw = await this.base.get<{ suggestions: string[] }>(this.base.http, "/v1/suggest", { params: qp });
     return raw?.suggestions ?? [];
   }
