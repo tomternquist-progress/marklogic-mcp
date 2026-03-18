@@ -8,7 +8,7 @@ MARKLOGIC MCP — PROBLEM-FIRST DECISION GUIDE
 
 READ THIS BEFORE CALLING ANY TOOL.
 
-This server exposes 50+ tools across 10 domains. Reaching for the wrong tool wastes
+This server exposes 70+ tools across 12 domains. Reaching for the wrong tool wastes
 round-trips and produces inferior results. Use the decision principles and
 problem→solution table below to identify the MarkLogic-native approach first, then
 select the matching tools.
@@ -478,12 +478,12 @@ KUBERNETES NETWORK NOTE:
 
 ── TOOL GROUPS AT A GLANCE ─────────────────────────────────────────────────────
 
-Admin (7):     ml_cluster_status, ml_databases_list, ml_database_properties,
+Admin (8):     ml_cluster_status, ml_databases_list, ml_database_properties,
                ml_database_statistics, ml_forests_list, ml_servers_list,
-               ml_server_properties
+               ml_server_properties, ml_reindex_status
 
-Documents (2–5, config-dependent):
-               ml_document_get, ml_document_list
+Documents (3–6, config-dependent):
+               ml_document_get, ml_document_list, ml_document_sample
                [write-enabled] ml_document_put, ml_document_delete, ml_document_patch
 
 Search (5):    ml_search, ml_search_qbe, ml_values_query, ml_suggest,
@@ -494,7 +494,7 @@ Schema (6):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
 
 Eval (3, gated): ml_eval_javascript, ml_eval_xquery, ml_invoke_module
 
-Graph (2):     ml_sparql_query, ml_graphs_list
+Graph (3):     ml_sparql_query, ml_graphs_list, ml_graph_put
 
 QuickSight (4): ml_aggregate_query, ml_timeseries_query, ml_export_tabular,
                 ml_facets_query
@@ -508,12 +508,17 @@ FastTrack (2–4, config-dependent):
                ml_search_options_list, ml_search_options_get
                [write-enabled] ml_search_options_put, ml_search_options_delete
 
-Semaphore (12): semaphore_status, semaphore_studio_status,
+Semaphore (18): semaphore_status, semaphore_studio_status,
                 semaphore_publish_sets, semaphore_classes, semaphore_classify,
-                semaphore_kmm_models_list, semaphore_kmm_model_create,
+                semaphore_cls_languages, semaphore_kmm_models_list,
+                semaphore_kmm_model_create, semaphore_kmm_model_delete,
                 semaphore_kmm_skos_load, semaphore_kmm_sparql,
                 semaphore_kmm_sparql_update, semaphore_publish,
-                semaphore_publish_config_fix_plain_skos
+                semaphore_publish_config_fix_plain_skos,
+                semaphore_publish_diagnose, semaphore_concept_search,
+                semaphore_concept_get, semaphore_concept_labels_update
+
+Planning (1):  ml_suggest_approach
 
 Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                tde_schema_generator, rest_extension_generator,

@@ -82,19 +82,56 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
       to: z.string().optional().describe("End datetime (ISO 8601)"),
       database: z.string().optional().describe("Database name"),
     },
-    async ({ collection, time_values_name, filter_query, database }) => {
+    async ({ collection, time_values_name, bucket, filter_query, from, to, database }) => {
       try {
         const values = await clients.search.values(time_values_name, {
           query: filter_query,
-          limit: 1000,
+          limit: 10000,
           direction: "ascending",
           database,
         });
+
+        // Filter by date range if from/to specified
+        let filtered = values.values;
+        if (from || to) {
+          const fromDate = from ? new Date(from).getTime() : -Infinity;
+          const toDate = to ? new Date(to).getTime() : Infinity;
+          filtered = filtered.filter((v) => {
+            const t = new Date(String(v.value)).getTime();
+            return !isNaN(t) && t >= fromDate && t <= toDate;
+          });
+        }
+
+        // Bucket values if requested
+        let points: Array<{ bucket: string; count: number; frequency_sum: number }> | typeof filtered;
+        if (bucket) {
+          const bucketMap = new Map<string, { count: number; frequency_sum: number }>();
+          for (const v of filtered) {
+            const d = new Date(String(v.value));
+            if (isNaN(d.getTime())) continue;
+            const key = bucketDate(d, bucket);
+            const existing = bucketMap.get(key);
+            if (existing) {
+              existing.count += 1;
+              existing.frequency_sum += v.frequency;
+            } else {
+              bucketMap.set(key, { count: 1, frequency_sum: v.frequency });
+            }
+          }
+          points = Array.from(bucketMap.entries())
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([key, val]) => ({ bucket: key, count: val.count, frequency_sum: val.frequency_sum }));
+        } else {
+          points = filtered;
+        }
+
         const result = {
           collection,
           timeField: time_values_name,
-          points: values.values,
-          total: values.total,
+          bucket: bucket ?? "none",
+          dateRange: { from: from ?? null, to: to ?? null },
+          points,
+          total: Array.isArray(points) ? points.length : 0,
         };
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
@@ -203,6 +240,38 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
       }
     }
   );
+}
+
+function bucketDate(d: Date, bucket: string): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  switch (bucket) {
+    case "hour":
+      return `${y}-${m}-${day}T${h}:00:00Z`;
+    case "day":
+      return `${y}-${m}-${day}`;
+    case "week": {
+      // ISO week: floor to Monday
+      const copy = new Date(d);
+      const dayOfWeek = copy.getUTCDay();
+      const diff = (dayOfWeek === 0 ? -6 : 1) - dayOfWeek;
+      copy.setUTCDate(copy.getUTCDate() + diff);
+      const wy = copy.getUTCFullYear();
+      const wm = String(copy.getUTCMonth() + 1).padStart(2, "0");
+      const wd = String(copy.getUTCDate()).padStart(2, "0");
+      return `${wy}-${wm}-${wd}`;
+    }
+    case "month":
+      return `${y}-${m}`;
+    case "quarter":
+      return `${y}-Q${Math.ceil((d.getUTCMonth() + 1) / 3)}`;
+    case "year":
+      return `${y}`;
+    default:
+      return `${y}-${m}-${day}`;
+  }
 }
 
 function getNestedValue(obj: Record<string, unknown>, path: string): unknown {

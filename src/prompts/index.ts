@@ -634,29 +634,37 @@ List the MCP tools for the main task, in order:
 
 Available tools (use only these):
   Admin:      ml_cluster_status, ml_databases_list, ml_database_properties,
-              ml_database_statistics, ml_forests_list, ml_servers_list, ml_server_properties
-  Documents:  ml_document_get, ml_document_list, ml_document_put, ml_document_delete,
-              ml_document_patch
+              ml_database_statistics, ml_forests_list, ml_servers_list,
+              ml_server_properties, ml_reindex_status
+  Documents:  ml_document_get, ml_document_list, ml_document_sample, ml_document_put,
+              ml_document_delete, ml_document_patch
   Search:     ml_search, ml_search_qbe, ml_values_query, ml_suggest, ml_facets_query,
               ml_geospatial_search
   Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_indexes_list,
               ml_collections_list, ml_namespaces_list
   Eval:       ml_eval_javascript, ml_eval_xquery, ml_invoke_module
-  Graph:      ml_sparql_query, ml_graphs_list
+  Graph:      ml_sparql_query, ml_graphs_list, ml_graph_put
   QuickSight: ml_aggregate_query, ml_timeseries_query, ml_export_tabular, ml_facets_query
   Optic:      ml_optic_query, ml_views_list, ml_vector_search
   Flux:       flux_import, flux_export, flux_copy, flux_reprocess, flux_preview, flux_help,
               flux_status
+  FastTrack:  ml_search_options_list, ml_search_options_get, ml_search_options_put,
+              ml_search_options_delete
   Semaphore:  semaphore_status, semaphore_studio_status, semaphore_publish_sets,
-              semaphore_classes, semaphore_classify,
+              semaphore_classes, semaphore_classify, semaphore_cls_languages,
               semaphore_kmm_models_list, semaphore_kmm_model_create,
-              semaphore_kmm_skos_load, semaphore_kmm_sparql, semaphore_kmm_sparql_update,
-              semaphore_publish, semaphore_publish_config_fix_plain_skos
+              semaphore_kmm_model_delete, semaphore_kmm_skos_load,
+              semaphore_kmm_sparql, semaphore_kmm_sparql_update,
+              semaphore_publish, semaphore_publish_config_fix_plain_skos,
+              semaphore_publish_diagnose, semaphore_concept_search,
+              semaphore_concept_get, semaphore_concept_labels_update
+  Planning:   ml_suggest_approach
   Prompts:    uri_designer, xquery_function_generator, sjs_module_generator,
               tde_schema_generator, rest_extension_generator, structured_query_builder,
               optic_query_builder, sparql_query_builder, query_approach_advisor,
               data_modeling_advisor, data_import_advisor, project_setup_advisor,
               gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
+              fasttrack_search_designer, fasttrack_app_scaffold,
               semaphore_integration_advisor
 
 ## 5. PITFALLS TO AVOID
