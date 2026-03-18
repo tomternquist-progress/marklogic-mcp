@@ -176,9 +176,9 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
       options: z.string().optional().describe("Named search options node"),
       database: z.string().optional().describe("Database name"),
     },
-    async ({ partial_q, options, database }) => {
+    async ({ partial_q, limit, options, database }) => {
       try {
-        const suggestions = await clients.search.suggest(partial_q, options, database);
+        const suggestions = await clients.search.suggest(partial_q, options, database, limit);
         return { content: [{ type: "text", text: JSON.stringify(suggestions, null, 2) }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };

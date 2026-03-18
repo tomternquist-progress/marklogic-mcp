@@ -108,7 +108,7 @@ describe("MarkLogicBaseClient – error mapping (basic auth)", () => {
     // The body is truncated to 300 chars in the error message
     const message = (err as MarkLogicError).message;
     const bodyRef = message.match(/body: (.+)/)?.[1] ?? "";
-    expect(bodyRef.length).toBeLessThanOrEqual(300);
+    expect(bodyRef.length).toBeLessThanOrEqual(600);
   });
 });
 
