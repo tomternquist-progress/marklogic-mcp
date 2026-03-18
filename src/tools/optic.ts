@@ -142,9 +142,9 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
     {
       database: z.string().optional().describe("Database name (schemas are always read from the Schemas DB)"),
     },
-    async () => {
+    async ({ database }) => {
       try {
-        const views = await clients.schema.listViews();
+        const views = await clients.schema.listViews(database);
         if (views.length === 0) {
           return { content: [{ type: "text", text: "No TDE views found. Import data with generate_tde=true or install a TDE template via ml_document_put (database='Schemas', collection='http://marklogic.com/xdmp/tde')." }] };
         }

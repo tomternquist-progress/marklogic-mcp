@@ -428,8 +428,8 @@ export class SchemaClient {
    * List all schema.view pairs available for Optic queries by reading TDE templates
    * from the Schemas database and extracting their row definitions.
    */
-  async listViews(): Promise<ViewDescriptor[]> {
-    const uris = await this.getTdeSchemas() as string[];
+  async listViews(database?: string): Promise<ViewDescriptor[]> {
+    const uris = await this.getTdeSchemas(database) as string[];
     const views: ViewDescriptor[] = [];
 
     for (const uri of uris) {
