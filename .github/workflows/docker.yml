@@ -11,10 +11,32 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  # ── Tests ─────────────────────────────────────────────────────────────────────
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
   # ── MCP server image ─────────────────────────────────────────────────────────
   build-mcp:
     name: Build MCP server image
     runs-on: ubuntu-latest
+    needs: test
     permissions:
       contents: read
       packages: write
@@ -59,6 +81,7 @@ jobs:
   build-flux-runner:
     name: Build Flux runner image
     runs-on: ubuntu-latest
+    needs: test
     permissions:
       contents: read
       packages: write
