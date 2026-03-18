@@ -138,14 +138,10 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "FLUX-FIRST PRINCIPLE: This is the preferred approach for classification — Flux classifies " +
         "every document inline during import with no separate reprocess step needed. Works with all " +
         "import subcommands including import-aggregate-json-files --json-lines.\n\n" +
-        "ALL ACTIVE RULESETS — NO FILTERING: Flux always classifies against ALL active publish sets. " +
-        "The --classifier-path URL flag does NOT restrict results — CLS returns every matching taxonomy " +
-        "regardless of URL path. This is a confirmed CLS behaviour (verified by test: POST /softwareengineering " +
-        "returns UNESCO + SoftwareEngineering + AWS results identically to POST /). " +
-        "To get results from only one taxonomy, either: (a) use a flux_reprocess SJS module that calls " +
-        "CLS directly with the publish_set multipart form field — the ONLY mechanism that filters, or " +
-        "(b) accept all-taxonomy results and filter the META[] array in your application by checking " +
-        "the 'name' field prefix (e.g. name.startsWith('SoftwareEngineering-')).\n\n" +
+        "SCOPING TO SPECIFIC TAXONOMIES: Use classifier_publish_sets to restrict results to named " +
+        "publish sets (e.g. ['iptcmediatopics', 'unescothesaurus']). Flux injects " +
+        "--classifier-prop publish_set_name_list=iptcmediatopics|unescothesaurus so the CLS only " +
+        "returns results from those sets. Without this, all active publish sets are combined.\n\n" +
         "CLASSIFICATION OUTPUT STRUCTURE: Semaphore adds a nested object to each document:\n" +
         "  classification.STRUCTUREDDOCUMENT.META[]  — array of {name, value, id, score}\n" +
         "  name = taxonomy class (e.g. 'IPTCMediaTopics-http://cv.iptc.org/newscodes/mediatopic/')\n" +
@@ -157,15 +153,19 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "    parent field 'section': '../../../../section'\n" +
         "  Direct META element fields: 'name', 'value', 'id', 'score' (declare score as float, not string)"
       ),
+      classifier_publish_sets: z.array(z.string()).optional().describe(
+        "Restrict Flux classification to specific publish sets (e.g. ['iptcmediatopics', 'unescothesaurus']). " +
+        "Only used when classify_with_semaphore=true. Injects --classifier-prop publish_set_name_list=<pipe-separated> " +
+        "so the CLS returns results only from the named sets. " +
+        "Use semaphore_publish_sets to list available names (they are the lowercase model names). " +
+        "When omitted, all active publish sets are used — which produces noisy results as more models are added."
+      ),
       classifier_path: z.string().optional().describe(
         "CLS URL path for Flux classification. Only used when classify_with_semaphore=true. " +
-        "Default: '/'. WARNING: changing this path does NOT filter results to a single taxonomy — " +
-        "CLS ignores the URL path for filtering purposes (confirmed by test). " +
-        "All active publish sets are always returned. Leave as default '/' unless you have a specific " +
-        "reason to change the request path."
+        "Default: '/'. Note: the URL path does not filter results — use classifier_publish_sets for that."
       ),
     },
-    async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore, classifier_path }) => {
+    async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore, classifier_publish_sets, classifier_path }) => {
       // Validate and convert permissions
       let fluxPermissions: string | undefined;
       if (permissions) {
@@ -293,6 +293,10 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         // --classifier-http is required when the CLS endpoint is plain HTTP (not HTTPS)
         if (!semaphore.baseUrl.startsWith("https")) {
           args.push("--classifier-http");
+        }
+        // Scope to specific publish sets via --classifier-prop publish_set_name_list
+        if (classifier_publish_sets && classifier_publish_sets.length > 0) {
+          args.push("--classifier-prop", `publish_set_name_list=${classifier_publish_sets.join("|")}`);
         }
       }
 
@@ -634,20 +638,24 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "When true, automatically injects Semaphore Classification Server flags " +
         "(--classifier-host, --classifier-port, --classifier-path /) so that every reprocessed document " +
         "is classified as part of the reprocess pipeline. Requires SEMAPHORE_HOST to be configured.\n\n" +
-        "NOTE — ALL ACTIVE RULESETS, NO FILTERING: Flux classifies against ALL active publish sets. " +
-        "The --classifier-path URL flag does NOT restrict results (confirmed by test — URL path is " +
-        "ignored by CLS for filtering). Classification is stored in classification.STRUCTUREDDOCUMENT.META[]. " +
-        "If you only need one taxonomy or want a custom document structure (e.g. seClassification.topCategory), " +
-        "call the CLS directly from your SJS transform module using the publish_set multipart form field — " +
-        "that is the ONLY mechanism that actually filters to a single taxonomy."
+        "SCOPING TO SPECIFIC TAXONOMIES: Use classifier_publish_sets to restrict results to named " +
+        "publish sets. Flux injects --classifier-prop publish_set_name_list=<pipe-separated> so the " +
+        "CLS only returns results from those sets. Without this, all active publish sets are combined. " +
+        "Classification is stored in classification.STRUCTUREDDOCUMENT.META[]."
+      ),
+      classifier_publish_sets: z.array(z.string()).optional().describe(
+        "Restrict Flux classification to specific publish sets (e.g. ['iptcmediatopics', 'unescothesaurus']). " +
+        "Only used when classify_with_semaphore=true. Injects --classifier-prop publish_set_name_list=<pipe-separated> " +
+        "so the CLS returns results only from the named sets. " +
+        "Use semaphore_publish_sets to list available names (they are the lowercase model names). " +
+        "When omitted, all active publish sets are used."
       ),
       classifier_path: z.string().optional().describe(
         "CLS URL path for Flux classification. Only used when classify_with_semaphore=true. " +
-        "Default: '/'. WARNING: changing this path does NOT filter results to a single taxonomy — " +
-        "CLS ignores the URL path for filtering purposes (confirmed by test). Leave as default '/'."
+        "Default: '/'. Note: the URL path does not filter results — use classifier_publish_sets for that."
       ),
     },
-    async ({ invoke_module, read_module, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore, classifier_path }) => {
+    async ({ invoke_module, read_module, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore, classifier_publish_sets, classifier_path }) => {
       const args: string[] = [
         "reprocess",
         "--connection-string", flux.connectionString(database),
@@ -694,6 +702,10 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         // --classifier-http is required when the CLS endpoint is plain HTTP (not HTTPS)
         if (!semaphore.baseUrl.startsWith("https")) {
           args.push("--classifier-http");
+        }
+        // Scope to specific publish sets via --classifier-prop publish_set_name_list
+        if (classifier_publish_sets && classifier_publish_sets.length > 0) {
+          args.push("--classifier-prop", `publish_set_name_list=${classifier_publish_sets.join("|")}`);
         }
       }
 

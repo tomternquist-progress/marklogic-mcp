@@ -1625,28 +1625,30 @@ export class SemaphoreClient {
   /**
    * Classify text content.
    *
-   * @param content     Plain text or HTML to classify.
-   * @param threshold   Minimum score (0–100, default: 48). Lower = more results.
-   *                    Use 0 to return all candidates regardless of score.
-   * @param publishSet  Optional publish set name to restrict classification to a single
-   *                    taxonomy (e.g. "softwareengineering"). When omitted, all active
-   *                    publish sets are used. Passed as a multipart form field "publish_set"
-   *                    — the URL-path approach (POST /<publishSet>) does NOT filter results.
-   *                    For Flux bulk classification, use --classifier-path /<publishSet>.
+   * @param content      Plain text or HTML to classify.
+   * @param threshold    Minimum score (0–100, default: 48). Lower = more results.
+   *                     Use 0 to return all candidates regardless of score.
+   * @param publishSet   Restrict to a single publish set (e.g. "softwareengineering").
+   *                     Passed as a multipart form field "publish_set".
+   * @param publishSets  Restrict to multiple publish sets (e.g. ["iptcmediatopics", "unescothesaurus"]).
+   *                     Passed as "publish_set_name_list" (pipe-separated). Takes precedence over publishSet.
+   *                     When neither is supplied all active publish sets are used.
    */
   async classify(
     content: string,
     threshold = 48,
-    publishSet?: string
+    publishSet?: string,
+    publishSets?: string[]
   ): Promise<SemaphoreClassificationResult> {
     const fields: Array<{ name: string; value: string }> = [
       { name: "body", value: content },
       { name: "threshold", value: String(threshold) },
       { name: "singlearticle", value: "true" },
     ];
-    // publish_set as a multipart form field restricts classification to a single
-    // taxonomy. URL-path approach (POST /<publishSet>) does NOT filter; form field does.
-    if (publishSet) {
+    if (publishSets && publishSets.length > 0) {
+      // pipe-separated list filters to the specified publish sets
+      fields.push({ name: "publish_set_name_list", value: publishSets.join("|") });
+    } else if (publishSet) {
       fields.push({ name: "publish_set", value: publishSet });
     }
     const { body, contentType } = buildMultipart(fields);

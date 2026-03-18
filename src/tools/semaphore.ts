@@ -985,15 +985,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "  - Verifying that a publish set produces the expected categories\n" +
     "  - Designing the MarkLogic document model for storing classification results\n\n" +
     "FOR BULK CLASSIFICATION (preferred for production):\n" +
-    "  Use flux_import with classify_with_semaphore=true to classify every document at ingest time.\n" +
-    "  ⚠ IMPORTANT — NO TAXONOMY FILTERING IN FLUX: Flux always classifies against ALL active publish\n" +
-    "  sets. The --classifier-path URL flag does NOT restrict results (confirmed by test: CLS returns\n" +
-    "  all taxonomies regardless of URL path). To get results from a single taxonomy you have two options:\n" +
-    "    (a) AFTER Flux import: use a flux_reprocess SJS module that calls CLS directly with the\n" +
-    "        publish_set multipart form field — this is the ONLY mechanism that actually filters.\n" +
-    "        Example: fields.push({ name: 'publish_set', value: 'softwareengineering' })\n" +
-    "    (b) Accept all-taxonomy results and filter META[] by name prefix in your application.\n\n" +
-    "  This semaphore_classify tool uses the publish_set form field (correct filtering). " +
+    "  Use flux_import or flux_reprocess with classify_with_semaphore=true. To scope results to\n" +
+    "  specific taxonomies, pass classifier_publish_sets=[\"name1\",\"name2\"] — Flux injects\n" +
+    "  --classifier-prop publish_set_name_list=name1|name2 so the CLS only returns those sets.\n" +
     "  Publish set names are lowercase model names — use semaphore_publish_sets to list them.\n\n" +
     "THRESHOLD GUIDANCE:\n" +
     "  Default threshold is 48. Score range is 0–100.\n" +
@@ -1011,13 +1005,18 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "The SCS default threshold is 48 — use 0 here to see all results for exploration."
       ),
       publish_set: z.string().optional().describe(
-        "Optional publish set name to restrict classification to a single taxonomy " +
-        "(e.g. 'softwareengineering', 'unescothesaurus'). When omitted, all active publish sets " +
-        "are used and results from every loaded taxonomy appear in the output. " +
-        "Use semaphore_publish_sets to list available names."
+        "Restrict classification to a single publish set (e.g. 'iptcmediatopics'). " +
+        "Passed as the 'publish_set' CLS form field. Use publish_sets instead when you want " +
+        "results from several (but not all) taxonomies. Use semaphore_publish_sets to list available names."
+      ),
+      publish_sets: z.array(z.string()).optional().describe(
+        "Restrict classification to a specific list of publish sets (e.g. ['iptcmediatopics', 'unescothesaurus']). " +
+        "Passed as the 'publish_set_name_list' CLS form field (pipe-separated). " +
+        "Takes precedence over publish_set when both are provided. " +
+        "When omitted (and publish_set is also omitted), all active publish sets are used."
       ),
     },
-    async ({ content, threshold, publish_set }) => {
+    async ({ content, threshold, publish_set, publish_sets }) => {
       if (!semaphore.configured) {
         return {
           content: [{ type: "text", text: "Semaphore is not configured. Set SEMAPHORE_URL in the MCP server .env." }],
@@ -1025,7 +1024,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         };
       }
       try {
-        const result = await semaphore.classify(content, threshold ?? 0, publish_set);
+        const result = await semaphore.classify(content, threshold ?? 0, publish_set, publish_sets);
         const cats = result.categories;
 
         if (cats.length === 0) {
