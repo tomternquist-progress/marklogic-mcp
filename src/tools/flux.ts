@@ -138,10 +138,14 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "FLUX-FIRST PRINCIPLE: This is the preferred approach for classification — Flux classifies " +
         "every document inline during import with no separate reprocess step needed. Works with all " +
         "import subcommands including import-aggregate-json-files --json-lines.\n\n" +
-        "TARGETING A SPECIFIC TAXONOMY: By default (--classifier-path /), Flux sends each document " +
-        "to all active publish sets — results from every loaded taxonomy appear in the META array. " +
-        "To restrict classification to a single taxonomy, set classifier_path to /<publishSetName> " +
-        "(e.g. '/softwareengineering'). Use semaphore_publish_sets to list available names.\n\n" +
+        "ALL ACTIVE RULESETS — NO FILTERING: Flux always classifies against ALL active publish sets. " +
+        "The --classifier-path URL flag does NOT restrict results — CLS returns every matching taxonomy " +
+        "regardless of URL path. This is a confirmed CLS behaviour (verified by test: POST /softwareengineering " +
+        "returns UNESCO + SoftwareEngineering + AWS results identically to POST /). " +
+        "To get results from only one taxonomy, either: (a) use a flux_reprocess SJS module that calls " +
+        "CLS directly with the publish_set multipart form field — the ONLY mechanism that filters, or " +
+        "(b) accept all-taxonomy results and filter the META[] array in your application by checking " +
+        "the 'name' field prefix (e.g. name.startsWith('SoftwareEngineering-')).\n\n" +
         "CLASSIFICATION OUTPUT STRUCTURE: Semaphore adds a nested object to each document:\n" +
         "  classification.STRUCTUREDDOCUMENT.META[]  — array of {name, value, id, score}\n" +
         "  name = taxonomy class (e.g. 'IPTCMediaTopics-http://cv.iptc.org/newscodes/mediatopic/')\n" +
@@ -155,10 +159,10 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
       ),
       classifier_path: z.string().optional().describe(
         "CLS URL path for Flux classification. Only used when classify_with_semaphore=true. " +
-        "Default: '/' (all active publish sets). " +
-        "Set to '/<publishSetName>' to restrict classification to a single taxonomy — " +
-        "e.g. '/softwareengineering' classifies only against the SoftwareEngineering ruleset. " +
-        "Publish set names are lowercase model names — use semaphore_publish_sets to list them."
+        "Default: '/'. WARNING: changing this path does NOT filter results to a single taxonomy — " +
+        "CLS ignores the URL path for filtering purposes (confirmed by test). " +
+        "All active publish sets are always returned. Leave as default '/' unless you have a specific " +
+        "reason to change the request path."
       ),
     },
     async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore, classifier_path }) => {
@@ -630,17 +634,17 @@ export function registerFluxTools(server: McpServer, clients: MarkLogicClients):
         "When true, automatically injects Semaphore Classification Server flags " +
         "(--classifier-host, --classifier-port, --classifier-path /) so that every reprocessed document " +
         "is classified as part of the reprocess pipeline. Requires SEMAPHORE_HOST to be configured.\n\n" +
-        "NOTE — ALL ACTIVE RULESETS: Flux sends each document to the CLS and gets results from every " +
-        "published taxonomy. Classification is stored in classification.STRUCTUREDDOCUMENT.META[]. " +
+        "NOTE — ALL ACTIVE RULESETS, NO FILTERING: Flux classifies against ALL active publish sets. " +
+        "The --classifier-path URL flag does NOT restrict results (confirmed by test — URL path is " +
+        "ignored by CLS for filtering). Classification is stored in classification.STRUCTUREDDOCUMENT.META[]. " +
         "If you only need one taxonomy or want a custom document structure (e.g. seClassification.topCategory), " +
-        "call the CLS directly from your SJS transform module instead of using this flag."
+        "call the CLS directly from your SJS transform module using the publish_set multipart form field — " +
+        "that is the ONLY mechanism that actually filters to a single taxonomy."
       ),
       classifier_path: z.string().optional().describe(
         "CLS URL path for Flux classification. Only used when classify_with_semaphore=true. " +
-        "Default: '/' (all active publish sets). " +
-        "Set to '/<publishSetName>' to restrict classification to a single taxonomy — " +
-        "e.g. '/softwareengineering' classifies only against the SoftwareEngineering ruleset. " +
-        "Publish set names are lowercase model names — use semaphore_publish_sets to list them."
+        "Default: '/'. WARNING: changing this path does NOT filter results to a single taxonomy — " +
+        "CLS ignores the URL path for filtering purposes (confirmed by test). Leave as default '/'."
       ),
     },
     async ({ invoke_module, read_module, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore, classifier_path }) => {

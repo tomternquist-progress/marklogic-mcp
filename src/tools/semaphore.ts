@@ -945,14 +945,15 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "  - Verifying that a publish set produces the expected categories\n" +
     "  - Designing the MarkLogic document model for storing classification results\n\n" +
     "FOR BULK CLASSIFICATION (preferred for production):\n" +
-    "  Use flux_import with classify_with_semaphore=true (or classifier_path) to classify every document at ingest time:\n" +
-    "    classify_with_semaphore: true               — uses all active publish sets (all taxonomies)\n" +
-    "    classify_with_semaphore: true, classifier_path: '/softwareengineering'  — single taxonomy only\n" +
-    "  The classifier_path value (Flux --classifier-path flag) selects the publish set via URL path:\n" +
-    "    \"/\"                    → all active publish sets (default)\n" +
-    "    \"/softwareengineering\" → only the 'softwareengineering' publish set\n" +
-    "  NOTE: For semaphore_classify, publish set selection uses the multipart 'publish_set' form field,\n" +
-    "  not the URL path — the URL-path approach does not filter when called directly.\n" +
+    "  Use flux_import with classify_with_semaphore=true to classify every document at ingest time.\n" +
+    "  ⚠ IMPORTANT — NO TAXONOMY FILTERING IN FLUX: Flux always classifies against ALL active publish\n" +
+    "  sets. The --classifier-path URL flag does NOT restrict results (confirmed by test: CLS returns\n" +
+    "  all taxonomies regardless of URL path). To get results from a single taxonomy you have two options:\n" +
+    "    (a) AFTER Flux import: use a flux_reprocess SJS module that calls CLS directly with the\n" +
+    "        publish_set multipart form field — this is the ONLY mechanism that actually filters.\n" +
+    "        Example: fields.push({ name: 'publish_set', value: 'softwareengineering' })\n" +
+    "    (b) Accept all-taxonomy results and filter META[] by name prefix in your application.\n\n" +
+    "  This semaphore_classify tool uses the publish_set form field (correct filtering). " +
     "  Publish set names are lowercase model names — use semaphore_publish_sets to list them.\n\n" +
     "THRESHOLD GUIDANCE:\n" +
     "  Default threshold is 48. Score range is 0–100.\n" +
