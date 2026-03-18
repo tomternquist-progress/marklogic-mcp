@@ -313,7 +313,8 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "A model is the container for a taxonomy or ontology — it must exist before loading any SKOS content. " +
     "After creation, use semaphore_kmm_skos_load to populate it with concepts from a public RDF/SKOS URL.\n\n" +
     "Returns the new model URI (e.g. 'model:IPTCMediaTopics') which is required for semaphore_kmm_skos_load and semaphore_kmm_sparql.\n\n" +
-    "NEXT STEP: After creating a model, load taxonomy content with semaphore_kmm_skos_load, " +
+    "NEXT STEP: After creating a model, load taxonomy content with semaphore_kmm_skos_load " +
+    "(pass skos_content with the Turtle text for locally created taxonomies, or skos_url for public vocabulary endpoints). " +
     "then use semaphore_publish_config_fix_plain_skos (for plain skos:prefLabel vocabularies) and " +
     "semaphore_publish to build the CLS rule set. Use semaphore_classify to test results.",
     {
@@ -352,7 +353,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           description ? `  Description:       ${description}` : "",
           "",
           "NEXT STEPS:",
-          `  1. Load SKOS:       semaphore_kmm_skos_load  model_uri="${modelUri}"  skos_url="<rdf-url>"`,
+          `  1. Load SKOS:       semaphore_kmm_skos_load  model_uri="${modelUri}"`,
+          `                      skos_content="<turtle-or-rdf-text>"  (for locally created taxonomies — read file with Read tool)`,
+          `                      skos_url="<public-https-url>"        (for publicly reachable vocabulary endpoints only)`,
           `  2. Verify concepts: semaphore_kmm_sparql     model_uri="${modelUri}"`,
           `                      query: SELECT (COUNT(?s) AS ?n) WHERE { ?s a <http://www.w3.org/2004/02/skos/core#Concept> }`,
           "  3. Add sem:guid:    semaphore_kmm_sparql_update — add sem:guid to each concept (required for",
@@ -375,9 +378,21 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "semaphore_kmm_skos_load",
     "Import a SKOS taxonomy into an existing KMM model using the Studio backup/import API. " +
     "This mirrors exactly how Semaphore Studio UI imports a vocabulary file — the MCP server " +
-    "fetches the RDF file from the given URL and POSTs it to KMM as multipart/form-data. " +
+    "fetches the RDF file from the given URL (or uses inline content) and POSTs it to KMM as multipart/form-data. " +
     "This is the recommended approach for all external SKOS vocabularies (IPTC, EuroVoc, AGROVOC, etc.) " +
     "as it creates the correct model structure that the Semaphore Publisher can query for rule generation.\n\n" +
+    "IMPORTANT — USE skos_content FOR LOCALLY CREATED TAXONOMIES:\n" +
+    "  The MCP server is a remote process (not running on the same machine as the user).\n" +
+    "  When a taxonomy is written to a local file (e.g. /tmp/my_taxonomy.ttl), the MCP server\n" +
+    "  cannot reach it via localhost:PORT — use skos_content to pass the RDF text directly instead.\n" +
+    "  Read the file with the Read tool and pass its content as the skos_content parameter.\n" +
+    "  Use skos_url only for publicly reachable HTTP/HTTPS URLs (GitHub Gist, official vocabulary\n" +
+    "  endpoints like https://cv.iptc.org/..., etc.).\n\n" +
+    "WHY THIS TOOL (not semaphore_kmm_sparql_update) FOR LOADING VOCABULARIES:\n" +
+    "  semaphore_kmm_sparql_update can insert raw triples, but the publisher generates only 1 rule\n" +
+    "  because it bypasses Semaphore's OE (Ontology Engine) indexing. This tool uses\n" +
+    "  content=automatic which triggers full OE indexing — required for AllConcepts to enumerate\n" +
+    "  concepts at publish time. Always use this tool to load the initial vocabulary.\n\n" +
     "IMPORTANT — ASYNC:\n" +
     "  The import is asynchronous and may take 1-3 minutes for large vocabularies.\n" +
     "  The tool polls until complete (up to 5 minutes) and returns when done.\n\n" +
@@ -393,20 +408,30 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "KMM model URI to import into, e.g. 'model:IPTCMediaTopics'. " +
         "Get from semaphore_kmm_models_list or use the URI returned by semaphore_kmm_model_create."
       ),
-      skos_url: z.string().url().describe(
+      skos_url: z.string().url().optional().describe(
         "Public HTTP/HTTPS URL of the SKOS RDF file to fetch and import. " +
-        "The MCP server downloads this file and posts it to KMM. " +
+        "The MCP server downloads this from its own process — localhost URLs will NOT work because " +
+        "the MCP server is remote. Use only for publicly reachable URLs (GitHub Gist, official " +
+        "vocabulary endpoints, etc.). Mutually exclusive with skos_content. " +
         "Supports RDF/XML, Turtle (.ttl), N-Triples (.nt), and JSON-LD (.jsonld)."
+      ),
+      skos_content: z.string().optional().describe(
+        "Inline RDF/SKOS content as a string (Turtle, RDF/XML, or JSON-LD). " +
+        "Use this instead of skos_url when the taxonomy is in a local file or was just created. " +
+        "Read the file with the Read tool and pass its text here — the MCP server will upload it " +
+        "directly to KMM without any network fetch. Auto-detects format from content prefix " +
+        "(@prefix/@base → Turtle, { → JSON-LD, otherwise RDF/XML). " +
+        "Mutually exclusive with skos_url."
       ),
       format: z.string().optional().describe(
         "Override the RDF format MIME type (e.g. 'application/rdf+xml', 'text/turtle'). " +
-        "Auto-detected from Content-Type or URL extension if omitted."
+        "Auto-detected from Content-Type, URL extension, or content prefix if omitted."
       ),
       overwrite: z.boolean().optional().describe(
         "If true, replaces existing triples in the model. Default: false (adds to existing)."
       ),
     },
-    async ({ model_uri, skos_url, format, overwrite }) => {
+    async ({ model_uri, skos_url, skos_content, format, overwrite }) => {
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -419,16 +444,35 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           isError: true,
         };
       }
+      if (!skos_url && !skos_content) {
+        return {
+          content: [{ type: "text", text: "Either skos_url or skos_content must be provided." }],
+          isError: true,
+        };
+      }
+      if (skos_url && skos_content) {
+        return {
+          content: [{ type: "text", text: "Provide either skos_url or skos_content, not both." }],
+          isError: true,
+        };
+      }
       try {
         // Step 1: start the async import job
-        const jobId = await semaphore.kmmImportSkos(model_uri, skos_url, { format, overwrite });
+        const sourceLabel = skos_content
+          ? `inline content (${skos_content.length} chars)`
+          : skos_url!;
+        const jobId = await semaphore.kmmImportSkos(
+          model_uri,
+          skos_url ?? null,
+          { format, overwrite, skosContent: skos_content }
+        );
 
         const lines = [
           "SKOS IMPORT STARTED",
           "─".repeat(50),
           "",
           `  Model:   ${model_uri}`,
-          `  Source:  ${skos_url}`,
+          `  Source:  ${sourceLabel}`,
           `  Job ID:  ${jobId}`,
           "",
           "Polling for completion (up to 5 minutes)...",

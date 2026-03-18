@@ -734,32 +734,54 @@ export class SemaphoreClient {
    *   content=existing, format=<mime>, overwrite=<bool>, file=<binary>
    *
    * @param modelUri  KMM model URI, e.g. "model:IPTCMediaTopics"
-   * @param skosUrl   Public URL of the RDF/SKOS file to fetch and import
-   * @param options   format — MIME type (auto-detected if omitted), overwrite — default false
-   * @returns         jobId string for use with kmmWaitForAsyncJob()
+   * @param skosUrl     Public URL of the RDF/SKOS file to fetch and import. One of skosUrl or
+   *                    options.skosContent must be provided.
+   * @param options     format — MIME type (auto-detected if omitted), overwrite — default false,
+   *                    skosContent — inline RDF string (skips URL fetch when provided)
+   * @returns           jobId string for use with kmmWaitForAsyncJob()
    */
   async kmmImportSkos(
     modelUri: string,
-    skosUrl: string,
-    options: { format?: string; overwrite?: boolean } = {}
+    skosUrl: string | null,
+    options: { format?: string; overwrite?: boolean; skosContent?: string } = {}
   ): Promise<string> {
-    // 1. Fetch the RDF file from the public URL
-    logger.info("kmmImportSkos: fetching RDF file", { modelUri, skosUrl });
-    const fileRes = await axios.get(skosUrl, {
-      responseType: "arraybuffer",
-      timeout: 120_000,
-      validateStatus: (s) => s < 400,
-    });
-    const fileBuffer = Buffer.from(fileRes.data as ArrayBuffer);
-
-    // Auto-detect format from Content-Type or URL
+    let fileBuffer: Buffer;
     let format = options.format;
-    if (!format) {
-      const ct = (fileRes.headers["content-type"] as string | undefined) ?? "";
-      if (ct.includes("turtle") || skosUrl.includes(".ttl")) format = "text/turtle";
-      else if (ct.includes("n-triples") || skosUrl.includes(".nt")) format = "application/n-triples";
-      else if (ct.includes("json") || skosUrl.includes(".jsonld")) format = "application/ld+json";
-      else format = "application/rdf+xml"; // default (RDF/XML)
+
+    if (options.skosContent) {
+      // Inline content path — no network fetch needed (works regardless of MCP server location)
+      logger.info("kmmImportSkos: using inline RDF content", { modelUri, bytes: options.skosContent.length });
+      fileBuffer = Buffer.from(options.skosContent, "utf-8");
+      // Auto-detect format from content prefix when not explicitly set
+      if (!format) {
+        const prefix = options.skosContent.trimStart().substring(0, 100);
+        if (prefix.startsWith("@prefix") || prefix.startsWith("@base") || prefix.startsWith("PREFIX")) {
+          format = "text/turtle";
+        } else if (prefix.startsWith("{")) {
+          format = "application/ld+json";
+        } else {
+          format = "application/rdf+xml"; // safe default for XML-ish content
+        }
+      }
+    } else {
+      // URL fetch path — skosUrl must be reachable from the MCP server process
+      if (!skosUrl) throw new Error("Either skos_url or skos_content must be provided.");
+      logger.info("kmmImportSkos: fetching RDF file", { modelUri, skosUrl });
+      const fileRes = await axios.get(skosUrl, {
+        responseType: "arraybuffer",
+        timeout: 120_000,
+        validateStatus: (s) => s < 400,
+      });
+      fileBuffer = Buffer.from(fileRes.data as ArrayBuffer);
+
+      // Auto-detect format from Content-Type or URL
+      if (!format) {
+        const ct = (fileRes.headers["content-type"] as string | undefined) ?? "";
+        if (ct.includes("turtle") || skosUrl.includes(".ttl")) format = "text/turtle";
+        else if (ct.includes("n-triples") || skosUrl.includes(".nt")) format = "application/n-triples";
+        else if (ct.includes("json") || skosUrl.includes(".jsonld")) format = "application/ld+json";
+        else format = "application/rdf+xml"; // default (RDF/XML)
+      }
     }
 
     const ext = format === "text/turtle" ? ".ttl"
