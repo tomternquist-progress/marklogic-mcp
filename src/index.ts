@@ -19,7 +19,11 @@ async function main(): Promise<void> {
   });
 
   if (config.transport === "http") {
-    await startHttpTransport(() => createMcpServer(config), config.http);
+    await startHttpTransport(
+      (oauthToken?: string) => createMcpServer(config, oauthToken),
+      config.http,
+      config.connection.authType
+    );
   } else {
     const server = createMcpServer(config);
     await startStdioTransport(server);

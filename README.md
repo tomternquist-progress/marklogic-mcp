@@ -133,6 +133,25 @@ MCP_TRANSPORT=http MCP_HTTP_PORT=3000 ML_HOST=your-host ML_USERNAME=admin ML_PAS
   node dist/index.js
 ```
 
+### OAuth2 Bearer Token Passthrough
+
+When MarkLogic is configured as an OAuth2 resource server, the MCP server can forward each client's Bearer token directly to MarkLogic — MarkLogic validates the JWT and enforces its own per-user RBAC.
+
+```bash
+MCP_TRANSPORT=http MCP_HTTP_PORT=3000 ML_HOST=your-host ML_AUTH_TYPE=oauth \
+  node dist/index.js
+# ML_USERNAME / ML_PASSWORD are not used in oauth mode
+# Clients pass: Authorization: Bearer <user-jwt>
+```
+
+To configure MarkLogic as an OAuth2 resource server, use the `oauth_setup_advisor` prompt in the MCP server — it generates the required Management API calls and XQuery for your OIDC provider. Key points verified on ML 12:
+
+- Create the external security via `sec:create-external-security()` (not raw XQuery) to preserve required element ordering
+- Set `authorization: oauth` and map JWT claim values to MarkLogic roles via `sec:role-set-external-names()` — the claim value matches the role's **external-name**, not its role-name
+- Apply `authentication: oauth` to **all** server groups (apps, enode, etc.)
+
+Flux tools are disabled in oauth mode (they require username:password credentials).
+
 Health check: `GET http://localhost:3000/health`
 
 ### Docker Compose — full stack (MarkLogic + MCP server)
@@ -158,7 +177,8 @@ docker compose up
 | `ML_USERNAME` | `admin` | MarkLogic username |
 | `ML_PASSWORD` | `admin` | MarkLogic password |
 | `ML_DATABASE` | `Documents` | Default database |
-| `ML_AUTH_TYPE` | `digest` | `digest` or `basic` |
+| `ML_AUTH_TYPE` | `digest` | `digest`, `basic`, or `oauth` (Bearer token passthrough to MarkLogic) |
+| `ML_OAUTH_TOKEN` | _(none)_ | Static Bearer token; required in `stdio` mode when `ML_AUTH_TYPE=oauth` |
 | `ML_SSL` | `false` | Enable HTTPS |
 | `ML_READONLY` | `true` | Block all write operations |
 | `ML_ALLOW_EVAL` | `false` | Enable `/v1/eval` (XQuery/SJS execution) |
@@ -428,6 +448,8 @@ QuickSight agents connect via the HTTP transport. Recommended pattern:
 - `ML_READONLY=true` (default) — write tools (`ml_document_put`, `ml_document_delete`, `ml_document_patch`) are not registered at all
 - `ML_ALLOW_EVAL=false` (default) — eval tools (`ml_eval_javascript`, `ml_eval_xquery`, `ml_invoke_module`) are not registered
 - `MCP_API_KEY` — set to require Bearer token auth on the HTTP transport
+- `ML_AUTH_TYPE=oauth` — Bearer tokens from MCP clients are forwarded directly to MarkLogic; the MCP server never sees credentials, only opaque tokens; MarkLogic enforces per-user RBAC via its own JWT validation
 - Credentials are read from environment variables only — never hardcoded
 - Digest auth recomputes the challenge per request — no credential caching
 - The Flux runner executes on the MCP server host; `http_url` must be reachable from that host, not from the user's machine
+- In oauth mode, `MCP_API_KEY` gateway auth uses the `X-MCP-Api-Key` header to avoid conflicting with the `Authorization: Bearer` header used for the user token

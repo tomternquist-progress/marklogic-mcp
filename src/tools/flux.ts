@@ -93,7 +93,27 @@ function buildTdeNote(output: string, collections?: string[]): string | null {
   );
 }
 
-export function registerFluxTools(server: McpServer, clients: MarkLogicClients): void {
+export function registerFluxTools(
+  server: McpServer,
+  clients: MarkLogicClients,
+  authType: "digest" | "basic" | "oauth" = "digest"
+): void {
+  if (authType === "oauth") {
+    // Flux embeds username:password in its connection string — incompatible with OAuth
+    // token passthrough. Register a stub that returns a clear error so agents know why.
+    for (const toolName of ["flux_import", "flux_export", "flux_copy", "flux_reprocess", "flux_preview", "flux_help", "flux_status"] as const) {
+      server.tool(toolName, `Flux tool — not available in ML_AUTH_TYPE=oauth mode.`, {}, async () => ({
+        content: [{
+          type: "text" as const,
+          text: `${toolName} is not supported when ML_AUTH_TYPE=oauth. The Flux runner embeds ` +
+                `username:password credentials in its connection string, which are not available in OAuth mode. ` +
+                `Use ML_AUTH_TYPE=digest or ML_AUTH_TYPE=basic with a dedicated service account for Flux operations.`,
+        }],
+        isError: true,
+      }));
+    }
+    return;
+  }
   const { flux, schema, documents, semaphore } = clients;
 
   // ── flux_import ──────────────────────────────────────────────────────────────

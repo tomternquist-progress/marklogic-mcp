@@ -24,7 +24,7 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerGraphTools(server, clients);
   registerQuickSightTools(server, clients);
   registerOpticTools(server, clients);
-  registerFluxTools(server, clients);
+  registerFluxTools(server, clients, config.connection.authType);
   registerFastTrackTools(server, clients, config.safety.readonly);
   registerSemaphoreTools(server, clients);
 }

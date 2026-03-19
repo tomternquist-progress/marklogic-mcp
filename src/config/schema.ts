@@ -4,8 +4,8 @@ export const ConnectionConfigSchema = z.object({
   host: z.string().min(1),
   port: z.coerce.number().int().min(1).max(65535).default(8000),
   managementPort: z.coerce.number().int().min(1).max(65535).default(8002),
-  username: z.string().min(1),
-  password: z.string().min(1),
+  username: z.string().default(""),
+  password: z.string().default(""),
   database: z.string().default("Documents"),
   ssl: z
     .string()
@@ -17,8 +17,19 @@ export const ConnectionConfigSchema = z.object({
     .transform((v) => v === "true")
     .or(z.boolean())
     .default(true),
-  authType: z.enum(["digest", "basic"]).default("digest"),
+  authType: z.enum(["digest", "basic", "oauth"]).default("digest"),
   timeoutMs: z.coerce.number().int().positive().default(30000),
+  /** Static OAuth token — used in stdio mode when ML_AUTH_TYPE=oauth (set via ML_OAUTH_TOKEN). */
+  staticOauthToken: z.string().optional(),
+}).superRefine((data, ctx) => {
+  if (data.authType !== "oauth") {
+    if (!data.username) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["username"], message: "Required when ML_AUTH_TYPE is not oauth" });
+    }
+    if (!data.password) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["password"], message: "Required when ML_AUTH_TYPE is not oauth" });
+    }
+  }
 });
 
 export type ConnectionConfig = z.infer<typeof ConnectionConfigSchema>;
@@ -106,6 +117,14 @@ export const AppConfigSchema = z.object({
   }),
   flux: FluxConfigSchema,
   semaphore: SemaphoreConfigSchema,
+}).superRefine((data, ctx) => {
+  if (data.connection.authType === "oauth" && data.transport === "stdio" && !data.connection.staticOauthToken) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["connection", "staticOauthToken"],
+      message: "ML_OAUTH_TOKEN is required when ML_AUTH_TYPE=oauth in stdio mode (no HTTP request to extract a Bearer token from). Set ML_OAUTH_TOKEN=<your-jwt>.",
+    });
+  }
 });
 
 export type AppConfig = z.infer<typeof AppConfigSchema>;

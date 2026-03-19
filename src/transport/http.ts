@@ -1,8 +1,8 @@
-import express from "express";
+import express, { type Request } from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { randomUUID } from "crypto";
+import { randomUUID, createHash } from "crypto";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { HttpConfig } from "../config/schema.js";
 import { logger } from "../utils/logger.js";
@@ -13,19 +13,42 @@ const SESSION_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // check every 5 minutes
 interface SessionEntry {
   transport: StreamableHTTPServerTransport;
   lastSeen: number;
+  /** SHA-256 hash of the Bearer token used when this session was created (oauth mode only). */
+  tokenHash: string | undefined;
 }
 
-export async function startHttpTransport(serverFactory: () => McpServer, config: HttpConfig): Promise<import("http").Server> {
+function extractBearerToken(req: Request): string | undefined {
+  const auth = req.headers.authorization;
+  if (auth?.startsWith("Bearer ")) return auth.slice(7);
+  return undefined;
+}
+
+export async function startHttpTransport(
+  serverFactory: (oauthToken?: string) => McpServer,
+  config: HttpConfig,
+  connectionAuthType: "digest" | "basic" | "oauth" = "digest"
+): Promise<import("http").Server> {
   const app = express();
   app.use(express.json());
   app.use(cors(config.corsOrigin ? { origin: config.corsOrigin } : undefined));
   app.use(rateLimit({ windowMs: 60_000, max: 500 }));
 
-  // Optional bearer token auth
+  // Optional gateway API key.
+  // In oauth mode: read from X-MCP-Api-Key to avoid conflicting with the per-user
+  //   Authorization: Bearer header that carries the MarkLogic OAuth token.
+  // In non-oauth mode: fall back to Authorization: Bearer for backward compatibility.
   if (config.apiKey) {
     app.use((req, res, next) => {
-      const auth = req.headers.authorization;
-      if (auth !== `Bearer ${config.apiKey}`) {
+      const xKey = req.headers["x-mcp-api-key"] as string | undefined;
+      let providedKey: string | undefined;
+      if (xKey) {
+        providedKey = xKey;
+      } else if (connectionAuthType !== "oauth") {
+        // Backward compat: non-oauth deployments may send MCP_API_KEY in Authorization header
+        const auth = req.headers.authorization;
+        providedKey = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
+      }
+      if (providedKey !== config.apiKey) {
         res.status(401).json({ error: "Unauthorized" });
         return;
       }
@@ -53,6 +76,23 @@ export async function startHttpTransport(serverFactory: () => McpServer, config:
   app.post("/mcp", async (req, res) => {
     const incomingSessionId = req.headers["mcp-session-id"] as string | undefined;
 
+    // In oauth mode, extract the per-user Bearer token before any session logic.
+    const oauthToken = connectionAuthType === "oauth" ? extractBearerToken(req) : undefined;
+
+    if (connectionAuthType === "oauth" && !oauthToken) {
+      res.status(401).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32001,
+          message:
+            "ML_AUTH_TYPE=oauth is active but no Bearer token was found in the Authorization header. " +
+            "Include 'Authorization: Bearer <your-token>' in every request.",
+        },
+        id: null,
+      });
+      return;
+    }
+
     // If the client sends a known session ID, use the existing transport.
     // If no session ID is provided, this is a fresh connection — generate one.
     // If an unknown session ID is provided, the server likely restarted and lost
@@ -72,6 +112,26 @@ export async function startHttpTransport(serverFactory: () => McpServer, config:
     const sessionId = incomingSessionId ?? randomUUID();
     let entry = sessions.get(sessionId);
 
+    // In oauth mode, verify the incoming token matches the one that created the session.
+    // This prevents a different user from hijacking a session by guessing its ID.
+    if (entry && oauthToken) {
+      const incomingHash = createHash("sha256").update(oauthToken).digest("hex");
+      if (entry.tokenHash && entry.tokenHash !== incomingHash) {
+        res.status(401).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32001,
+            message:
+              "OAuth token mismatch for this session. " +
+              "The Bearer token does not match the one used to create this session. " +
+              "Start a new session (omit mcp-session-id) with your current token.",
+          },
+          id: null,
+        });
+        return;
+      }
+    }
+
     if (!entry) {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => sessionId,
@@ -79,7 +139,7 @@ export async function startHttpTransport(serverFactory: () => McpServer, config:
 
       // Each session gets its own McpServer instance — the SDK forbids sharing one server
       // across multiple transports (throws "Already connected to a transport").
-      const server = serverFactory();
+      const server = serverFactory(oauthToken);
       try {
         await server.connect(transport);
       } catch (err) {
@@ -92,7 +152,10 @@ export async function startHttpTransport(serverFactory: () => McpServer, config:
         return;
       }
 
-      entry = { transport, lastSeen: Date.now() };
+      const tokenHash = oauthToken
+        ? createHash("sha256").update(oauthToken).digest("hex")
+        : undefined;
+      entry = { transport, lastSeen: Date.now(), tokenHash };
       sessions.set(sessionId, entry);
 
       // Clean up on close

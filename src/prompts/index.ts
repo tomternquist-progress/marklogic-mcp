@@ -1762,4 +1762,215 @@ Be specific, practical, and reference actual MCP tool names and Zod parameter na
       }],
     })
   );
+
+  // ── OAuth2 Setup Advisor ────────────────────────────────────────────────────
+  server.prompt(
+    "oauth_setup_advisor",
+    "Generate MarkLogic Management API configuration steps to register an OIDC provider as an external security source and enable OAuth2 Bearer token authentication on a MarkLogic app server. Outputs ready-to-use JSON bodies for the Management API, XQuery verification code, and a test cURL command.",
+    {
+      oidc_issuer_url: z.string().describe("OIDC provider issuer URL, e.g. https://authentik.example.com/application/o/my-app/ or https://login.microsoftonline.com/<tenant>/v2.0"),
+      client_id: z.string().describe("OAuth2 client ID registered in your OIDC provider"),
+      client_secret: z.string().optional().describe("OAuth2 client secret (required for token introspection; omit if using public clients or JWKS-only validation)"),
+      role_claim: z.string().optional().describe("JWT claim name that contains MarkLogic role(s), e.g. 'roles' or 'groups'. Defaults to using the sub claim for user mapping."),
+      app_server_name: z.string().optional().describe("Name of the MarkLogic app server to configure (default: 'Documents'). Use ml_servers_list to find available servers."),
+      app_server_port: z.coerce.number().optional().describe("Port of the app server to configure (default: 8000). Helps identify the correct server."),
+    },
+    ({ oidc_issuer_url, client_id, client_secret, role_claim, app_server_name, app_server_port }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a MarkLogic security configuration expert. Generate the complete configuration steps to enable OAuth2/OIDC Bearer token authentication on a MarkLogic app server.
+
+**OIDC Provider Details:**
+- Issuer URL: ${oidc_issuer_url}
+- Client ID: ${client_id}
+${client_secret ? `- Client Secret: (provided — used for token introspection if needed)\n` : "- Client Secret: not provided (JWKS public key validation only)\n"}- Role claim in JWT: ${role_claim ?? "(not specified — use sub claim + internal authorization)"}
+
+**Target App Server:**
+- Name: ${app_server_name ?? "App-Services"}
+- Port: ${app_server_port ?? 8000}
+
+**CRITICAL — How MarkLogic OAuth role authorization works (verified on ML 12):**
+
+There are two authorization modes. Choose based on your token structure:
+
+**authorization: "oauth"** (recommended when JWT carries role claims):
+- MarkLogic reads the JWT claim named by oauth-role-attribute (e.g. "${role_claim ?? "roles"}")
+- The claim VALUE(s) are matched against each MarkLogic role's **external-name** list (NOT the role-name)
+- You must call sec:role-set-external-names() to register the JWT claim value as an external-name on the target role
+- Example: JWT has "${role_claim ?? "roles"}": "rest-reader" → you must set external-name "rest-reader" on the rest-reader role
+
+**authorization: "internal"** (when users are pre-provisioned in MarkLogic):
+- MarkLogic reads the JWT claim named by oauth-username-attribute (typically "sub")
+- That value is matched against each MarkLogic user's **external-name** list
+- The matching user's roles are assigned to the session
+- You must call sec:user-set-external-names() to register the JWT sub value on the MarkLogic user
+
+**CRITICAL — External security must be created via sec:create-external-security() API, not raw XQuery node manipulation.** Raw XQuery edits can place elements in the wrong order, which silently breaks role assignment in ML 12.
+
+Generate the following sections:
+
+## Section 1: Prerequisites Checklist
+- MarkLogic version 11+ required for OAuth2 JWT external security with JWKS validation
+- The OIDC provider must have this MarkLogic server registered as an OAuth2 client
+- MarkLogic must be able to reach the JWKS endpoint over HTTPS (test with xdmp:http-get via ml_eval_xquery)
+- The JWT "iss" claim must EXACTLY match the oauth-jwt-issuer-uri (including trailing slash)
+- Use ml_servers_list to find the correct app server name and group-id before running Section 3
+
+## Section 2: Create the External Security Object (XQuery API — required)
+Use ml_eval_xquery with database="Security". The sec:create-external-security() API ensures correct XML element ordering that ML 12 requires:
+
+\`\`\`xquery
+xquery version "1.0-ml";
+import module namespace sec = "http://marklogic.com/xdmp/security"
+  at "/MarkLogic/security.xqy";
+
+let $ext-sec-name := "${oidc_issuer_url.replace(/^https?:\/\//, "").replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+$/, "")}"
+
+(: If it already exists, remove it first :)
+let $_ := try { sec:remove-external-security($ext-sec-name) } catch ($e) { () }
+
+let $oauth-server :=
+  <sec:oauth-server xmlns:sec="http://marklogic.com/xdmp/security">
+    <sec:oauth-vendor>Other</sec:oauth-vendor>
+    <sec:oauth-flow-type>Resource server</sec:oauth-flow-type>
+    <sec:oauth-client-id>${client_id}</sec:oauth-client-id>
+    <sec:oauth-jwt-issuer-uri>${oidc_issuer_url}</sec:oauth-jwt-issuer-uri>
+    <sec:oauth-token-type>JSON Web Tokens</sec:oauth-token-type>
+    <sec:oauth-username-attribute>sub</sec:oauth-username-attribute>
+    <sec:oauth-role-attribute>${role_claim ?? ""}</sec:oauth-role-attribute>
+    <sec:oauth-privilege-attribute/>
+    <sec:oauth-jwt-alg>RS256</sec:oauth-jwt-alg>
+    <sec:oauth-jwks-uri>${oidc_issuer_url.replace(/\/?$/, "/jwks/")}</sec:oauth-jwks-uri>
+  </sec:oauth-server>
+
+return sec:create-external-security(
+  $ext-sec-name,
+  "OIDC external security for ${oidc_issuer_url}",
+  "oauth",            (: authentication :)
+  xs:unsignedInt(0),  (: cache-timeout: 0 = no caching during setup/testing :)
+  "${role_claim ? "oauth" : "internal"}",    (: authorization mode :)
+  (),                 (: ldap-server :)
+  (),                 (: saml-server :)
+  $oauth-server
+)
+\`\`\`
+
+## Section 3: App Server Configuration (Management API)
+Run ml_servers_list first to confirm server name and group-id values, then apply to ALL groups:
+\`\`\`bash
+# Repeat for each group (apps, enode, Default, etc.)
+curl -u admin:password -X PUT \\
+  "http://<ML_HOST>:8002/manage/v2/servers/${app_server_name ?? "App-Services"}/properties?group-id=<GROUP>" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "authentication": "oauth",
+    "internal-security": true,
+    "API-token-authentication": false,
+    "default-user": "nobody",
+    "external-security": ["${oidc_issuer_url.replace(/^https?:\/\//, "").replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+$/, "")}"]
+  }'
+\`\`\`
+Note: "external-security" is an **array** in the JSON body. "default-user": "nobody" means requests without a valid Bearer token receive an error (no anonymous access).
+
+## Section 4: Role / User Mapping
+${role_claim
+  ? `**authorization: "oauth" mode** — JWT claim "${role_claim}" values are matched against role **external-names**.
+
+For each role you want to grant via the "${role_claim}" claim, register the JWT claim value as an external-name on that role:
+\`\`\`xquery
+xquery version "1.0-ml";
+import module namespace sec = "http://marklogic.com/xdmp/security"
+  at "/MarkLogic/security.xqy";
+(: Example: JWT has "${role_claim}": "rest-reader" — register "rest-reader" as external-name on the rest-reader role :)
+sec:role-set-external-names("rest-reader", ("rest-reader")),
+sec:role-set-external-names("rest-writer", ("rest-writer")),
+sec:role-set-external-names("admin", ("admin"))
+(: Add one call per role you want to map. The external-name string must EXACTLY match the JWT claim value. :)
+\`\`\`
+Run via ml_eval_xquery with database: "Security".
+
+If the JWT "${role_claim}" claim is a **string** (not an array), only one role is mapped per token. If it is a **JSON array**, MarkLogic maps all values.`
+  : `**authorization: "internal" mode** — JWT "sub" claim value is matched against user **external-names**.
+
+Create a MarkLogic user and set its external-name to the JWT sub value:
+\`\`\`xquery
+xquery version "1.0-ml";
+import module namespace sec = "http://marklogic.com/xdmp/security"
+  at "/MarkLogic/security.xqy";
+(: Create the user with desired roles :)
+let $uid := sec:create-user(
+  "<JWT-sub-value>",
+  "OIDC user",
+  xdmp:random(),
+  "OIDC user via ${oidc_issuer_url}",
+  ("rest-reader", "rest-writer"),
+  (), ()
+)
+(: Set the external-name to the JWT sub value :)
+return sec:user-set-external-names("<JWT-sub-value>", ("<JWT-sub-value>"))
+\`\`\`
+The username and external-name must both equal the exact JWT sub string.`}
+
+## Section 5: Verification Steps
+
+1. Verify the external security document structure (run via ml_eval_xquery, database: "Security"):
+\`\`\`xquery
+xquery version "1.0-ml";
+for $doc in cts:search(fn:doc(),
+  cts:collection-query("http://marklogic.com/xdmp/external-securities"))
+return $doc
+\`\`\`
+Confirm: authentication → cache-timeout → authorization appear in that order BEFORE oauth-server.
+
+2. Decode a test JWT to check claim names and values:
+\`\`\`xquery
+xquery version "1.0-ml";
+let $token := "<YOUR_BEARER_TOKEN>"
+return xdmp:jwt-decode($token)
+\`\`\`
+Verify the "iss" matches oauth-jwt-issuer-uri exactly, and the role/sub claim values match what you configured in Section 4.
+
+3. Test MarkLogic directly:
+\`\`\`bash
+# With valid Bearer token — expect HTTP 200
+curl -H "Authorization: Bearer <YOUR_JWT>" \\
+  http://<ML_HOST>:${app_server_port ?? 8000}/v1/search?format=json
+
+# Check access log for role assignment (Kubernetes example)
+kubectl exec <ml-pod> -n <namespace> -- tail -5 /var/opt/MarkLogic/Logs/8000_AccessLog.txt
+# Expected log line: External User(...) is Mapped to Temp User(...) with Role(s): <role-name>
+\`\`\`
+
+4. If roles are still empty after confirming all configuration, clear the external security cache:
+\`\`\`xquery
+xquery version "1.0-ml";
+import module namespace sec = "http://marklogic.com/xdmp/security"
+  at "/MarkLogic/security.xqy";
+sec:external-security-clear-cache("${oidc_issuer_url.replace(/^https?:\/\//, "").replace(/[^a-zA-Z0-9-]/g, "-").replace(/-+$/, "")}")
+\`\`\`
+
+## Section 6: MCP Server Configuration
+\`\`\`bash
+ML_HOST=<your-marklogic-host>
+ML_PORT=${app_server_port ?? 8000}
+ML_AUTH_TYPE=oauth
+MCP_TRANSPORT=http
+# ML_USERNAME and ML_PASSWORD are NOT used in oauth mode
+# Each MCP client provides its own Bearer token in the Authorization header
+\`\`\`
+
+## Section 7: Troubleshooting
+- **Temp User with Role(s): (empty) → HTTP 403**: The JWT claim value doesn't match any role external-name (oauth mode) or no user has the JWT sub as external-name (internal mode). Check Section 4.
+- **Element order in Security DB**: The external security document MUST have authentication/cache-timeout/authorization BEFORE oauth-server. Always use sec:create-external-security() — never build the doc manually with xdmp:node-insert-child().
+- **Issuer mismatch**: The "iss" claim in the JWT must exactly match oauth-jwt-issuer-uri including trailing slash. Decode your JWT with xdmp:jwt-decode() and compare character-for-character.
+- **JWKS unreachable**: MarkLogic pods must reach ${oidc_issuer_url.replace(/\/?$/, "/jwks/")} over HTTPS. Test server-side: xdmp:http-get("${oidc_issuer_url.replace(/\/?$/, "/jwks/")}") via ml_eval_xquery.
+- **Multiple groups**: If your cluster has multiple groups (apps, enode, etc.), apply Section 3 to EACH group separately or requests will fail on nodes in unconfigured groups.
+- **API-token-authentication**: Keep this false when using standard OIDC JWTs. Setting it true enables MarkLogic's own token format and may conflict with external JWTs.
+- **Port 8000 locked out**: If you accidentally break basic auth on port 8000, use port 8002 (Management API) to restore it: PUT /manage/v2/servers/App-Services/properties?group-id=<GROUP> with {"authentication":"basic","external-security":[]}.`,
+        },
+      }],
+    })
+  );
 }

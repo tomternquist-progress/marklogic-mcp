@@ -24,9 +24,16 @@ export interface MarkLogicClients {
   semaphore: SemaphoreClient;
 }
 
-export function createClients(config: AppConfig): MarkLogicClients {
+export function createClients(config: AppConfig, oauthToken?: string): MarkLogicClients {
   const { connection, safety, flux: fluxConfig, semaphore: semaphoreConfig } = config;
-  const base = new MarkLogicBaseClient(connection);
+  // In oauth mode the runtime token (from the HTTP session's Bearer header) takes
+  // precedence over the static ML_OAUTH_TOKEN env var. Merge it in before constructing
+  // the base client so every Axios instance in this session uses the correct token.
+  const resolvedConnection =
+    connection.authType === "oauth" && oauthToken
+      ? { ...connection, staticOauthToken: oauthToken }
+      : connection;
+  const base = new MarkLogicBaseClient(resolvedConnection);
   const admin = new AdminClient(base);
   const documents = new DocumentsClient(base, safety.readonly);
   const search = new SearchClient(base);

@@ -57,7 +57,16 @@ export class MarkLogicBaseClient {
           : undefined,
     });
 
-    if (this.config.authType === "basic") {
+    if (this.config.authType === "oauth") {
+      const token = this.config.staticOauthToken;
+      if (token) {
+        instance.defaults.headers.common["Authorization"] = `Bearer ${token}`;
+      }
+      instance.interceptors.response.use(
+        (res) => res,
+        (error) => { throw this.mapError(error); }
+      );
+    } else if (this.config.authType === "basic") {
       instance.defaults.auth = {
         username: this.config.username,
         password: this.config.password,
@@ -130,7 +139,14 @@ export class MarkLogicBaseClient {
       (rawBodyStr ? `${error.message} — body: ${extractHtmlError(rawBodyStr)}` : error.message);
     const mlCode = (errObj?.["status-code"] ?? errObj?.["messageCode"]) as string | undefined;
 
-    if (status === 401) return new AuthenticationError(`${this.config.host}`);
+    if (status === 401) {
+      if (this.config.authType === "oauth") {
+        return new AuthenticationError(
+          `${this.config.host} — OAuth token was rejected or has expired. Start a new MCP session with a fresh Bearer token.`
+        );
+      }
+      return new AuthenticationError(`${this.config.host}`);
+    }
     logger.debug("MarkLogic HTTP error", { status, mlMessage, mlCode, rawBody: body });
     return new MarkLogicError(mlMessage, status, mlCode);
   }

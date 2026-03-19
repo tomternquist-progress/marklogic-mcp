@@ -465,6 +465,19 @@ KMM AUTHENTICATION NOTE:
   login automatically (POST /j_security_check → JSESSIONID → GET /api/token).
   Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD in the MCP server .env.
 
+MARKLOGIC AUTHENTICATION MODES (ML_AUTH_TYPE):
+  digest (default) — HTTP Digest auth using ML_USERNAME + ML_PASSWORD.
+  basic            — HTTP Basic auth using ML_USERNAME + ML_PASSWORD.
+  oauth            — OAuth2 Bearer token passthrough. Each MCP HTTP session forwards
+                     the user's JWT to MarkLogic as "Authorization: Bearer <token>".
+                     MarkLogic validates the token against its configured OIDC provider
+                     and enforces per-user RBAC. No shared service account is used.
+                     Requires: ML_AUTH_TYPE=oauth, MCP_TRANSPORT=http.
+                     For stdio mode: also set ML_OAUTH_TOKEN=<jwt>.
+                     Flux tools are disabled in oauth mode (Flux requires credentials).
+                     To configure MarkLogic as an OAuth2 resource server, invoke the
+                     "oauth_setup_advisor" prompt with your OIDC provider details.
+
 FLUX CLASSIFIER FLAGS:
   --classifier-host <host>  --classifier-port <port>  --classifier-path /
   Add --classifier-http for plain-HTTP CLS endpoints (required unless SEMAPHORE_SSL=true).
@@ -501,7 +514,8 @@ QuickSight (4): ml_aggregate_query, ml_timeseries_query, ml_export_tabular,
 
 Optic (3):     ml_optic_query, ml_views_list, ml_vector_search
 
-Flux (7):      flux_import, flux_export, flux_copy, flux_reprocess,
+Flux (7, disabled in oauth mode):
+               flux_import, flux_export, flux_copy, flux_reprocess,
                flux_preview, flux_help, flux_status
 
 FastTrack (2–4, config-dependent):
@@ -528,6 +542,7 @@ Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
                fasttrack_search_designer, fasttrack_app_scaffold,
                semaphore_integration_advisor,
+               oauth_setup_advisor,
                problem_advisor
 `;
 

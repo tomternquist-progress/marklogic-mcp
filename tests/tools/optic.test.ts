@@ -170,7 +170,7 @@ describe("ml_vector_search handler", () => {
     );
   });
 
-  it("respects strip_schema_prefix=false", async () => {
+  it("passes strip_schema_prefix=true by default", async () => {
     clients.optic.query.mockResolvedValue([]);
 
     await tools.get("ml_vector_search")!({
@@ -178,13 +178,12 @@ describe("ml_vector_search handler", () => {
       view: "myView",
       vector_column: "embedding",
       query_vector: [0.1, 0.2],
-      strip_schema_prefix: false,
     });
 
     expect(clients.optic.query).toHaveBeenCalledWith(
       expect.objectContaining({ $optic: expect.any(Object) }),
       undefined,
-      false
+      true
     );
   });
 

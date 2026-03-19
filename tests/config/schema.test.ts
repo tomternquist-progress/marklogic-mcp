@@ -74,8 +74,19 @@ describe("ConnectionConfigSchema", () => {
     if (result.success) expect(result.data.authType).toBe("basic");
   });
 
+  it("accepts authType oauth", () => {
+    const result = ConnectionConfigSchema.safeParse({ ...base, authType: "oauth" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.authType).toBe("oauth");
+  });
+
+  it("accepts oauth authType without username/password", () => {
+    const result = ConnectionConfigSchema.safeParse({ host: "localhost", authType: "oauth" });
+    expect(result.success).toBe(true);
+  });
+
   it("rejects unknown authType", () => {
-    expect(ConnectionConfigSchema.safeParse({ ...base, authType: "oauth" }).success).toBe(false);
+    expect(ConnectionConfigSchema.safeParse({ ...base, authType: "kerberos" }).success).toBe(false);
   });
 
   it("rejects empty host", () => {
