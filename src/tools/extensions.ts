@@ -55,10 +55,13 @@ export function registerExtensionTools(
     "  exports.GET = function(context, params) { ... }\n" +
     "  exports.POST = function(context, params, input) { ... }\n" +
     "  context.outputTypes = ['application/json']  — set before returning\n" +
-    "  params  — plain object of URL query string key/value pairs (all strings)\n" +
+    "  params  — plain object; this tool automatically adds the required rs: prefix to all keys\n" +
     "  Return a plain JS object for JSON, or a Node for XML/binary\n\n" +
+    "rs: PREFIX — MarkLogic requires all extension query params prefixed with 'rs:' on the wire.\n" +
+    "  This tool handles that automatically. Pass params without the prefix:\n" +
+    "  {department:'Engineering'} is sent as ?rs:department=Engineering on the URL.\n\n" +
     "EXAMPLE — employee search extension:\n" +
-    "  name='employee-search', method='GET', params={department:'Engineering', salary-min:'100000'}",
+    "  name='employee-search', method='GET', params={department:'Engineering', 'salary-min':'100000'}",
     {
       name: z.string().describe("Extension name"),
       method: z.enum(["GET", "POST"]).default("GET").describe("HTTP method to use"),
@@ -95,8 +98,12 @@ export function registerExtensionTools(
     server.tool(
       "ml_extension_put",
       "Deploy (or replace) a REST resource extension on MarkLogic. Requires ML_READONLY=false. " +
-      "PUTs the source code to /v1/config/resources/{name} which both installs the module in the " +
-      "Modules database and registers it as a callable resource at /v1/resources/{name}.\n\n" +
+      "PUTs the source code to /v1/config/resources/{name} which writes three files to the Modules DB:\n" +
+      "  /marklogic.rest.resource/{name}/assets/metadata.xml  — declares source-format (javascript|xquery)\n" +
+      "  /marklogic.rest.resource/{name}/assets/resource.sjs  — your SJS handler\n" +
+      "  /marklogic.rest.resource/{name}/assets/resource.xqy  — stub (auto-generated)\n" +
+      "The metadata.xml source-format field controls which file MarkLogic loads. The REST PUT endpoint " +
+      "handles all three files automatically — never write them manually.\n\n" +
       "SJS MODULE TEMPLATE:\n" +
       "  'use strict';\n" +
       "  function get(context, params) {\n" +
@@ -108,8 +115,9 @@ export function registerExtensionTools(
       "  • params is a plain object — all values are strings from the URL query string\n" +
       "  • Use cts.search(), cts.values(), cts.estimate() for data access\n" +
       "  • Use fn.subsequence(cts.search(query), start, pageSize) for pagination\n" +
-      "  • Use cts.frequency(v) on values from cts.values(..., ['frequency-order','item-frequency'], ...) for facet counts\n" +
-      "  • Use cts.pathRangeQuery('//field','=',value,['type=string','collation=...']) with existing path range indexes\n" +
+      "  • Use cts.frequency(v) on values from cts.values(ref, null, ['frequency-order','item-frequency'], query) for facet counts\n" +
+      "  • cts.pathReference('//field', ['type=string','collation=...']) — type/collation options go HERE (index ref)\n" +
+      "  • cts.pathRangeQuery('//field', '=', value) — NO type/collation options; uses the index definition automatically\n" +
       "  • Numeric params arrive as strings — parseFloat(params['salary-min']) before range queries\n" +
       "  • No declareUpdate() needed for read-only GET extensions\n" +
       "  • Use the rest_extension_generator prompt to generate a complete module from a schema",

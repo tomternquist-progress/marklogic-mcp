@@ -78,11 +78,16 @@ export class ExtensionsClient {
     body?: unknown
   ): Promise<unknown> {
     const url = `/v1/resources/${encodeURIComponent(name)}`;
+    // MarkLogic REST extensions require all custom query parameters to be prefixed
+    // with "rs:" — the framework strips the prefix before passing to params object
+    const rsParams = Object.fromEntries(
+      Object.entries(params).map(([k, v]) => [`rs:${k}`, v])
+    );
     if (method === "GET") {
-      return this.base.get<unknown>(this.base.http, url, { params });
+      return this.base.get<unknown>(this.base.http, url, { params: rsParams });
     }
     return this.base.post<unknown>(this.base.http, url, body ?? {}, {
-      params,
+      params: rsParams,
       headers: { "Content-Type": "application/json" },
     });
   }
