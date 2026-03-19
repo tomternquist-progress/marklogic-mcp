@@ -76,7 +76,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
       score_column: z.string().optional().describe("Name for the similarity score column in results (default: similarity_score)"),
       database: z.string().optional().describe("Target database (uses server default if omitted)"),
     },
-    async ({ schema, view, vector_column, query_vector, k, score_column, database }) => {
+    async ({ schema, view, vector_column, query_vector, k, score_column, database, strip_schema_prefix }) => {
       const scoreCol = score_column ?? "similarity_score";
       const limit = k ?? 10;
 
@@ -115,7 +115,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
       };
 
       try {
-        const result = await clients.optic.query(plan, database, true);
+        const result = await clients.optic.query(plan, database, strip_schema_prefix ?? true);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         let msg = toToolError(err);
@@ -142,9 +142,9 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
     {
       database: z.string().optional().describe("Database name (schemas are always read from the Schemas DB)"),
     },
-    async ({ database: _database }) => {
+    async ({ database }) => {
       try {
-        const views = await clients.schema.listViews();
+        const views = await clients.schema.listViews(database);
         if (views.length === 0) {
           return { content: [{ type: "text", text: "No TDE views found. Import data with generate_tde=true or install a TDE template via ml_document_put (database='Schemas', collection='http://marklogic.com/xdmp/tde')." }] };
         }

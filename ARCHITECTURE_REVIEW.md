@@ -50,29 +50,25 @@ Zod schemas validate all config at startup with actionable error messages. Boole
 
 ## 2. Bugs — Unused Parameters
 
-### BUG-1: `ml_timeseries_query` ignores `bucket`, `from`, `to` parameters (HIGH)
+### ~~BUG-1: `ml_timeseries_query` ignores `bucket`, `from`, `to` parameters~~ — INCORRECT, RESOLVED
 
-**File**: `src/tools/quicksight.ts:85`
+This finding was incorrect at review time. The handler at `src/tools/quicksight.ts:85` correctly destructures and uses all three parameters — date-range filtering (lines 96–103) and bucketing into hour/day/week/month/quarter/year buckets (lines 107–126) are both implemented. No action required.
 
-The handler destructures only `{ collection, time_values_name, filter_query, database }` — the `bucket`, `from`, and `to` parameters defined in the schema (lines 79-82) are never used. The tool claims to support time bucketing but simply returns raw values.
-
-**Impact**: Agents believe they can bucket by hour/day/week/month but the feature is not implemented.
-
-### BUG-2: `ml_views_list` ignores `database` parameter (MEDIUM)
+### BUG-2: `ml_views_list` ignores `database` parameter (MEDIUM) — FIXED
 
 **File**: `src/tools/optic.ts:145`
 
 The handler signature is `async () => { ... }` — it doesn't destructure the `database` parameter. The underlying `clients.schema.listViews()` is called without any database override.
 
-**Impact**: Multi-database deployments cannot list views from non-default databases.
+**Fix**: Handler now destructures `database` and passes it to `clients.schema.listViews(database)`.
 
-### BUG-3: `ml_vector_search` ignores `strip_schema_prefix` parameter (MEDIUM)
+### BUG-3: `ml_vector_search` ignores `strip_schema_prefix` parameter (MEDIUM) — FIXED
 
 **File**: `src/tools/optic.ts:118`
 
-The Optic query call hardcodes `true` for the strip prefix argument: `clients.optic.query(plan, database, true)`. The user-supplied parameter is not referenced.
+The Optic query call hardcoded `true` for the strip prefix argument: `clients.optic.query(plan, database, true)`. The user-supplied parameter was not referenced.
 
-**Impact**: Users who need qualified column names always get stripped names instead.
+**Fix**: Now passes `strip_schema_prefix ?? true` so the default behaviour (strip) is preserved but callers can opt out.
 
 ---
 
@@ -229,34 +225,42 @@ All prompts follow a consistent numbered-section format with explicit output ins
 
 ## 9. Recommendations Summary
 
-### Must Fix (Bugs)
+### Must Fix (Bugs) — all fixed 2026-03-19
 
-1. **BUG-1**: Wire `bucket`/`from`/`to` params in `ml_timeseries_query` or remove from schema
-2. **BUG-2**: Pass `database` param through in `ml_views_list`
-3. **BUG-3**: Use `strip_schema_prefix` param in `ml_vector_search`
+1. ~~**BUG-1**: Wire `bucket`/`from`/`to` params in `ml_timeseries_query`~~ — finding was incorrect; already implemented
+2. ~~**BUG-2**: Pass `database` param through in `ml_views_list`~~ — **FIXED** (`optic.ts:145`)
+3. ~~**BUG-3**: Use `strip_schema_prefix` param in `ml_vector_search`~~ — **FIXED** (`optic.ts:118`)
+4. ~~**ml_aggregate_query group_by stub**~~ — **FIXED**: now returns an explicit error with guidance to use `ml_optic_query` or `ml_values_query`
+
+### Infrastructure — fixed 2026-03-19
+
+5. ~~**CORS fully open**~~ — **FIXED**: optional `MCP_CORS_ORIGIN` env var / `config.corsOrigin`; when set, CORS is restricted to that origin
+6. ~~**Session memory leak**~~ — **FIXED**: 30-minute idle TTL with 5-minute cleanup sweep via `setInterval`
+7. ~~**`server.connect()` uncaught error**~~ — **FIXED**: wrapped in try/catch; returns `HTTP 500` with JSON-RPC error
+8. ~~**Digest auth params type cast**~~ — **FIXED**: `Record<string, unknown>` with explicit `String(v)` coercion instead of unsafe cast
 
 ### Should Fix (Sync & Docs)
 
-4. Update `INSTRUCTIONS_TEXT` tool inventory to match all ~70 registered tools
-5. Update `problem_advisor` Section 4 tool list to match
-6. Move `ml_suggest_approach` from "Prompts" to correct section in instructions
+9. Update `INSTRUCTIONS_TEXT` tool inventory to match all ~70 registered tools
+10. Update `problem_advisor` Section 4 tool list to match
+11. Move `ml_suggest_approach` from "Prompts" to correct section in instructions
 
 ### Should Improve (Code Quality)
 
-7. Split `semaphore.ts` client (1,664 lines) into 3 focused files
-8. Extract XML regex helpers to `utils/xml.ts`; add escaped-quote handling
-9. Consider streaming/pagination for `optic.ts` and `graphs.ts` large result sets
-10. Sanitize credential strings in `flux.ts` connection builder
+12. Split `semaphore.ts` client (1,664 lines) into 3 focused files
+13. Extract XML regex helpers to `utils/xml.ts`; add escaped-quote handling
+14. Consider streaming/pagination for `optic.ts` and `graphs.ts` large result sets
+15. Sanitize credential strings in `flux.ts` connection builder
 
 ### Should Improve (Testing)
 
-11. Add tests for search, optic, schema, flux, semaphore tool groups
-12. Add prompt output validation tests
-13. Add resource content tests (verify INSTRUCTIONS_TEXT contains all tool names)
+16. Add tests for search, optic, schema, flux, semaphore tool groups
+17. Add prompt output validation tests
+18. Add resource content tests (verify INSTRUCTIONS_TEXT contains all tool names)
 
 ### Nice to Have
 
-14. Add response schema validation (Zod) to client API responses
-15. Add request correlation IDs for debugging
-16. Add batch document operations to `documents.ts` client
-17. Consider shortening the longest tool descriptions with resource references
+19. Add response schema validation (Zod) to client API responses
+20. Add request correlation IDs for debugging
+21. Add batch document operations to `documents.ts` client
+22. Consider shortening the longest tool descriptions with resource references

@@ -10,7 +10,11 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
     {
       collection: z.string().optional().describe("Collection to aggregate over"),
       filter_query: z.string().optional().describe("Constraining search query to filter documents before aggregating"),
-      group_by: z.array(z.string()).optional().describe("Field paths to group by (must have range indexes configured)"),
+      group_by: z.array(z.string()).optional().describe(
+        "Field paths to group by. NOTE: arbitrary field-path grouping is not supported by this tool — " +
+        "supplying this parameter returns an error with guidance. " +
+        "Use ml_optic_query with a group-by operator (requires TDE view) or ml_values_query with a named values definition backed by a range index instead."
+      ),
       metrics: z.array(z.object({
         values_name: z.string().describe("Named values definition in search options"),
         aggregate: z.enum(["count", "sum", "avg", "min", "max", "stddev"]).describe("Aggregate function"),
@@ -19,9 +23,26 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
       database: z.string().optional().describe("Database name"),
     },
     async ({ collection, filter_query, group_by, metrics, database }) => {
+      // group_by is not supported — reject early with actionable guidance
+      if (group_by?.length) {
+        return {
+          content: [{
+            type: "text",
+            text:
+              "group_by is not supported by ml_aggregate_query.\n\n" +
+              "To group documents by a field, use one of:\n" +
+              "  • ml_optic_query — use a group-by operator in an Optic plan (requires a TDE view with the field as a column). " +
+              "Example: add {\"ns\":\"op\",\"fn\":\"group-by\",\"args\":[[col],[{\"ns\":\"op\",\"fn\":\"count\",\"args\":[\"count\",null]}]]} to your plan.\n" +
+              "  • ml_values_query — pass a named values definition backed by a range index to get value frequencies.\n\n" +
+              "Use ml_schema_discover to find available range indexes, or ml_views_list to see TDE views.",
+          }],
+          isError: true,
+        };
+      }
+
       try {
         const results: Record<string, unknown> = {
-          query: { collection, filter: filter_query, groupBy: group_by },
+          query: { collection, filter: filter_query },
           metrics: [],
         };
 
@@ -49,18 +70,6 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
           results.metrics = metricResults
             .filter((r) => r.status === "fulfilled")
             .map((r) => (r as PromiseFulfilledResult<unknown>).value);
-        }
-
-        // Basic facet grouping if group_by specified — use search with q
-        if (group_by?.length) {
-          const searchRes = await clients.search.search({
-            q: filter_query ?? "",
-            collection,
-            pageLength: 10,
-            database,
-          });
-          results.sampleResults = searchRes.results.slice(0, 5);
-          results.facets = searchRes.facets;
         }
 
         return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };

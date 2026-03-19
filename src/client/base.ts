@@ -88,11 +88,17 @@ export class MarkLogicBaseClient {
             throw new AuthenticationError(`${this.config.host}:${port}`);
           }
           const method = (originalRequest.method ?? "GET").toUpperCase();
-          // Build the path+query for the digest URI (must match the actual request URL)
+          // Build the path+query for the digest URI (must match the actual request URL).
+          // Serialize params manually to avoid casting non-string values and to ensure
+          // the digest URI matches exactly what Axios will send.
           const basePath = originalRequest.url ?? "/";
-          const params = originalRequest.params as Record<string, string> | undefined;
+          const params = originalRequest.params as Record<string, unknown> | undefined;
           const qs = params && Object.keys(params).length
-            ? "?" + new URLSearchParams(params as Record<string, string>).toString()
+            ? "?" + new URLSearchParams(
+                Object.entries(params)
+                  .filter(([, v]) => v != null)
+                  .map(([k, v]) => [k, String(v)])
+              ).toString()
             : "";
           const digestUri = basePath + qs;
           const authHeader = buildDigestHeader(

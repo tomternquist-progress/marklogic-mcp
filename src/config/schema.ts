@@ -42,6 +42,7 @@ export const HttpConfigSchema = z.object({
   port: z.coerce.number().int().min(1).max(65535).default(3000),
   host: z.string().default("0.0.0.0"),
   apiKey: z.string().optional(),
+  corsOrigin: z.preprocess(val => (val === "" ? undefined : val), z.string().optional()),
 });
 
 export type HttpConfig = z.infer<typeof HttpConfigSchema>;

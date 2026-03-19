@@ -107,21 +107,17 @@ describe("ml_aggregate_query handler", () => {
     expect(parsed.metrics).toHaveLength(1);
   });
 
-  it("fetches facets when group_by is specified", async () => {
-    clients.search.search
-      .mockResolvedValueOnce({ total: 10, results: [] }) // count call
-      .mockResolvedValueOnce({
-        total: 10,
-        results: [{ uri: "/a.json" }],
-        facets: { status: { name: "status", facetValues: [{ name: "active", count: 8 }] } },
-      }); // facet call
-
+  it("returns an error with guidance when group_by is supplied", async () => {
     const result = await tools.get("ml_aggregate_query")!({
       group_by: ["status"],
     });
 
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.facets).toBeDefined();
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("group_by is not supported");
+    expect(result.content[0].text).toContain("ml_optic_query");
+    expect(result.content[0].text).toContain("ml_values_query");
+    // Should not make any HTTP calls
+    expect(clients.search.search).not.toHaveBeenCalled();
   });
 
   it("sets isError on failure", async () => {

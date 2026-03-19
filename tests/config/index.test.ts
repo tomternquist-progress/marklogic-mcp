@@ -45,7 +45,15 @@ describe("loadConfig", () => {
     vi.stubEnv("ML_HOST", "localhost");
     vi.stubEnv("ML_USERNAME", "admin");
     vi.stubEnv("ML_PASSWORD", "admin");
-    // Leave optional vars unset
+    // Explicitly clear optional vars that may be set in the real environment
+    vi.stubEnv("ML_AUTH_TYPE", undefined as never);
+    vi.stubEnv("MCP_TRANSPORT", undefined as never);
+    vi.stubEnv("ML_PORT", undefined as never);
+    vi.stubEnv("ML_DATABASE", undefined as never);
+    vi.stubEnv("ML_READONLY", undefined as never);
+    vi.stubEnv("ML_ALLOW_EVAL", undefined as never);
+    vi.stubEnv("LOG_LEVEL", undefined as never);
+    vi.stubEnv("LOG_FORMAT", undefined as never);
 
     const config = await load();
 

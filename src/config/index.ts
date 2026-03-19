@@ -24,6 +24,7 @@ export function loadConfig(): AppConfig {
       port: process.env.MCP_HTTP_PORT,
       host: process.env.MCP_HTTP_HOST,
       apiKey: process.env.MCP_API_KEY,
+      corsOrigin: process.env.MCP_CORS_ORIGIN,
     },
     log: {
       level: process.env.LOG_LEVEL ?? "info",

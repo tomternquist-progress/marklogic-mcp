@@ -170,6 +170,24 @@ describe("ml_vector_search handler", () => {
     );
   });
 
+  it("respects strip_schema_prefix=false", async () => {
+    clients.optic.query.mockResolvedValue([]);
+
+    await tools.get("ml_vector_search")!({
+      schema: "mySchema",
+      view: "myView",
+      vector_column: "embedding",
+      query_vector: [0.1, 0.2],
+      strip_schema_prefix: false,
+    });
+
+    expect(clients.optic.query).toHaveBeenCalledWith(
+      expect.objectContaining({ $optic: expect.any(Object) }),
+      undefined,
+      false
+    );
+  });
+
   it("uses default score_column and k values", async () => {
     clients.optic.query.mockResolvedValue([]);
 
@@ -250,6 +268,22 @@ describe("ml_views_list handler", () => {
 
     expect(result.content[0].text).toContain("No TDE views found");
     expect(result.content[0].text).toContain("generate_tde=true");
+  });
+
+  it("passes database parameter to listViews", async () => {
+    clients.schema.listViews.mockResolvedValue([]);
+
+    await tools.get("ml_views_list")!({ database: "Analytics" });
+
+    expect(clients.schema.listViews).toHaveBeenCalledWith("Analytics");
+  });
+
+  it("passes undefined when no database supplied", async () => {
+    clients.schema.listViews.mockResolvedValue([]);
+
+    await tools.get("ml_views_list")!({});
+
+    expect(clients.schema.listViews).toHaveBeenCalledWith(undefined);
   });
 
   it("sets isError on failure", async () => {

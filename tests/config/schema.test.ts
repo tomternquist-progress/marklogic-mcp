@@ -178,6 +178,24 @@ describe("HttpConfigSchema", () => {
     if (result.success) expect(result.data.apiKey).toBe("secret-token-xyz");
   });
 
+  it("corsOrigin is undefined by default", () => {
+    const result = HttpConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.corsOrigin).toBeUndefined();
+  });
+
+  it("accepts a corsOrigin value", () => {
+    const result = HttpConfigSchema.safeParse({ corsOrigin: "https://app.example.com" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.corsOrigin).toBe("https://app.example.com");
+  });
+
+  it("treats empty string corsOrigin as undefined", () => {
+    const result = HttpConfigSchema.safeParse({ corsOrigin: "" });
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.corsOrigin).toBeUndefined();
+  });
+
   it("coerces port from string", () => {
     const result = HttpConfigSchema.safeParse({ port: "4000" });
     expect(result.success).toBe(true);
