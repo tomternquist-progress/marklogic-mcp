@@ -118,7 +118,8 @@ relationships        + entity-oriented docs     (sparql_query_builder)
 
 Vector similarity    Optic vec:cosine-sim       ml_vector_search          ml_views_list
 / RAG / embeddings   over TDE vec:vector col    ml_optic_query            ml_schema_get_tde
-(ML 12+)                                        data_modeling_advisor
+(ML 12+)                                        data_modeling_advisor     ml_reindex_status
+                                                rag_pipeline_designer
 
 Multi-model design   Document + Triple +        data_modeling_advisor     ml_collections_list
 (combined)           Vector architecture        ml_vector_search          ml_graphs_list
@@ -157,6 +158,11 @@ health                                          ml_databases_list
                                                 ml_forests_list
                                                 ml_servers_list
 
+Security / RBAC      Management API +           ml_users_list             ml_roles_list
+audit                REST permissions API        ml_roles_list             ml_users_list
+("why can't user                                ml_document_permissions
+X see doc Y?")
+
 Query planning       Query approach advisor     query_approach_advisor    ml_views_list
 (cts.search/Optic)                                                         ml_indexes_list
 
@@ -164,6 +170,11 @@ Code generation      Prompt templates           xquery_function_generator —
 (XQuery/SJS/TDE)                                sjs_module_generator
                                                 tde_schema_generator
                                                 rest_extension_generator
+
+Data integration     Envelope pattern           envelope_pattern_advisor  ml_document_sample
+design / diagnosis   (source → headers →        ml_schema_discover        ml_collections_list
+(multi-source,       instance → triples)
+DHF / canonical)
 
 Data import design   Import advisor prompt      data_import_advisor       —
                                                 flux_import
@@ -185,6 +196,14 @@ FastTrack UI         Named search-options       ml_search_options_list    ml_ind
  Map, Timeline)      result card fields;        fasttrack_search_designer
                      geo/date constraints =     fasttrack_app_scaffold
                      map/timeline widgets)
+
+Custom REST API      REST resource extensions   ml_extension_list         ml_extension_list
+endpoint             deployed at                ml_extension_put          (check existing)
+(biz logic,          /v1/resources/{name};      ml_extension_call
+multi-op, custom     SJS exports.GET/POST;      ml_extension_get
+response shape)      uses cts.search +          ml_extension_delete
+                     cts.values inline;         rest_extension_generator
+                     no separate options set    (prompt)
 
 
 ── URI DESIGN — ALWAYS CALL uri_designer BEFORE WRITING DOCUMENTS ─────────────
@@ -495,6 +514,8 @@ Admin (8):     ml_cluster_status, ml_databases_list, ml_database_properties,
                ml_database_statistics, ml_forests_list, ml_servers_list,
                ml_server_properties, ml_reindex_status
 
+Security (3):  ml_users_list, ml_roles_list, ml_document_permissions
+
 Documents (3–6, config-dependent):
                ml_document_get, ml_document_list, ml_document_sample
                [write-enabled] ml_document_put, ml_document_delete, ml_document_patch
@@ -522,6 +543,10 @@ FastTrack (2–4, config-dependent):
                ml_search_options_list, ml_search_options_get
                [write-enabled] ml_search_options_put, ml_search_options_delete
 
+Extensions (3–5, config-dependent):
+               ml_extension_list, ml_extension_get, ml_extension_call
+               [write-enabled] ml_extension_put, ml_extension_delete
+
 Semaphore (18): semaphore_status, semaphore_studio_status,
                 semaphore_publish_sets, semaphore_classes, semaphore_classify,
                 semaphore_cls_languages, semaphore_kmm_models_list,
@@ -539,6 +564,7 @@ Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                structured_query_builder, optic_query_builder, sparql_query_builder,
                query_approach_advisor, data_modeling_advisor, data_import_advisor,
                project_setup_advisor,
+               rag_pipeline_designer, envelope_pattern_advisor,
                gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
                fasttrack_search_designer, fasttrack_app_scaffold,
                semaphore_integration_advisor,

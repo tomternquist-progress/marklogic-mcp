@@ -50,7 +50,7 @@ export class SearchClient {
       start: params.start ?? 1,
       pageLength: params.pageLength ?? 10,
     };
-    if (params.q) qp.q = params.q;
+    if (params.q != null) qp.q = params.q;
     if (params.collection) qp.collection = params.collection;
     if (params.directory) qp.directory = params.directory;
     if (params.options) qp.options = params.options;
@@ -158,7 +158,7 @@ function normalizeSearchResponse(raw: Record<string, unknown>): SearchResponse {
           {
             name: k,
             type: v.type as string | undefined,
-            facetValues: ((v["facet-value"] as Array<Record<string, unknown>>) ?? []).map((fv) => ({
+            facetValues: ((v["facetValues"] as Array<Record<string, unknown>>) ?? (v["facet-value"] as Array<Record<string, unknown>>) ?? []).map((fv) => ({
               name: fv.name as string,
               count: fv.count as number,
               value: fv._value as string ?? fv.name as string,

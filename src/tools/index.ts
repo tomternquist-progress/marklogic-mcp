@@ -13,6 +13,8 @@ import { registerFluxTools } from "./flux.js";
 import { registerSuggestApproachTool } from "./suggest-approach.js";
 import { registerFastTrackTools } from "./fasttrack.js";
 import { registerSemaphoreTools } from "./semaphore.js";
+import { registerExtensionTools } from "./extensions.js";
+import { registerSecurityTools } from "./security.js";
 
 export function registerAllTools(server: McpServer, clients: MarkLogicClients, config: AppConfig): void {
   registerSuggestApproachTool(server);
@@ -27,4 +29,6 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerFluxTools(server, clients, config.connection.authType);
   registerFastTrackTools(server, clients, config.safety.readonly);
   registerSemaphoreTools(server, clients);
+  registerExtensionTools(server, clients, config.safety.readonly);
+  registerSecurityTools(server, clients);
 }

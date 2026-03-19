@@ -63,7 +63,19 @@ export function registerFastTrackTools(
       "  • 'return-facets: true' → enables facet counts\n" +
       "NOTE: Range-type constraints require pre-existing range indexes — call ml_indexes_list first. " +
       "After saving, verify with ml_search using options=<name>. " +
-      "Use the fasttrack_search_designer prompt to generate the options JSON from a schema.",
+      "Use the fasttrack_search_designer prompt to generate the options JSON from a schema.\n\n" +
+      "CONSTRAINT PATTERNS FOR JSON DOCUMENTS:\n" +
+      "  PREFERRED — path-index (requires range-path-index created via admin:database-add-range-path-index):\n" +
+      "    {\"name\":\"dept\",\"range\":{\"type\":\"xs:string\",\"facet\":true,\"path-index\":{\"text\":\"//department\"}}}\n" +
+      "  ALTERNATIVE — json-property (requires range-json-property-index via Management API on port 8002):\n" +
+      "    {\"name\":\"dept\",\"range\":{\"type\":\"xs:string\",\"facet\":true,\"json-property\":\"department\"}}\n\n" +
+      "BUCKET SYNTAX — use 'name' (NOT 'label') on every bucket or MarkLogic will throw XDMP-VALIDATEMISSINGATTR:\n" +
+      "  CORRECT:   {\"name\":\"Under 80k\",\"lt\":\"80000\"}\n" +
+      "  CORRECT:   {\"name\":\"80-100k\",\"ge\":\"80000\",\"lt\":\"100000\"}\n" +
+      "  WRONG:     {\"label\":\"Under 80k\",\"lt\":\"80000\"}  ← will be rejected\n\n" +
+      "COLLECTION SCOPE — to restrict facets to one collection, embed additional-query in the options via\n" +
+      "  ml_eval_xquery (patching the stored XML) or pass collection= to ml_search at query time.\n" +
+      "  The JSON additional-query collection-query format is NOT supported by the REST API options parser.",
       {
         name: z.string().describe("Name for this search options set, referenced in ml_search options= and FastTrack optionsName prop"),
         options: z.record(z.unknown()).describe(

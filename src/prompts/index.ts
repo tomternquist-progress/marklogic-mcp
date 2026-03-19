@@ -650,6 +650,8 @@ Available tools (use only these):
               flux_status
   FastTrack:  ml_search_options_list, ml_search_options_get, ml_search_options_put,
               ml_search_options_delete
+  Extensions: ml_extension_list, ml_extension_get, ml_extension_put,
+              ml_extension_delete, ml_extension_call
   Semaphore:  semaphore_status, semaphore_studio_status, semaphore_publish_sets,
               semaphore_classes, semaphore_classify, semaphore_cls_languages,
               semaphore_kmm_models_list, semaphore_kmm_model_create,
@@ -658,6 +660,7 @@ Available tools (use only these):
               semaphore_publish, semaphore_publish_config_fix_plain_skos,
               semaphore_publish_diagnose, semaphore_concept_search,
               semaphore_concept_get, semaphore_concept_labels_update
+  Security:   ml_users_list, ml_roles_list, ml_document_permissions
   Planning:   ml_suggest_approach
   Prompts:    uri_designer, xquery_function_generator, sjs_module_generator,
               tde_schema_generator, rest_extension_generator, structured_query_builder,
@@ -665,7 +668,8 @@ Available tools (use only these):
               data_modeling_advisor, data_import_advisor, project_setup_advisor,
               gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
               fasttrack_search_designer, fasttrack_app_scaffold,
-              semaphore_integration_advisor
+              semaphore_integration_advisor,
+              rag_pipeline_designer, envelope_pattern_advisor
 
 ## 5. PITFALLS TO AVOID
 List 2–5 specific, concrete pitfalls for this goal. Examples of good pitfalls:
@@ -1034,10 +1038,17 @@ Generate the complete search options JSON to pass to ml_search_options_put:
 \`\`\`
 
 Rules for constraints:
-- String facets: range type xs:string, facet=true, json-property=fieldName
-- Numeric facets: range type xs:decimal or xs:integer, facet=true, json-property=fieldName
-- Date range (timeline): range type xs:dateTime or xs:date, facet=true, json-property=fieldName, include 3–5 meaningful buckets
-- Geospatial (map): geo-elem-pair with parent/lat/lon — only if schema shows geo fields${includeMap ? "\n- INCLUDE a geo-elem-pair constraint for the map widget" : ""}${includeTimeline ? "\n- INCLUDE a date range constraint with buckets for the timeline widget" : ""}
+- PREFERRED index type for JSON: path-index with path "//fieldName" (uses range-path-index, creatable via
+  admin:database-add-range-path-index in ml_eval_xquery). This is always preferred over json-property.
+- FALLBACK: json-property requires a range-json-property-index (only creatable via Management API port 8002).
+- String facets:  {"name":"field","range":{"type":"xs:string","facet":true,"path-index":{"text":"//field"}}}
+- Numeric facets: {"name":"field","range":{"type":"xs:decimal","facet":true,"path-index":{"text":"//field"}}}
+- Date range:     {"name":"field","range":{"type":"xs:date","facet":true,"path-index":{"text":"//field"}}} with buckets
+  NOTE: If the date is stored as a string in ISO format (YYYY-MM-DD), use type xs:string — ISO strings sort chronologically.
+- Geospatial (map): geo-elem-pair with parent/lat/lon — only if schema shows geo fields
+- BUCKET SYNTAX — use "name" attribute (NOT "label") on every bucket or the REST API will return XDMP-VALIDATEMISSINGATTR:
+  CORRECT: {"name":"Under 80k","lt":"80000"} and {"name":"80-100k","ge":"80000","lt":"100000"}
+  WRONG:   {"label":"Under 80k","lt":"80000"}   ← will be rejected with a 400 error${includeMap ? "\n- INCLUDE a geo-elem-pair constraint for the map widget" : ""}${includeTimeline ? "\n- INCLUDE a date range constraint with buckets for the timeline widget" : ""}
 
 ### 3. ml_search_options_put CALL
 The exact tool call parameters:
@@ -1100,6 +1111,9 @@ List 3–5 FastTrack-specific pitfalls relevant to this configuration, e.g.:
 - "FacetFilters expects constraint names to match exactly — case-sensitive"
 - "extract-path uses XPath (forward slash + property name), not dot notation"
 - "MarkLogicContext host/port must match the App Server that has the search options, not the Management port"
+- "Bucket entries must use 'name' not 'label' — the REST API enforces this with a 400 XDMP-VALIDATEMISSINGATTR error"
+- "path-index constraints need a range-path-index (//fieldName) — not a range-element or range-json-property-index"
+- "Scoping facets to a collection: pass collection= to ml_search OR patch the stored options XML with additional-query via ml_eval_xquery. The JSON additional-query: {collection-query: ...} format is NOT parsed by the REST API options endpoint."
 
 Be specific to the fields in this schema.`,
           },
@@ -1969,6 +1983,391 @@ MCP_TRANSPORT=http
 - **Multiple groups**: If your cluster has multiple groups (apps, enode, etc.), apply Section 3 to EACH group separately or requests will fail on nodes in unconfigured groups.
 - **API-token-authentication**: Keep this false when using standard OIDC JWTs. Setting it true enables MarkLogic's own token format and may conflict with external JWTs.
 - **Port 8000 locked out**: If you accidentally break basic auth on port 8000, use port 8002 (Management API) to restore it: PUT /manage/v2/servers/App-Services/properties?group-id=<GROUP> with {"authentication":"basic","external-security":[]}.`,
+        },
+      }],
+    })
+  );
+
+  // ── RAG Pipeline Designer ───────────────────────────────────────────────────
+  server.prompt(
+    "rag_pipeline_designer",
+    "Design a Retrieval-Augmented Generation (RAG) pipeline using MarkLogic 12 as the vector store. " +
+    "Returns a 6-section plan covering document + embedding design, TDE vec:vector column spec, " +
+    "hybrid search strategy (pure vector / filtered vector / keyword-scoped vector), " +
+    "retrieval → LLM prompt assembly sequence, reranking approach, and common pitfalls. " +
+    "Requires MarkLogic 12+. Call ml_views_list and ml_schema_get_tde first to check for existing vector TDE views.",
+    {
+      domain: z.string().describe("Type of content stored, e.g. 'legal contracts', 'news articles', 'product manuals'"),
+      embedding_source: z.string().optional().describe("How embeddings are generated, e.g. 'OpenAI text-embedding-3-small (1536d)', 'local BERT 768d'"),
+      collection: z.string().optional().describe("MarkLogic collection holding the documents, if known"),
+      filter_fields: z.string().optional().describe("Comma-separated fields used to pre-filter before vector search, e.g. 'category,date,language'"),
+      k: z.number().int().positive().optional().describe("Number of nearest neighbours to retrieve (default: 10)"),
+    },
+    ({ domain, embedding_source, collection, filter_fields, k }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a MarkLogic 12 architect. Design a complete RAG pipeline for the following context:
+
+**Content domain:** ${domain}
+**Embedding model:** ${embedding_source ?? "not yet specified — recommend one based on domain"}
+**MarkLogic collection:** ${collection ?? "(not specified — use ml_collections_list to discover)"}
+**Pre-filter fields:** ${filter_fields ?? "(none — consider adding for precision)"}
+**k (nearest neighbours):** ${k ?? 10}
+
+Produce a 6-section design plan:
+
+## Section 1: DOCUMENT + EMBEDDING DESIGN
+
+Describe how to store embeddings alongside content in MarkLogic JSON documents:
+- Use field name \`"embedding"\` containing a \`float[]\` array as a sibling of the content fields.
+- Recommend chunk-vs-whole-document strategy based on the domain (legal contracts → chunk by clause; news articles → whole-document or paragraph; product manuals → chunk by section).
+- Include metadata fields to store alongside the vector: \`"embeddingModel"\`, \`"chunkIndex"\`, \`"chunkText"\`, \`"sourceUri"\` (if chunked).
+- Show a representative JSON document skeleton for ${domain}.
+- Note: embeddings must be generated externally (e.g. OpenAI, Cohere, local sentence-transformer) before inserting via flux_import or ml_document_put.
+
+## Section 2: TDE VEC:VECTOR COLUMN
+
+Provide the exact TDE JSON template column spec to expose the embedding for vector search:
+
+\`\`\`json
+{
+  "template": {
+    "context": "/${collection ? collection.replace(/\//g, "/") + "/*" : "/*"}",
+    "rows": [{
+      "schemaName": "${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_schema",
+      "viewName": "${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_view",
+      "columns": [
+        {"name": "uri",       "scalar": "string",     "val": "xdmp:node-uri(.)"},
+        {"name": "embedding", "scalar": "vec:vector", "val": "embedding"},
+        {"name": "content",   "scalar": "string",     "val": "chunkText"}
+        ${filter_fields ? filter_fields.split(",").map(f => `,\n        {"name": "${f.trim()}", "scalar": "string", "val": "${f.trim()}"}`).join("") : ""}
+      ]
+    }]
+  }
+}
+\`\`\`
+
+Key rules:
+- \`"scalar": "vec:vector"\` is the ONLY valid type for vector columns (not \`"double"\` or \`"string"\`).
+- Dimensionality of the stored vector MUST match the query vector at search time (${embedding_source ? "match " + embedding_source + " dimensions" : "e.g. 1536 for text-embedding-3-small, 768 for BERT"}).
+- Deploy via ml_document_put to the Schemas database (collection \`http://marklogic.com/xdmp/tde\`).
+- After deployment, check ml_reindex_status until ready=true before issuing vector queries.
+
+## Section 3: HYBRID SEARCH STRATEGY
+
+Recommend the best search strategy for this domain and explain when to use each:
+
+**Option A — Pure vector search** (simplest, no index prerequisites beyond TDE):
+\`\`\`
+ml_vector_search(
+  schema="${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_schema",
+  view="${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_view",
+  vector_column="embedding",
+  query_vector=[...${k ?? 10} floats at query time...],
+  k=${k ?? 10}
+)
+\`\`\`
+Use when: no structured filters needed; pure semantic similarity is sufficient.
+
+**Option B — Pre-filtered vector** (precision: filter first, then rank by similarity):
+\`\`\`
+ml_optic_query(plan={
+  "$optic": {
+    "fn": "from-view",
+    "args": ["${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_schema", "${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_view"]
+  },
+  "where": ${filter_fields ? `{"fn":"eq","args":["col","${filter_fields.split(",")[0].trim()}","<value>"]}` : '{"fn":"and-query","args":[]}'},
+  "bind": {"fn":"as","args":["score",{"fn":"vec:cosine-similarity","args":["col('embedding')","vec:vector([...])"]}]},
+  "order-by": {"fn":"desc","args":["score"]},
+  "limit": ${k ?? 10}
+})
+\`\`\`
+Use when: ${filter_fields ? `filtering by ${filter_fields} before scoring reduces false positives` : "you have structured metadata that narrows the candidate set"}. Always pre-filter BEFORE the cosine computation — not after.
+
+**Option C — Keyword-scoped vector** (recall: find relevant docs via keyword, then rank by similarity):
+\`\`\`
+ml_optic_query(plan={
+  "$optic": {
+    "fn": "from-search",
+    "args": [{"fn":"cts:word-query","args":["<user query terms>"]}]
+  },
+  "bind": {"fn":"as","args":["score",{"fn":"vec:cosine-similarity","args":["col('embedding')","vec:vector([...])"]}]},
+  "order-by": {"fn":"desc","args":["score"]},
+  "limit": ${k ?? 10}
+})
+\`\`\`
+Use when: user query contains specific keywords; keyword scoping prevents off-topic similarity matches.
+
+## Section 4: RETRIEVAL SEQUENCE
+
+Exact MCP tool call order for a RAG query:
+
+1. **ml_views_list** — confirm the TDE view exists (schema + view name match Section 2)
+2. **ml_schema_get_tde** — inspect the TDE template; verify vec:vector column dimensionality
+3. **ml_reindex_status** — confirm ready=true before any vector query
+4. **ml_vector_search** or **ml_optic_query** — retrieve top-${k ?? 10} URIs + cosine scores
+5. **ml_document_get** (for each URI) — retrieve full document content for context assembly
+6. *(In your application)* Assemble retrieved chunks + scores into the LLM prompt context window; pass to your LLM with the user's question.
+
+For chunked documents: retrieve chunks by URI pattern using ml_document_list or ml_search scoped to sourceUri before calling ml_document_get.
+
+## Section 5: RERANKING
+
+Explain when a second-pass reranker adds value:
+
+- **Cosine similarity alone** is sufficient when embeddings are high quality and chunks are semantically coherent (whole-document or section-level).
+- **Add a reranker** when: chunks are short (sentence-level), query is multi-faceted, or top-k results feel off-topic. Popular options: Cohere Rerank, cross-encoder/ms-marco-MiniLM.
+- **Deduplication**: if chunked, deduplicate by \`sourceUri\` after reranking to avoid repeating the same source document.
+- **Score threshold**: filter out chunks where cosine similarity < 0.7 to avoid including weakly related context. Adjust threshold based on domain.
+
+## Section 6: PITFALLS
+
+List the most common failures for this setup:
+
+1. **Dimensionality mismatch** — stored embedding has 1536 dimensions but query vector has 768 (or vice versa). MarkLogic will return an error. Always log embedding dimensions at ingest time.
+2. **Querying before reindex completes** — TDE is deployed but ml_reindex_status still shows indexing=true. Vector queries return no results until ready=true.
+3. **Filtering AFTER cosine computation** — computing cosine similarity over all vectors then filtering is O(n). Always push \`where()\` BEFORE \`bind(vec:cosine-similarity)\` in the Optic plan.
+4. **vec:vector scalar type** — using \`"scalar":"double"\` or \`"scalar":"string"\` instead of \`"scalar":"vec:vector"\` causes the TDE to silently ignore the column. Verify with ml_tde_validate.
+5. **Chunk size vs context window** — chunks too small lose semantic context; chunks too large waste LLM context tokens. For ${domain}: recommend ${domain.toLowerCase().includes("contract") || domain.toLowerCase().includes("legal") ? "clause-level (200–500 tokens)" : domain.toLowerCase().includes("manual") ? "section-level (300–800 tokens)" : "paragraph-level (100–300 tokens)"}.
+6. **Missing collection scope** — querying the TDE view without a collection filter scans all documents. Always set a collection or use fromSearch with a collection query as the scope.`,
+        },
+      }],
+    })
+  );
+
+  // ── Envelope Pattern Advisor ────────────────────────────────────────────────
+  server.prompt(
+    "envelope_pattern_advisor",
+    "Design or diagnose the MarkLogic envelope pattern for data integration. " +
+    "Returns a 7-section plan covering envelope anatomy, URI/collection strategy, header design, " +
+    "instance document design, triple attachment, MCP ingest sequence, and query patterns. " +
+    "In diagnose mode, inspects an existing collection for envelope conformance using ml_document_sample output. " +
+    "The envelope pattern is canonical for multi-source data integration and DHF (Data Hub Framework) deployments.",
+    {
+      mode: z.enum(["design", "diagnose"]).describe("'design' for planning a new integration; 'diagnose' for inspecting existing documents"),
+      domain: z.string().describe("What data you are integrating, e.g. 'orders from SAP and Salesforce', 'patient records'"),
+      collection: z.string().optional().describe("Existing MarkLogic collection to inspect (especially useful for diagnose mode)"),
+      source_systems: z.string().optional().describe("Comma-separated source system names, e.g. 'SAP,Salesforce,CSV'"),
+      database: z.string().optional().describe("Target MarkLogic database name"),
+    },
+    ({ mode, domain, collection, source_systems, database }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a MarkLogic data integration architect. ${mode === "diagnose" ? `Diagnose whether existing ${domain} documents in ${collection ? `collection '${collection}'` : "MarkLogic"} follow the envelope pattern.` : `Design the envelope pattern for integrating ${domain}.`}
+
+**Mode:** ${mode}
+**Domain:** ${domain}
+**Collection:** ${collection ?? "(use ml_collections_list to discover)"}
+**Source systems:** ${source_systems ?? "(not specified)"}
+**Database:** ${database ?? "(default)"}
+
+${mode === "diagnose" ? `
+## DIAGNOSIS INSTRUCTIONS
+
+Before producing the sections below, instruct the agent to:
+1. Call \`ml_document_sample\` on collection '${collection ?? "<collection>"}' to retrieve 3–5 sample documents.
+2. Inspect each sample for a top-level \`"envelope"\` key.
+3. Within \`envelope\`, check for sub-keys: \`"headers"\`, \`"instance"\`, \`"attachments"\`, \`"triples"\`.
+4. Report conformance level:
+   - **Full**: all four zones present
+   - **Partial**: \`headers\` and \`instance\` present; \`attachments\` or \`triples\` missing
+   - **Instance-only**: only \`instance\` present under \`envelope\`
+   - **Non-conformant**: no \`envelope\` key at root level
+5. For non-conformant documents, describe what structure IS present and suggest a migration path.
+
+Then produce the sections below based on what the agent finds.
+` : ""}
+
+## Section 1: ENVELOPE ANATOMY
+
+The envelope pattern wraps every document in a consistent outer structure with four zones:
+
+\`\`\`json
+{
+  "envelope": {
+    "headers": {
+      "sourceDocument": "/raw/${source_systems ? source_systems.split(",")[0].trim().toLowerCase() : "source"}/{id}",
+      "sourceFormat":   "json",
+      "ingestTime":     "2025-01-15T09:30:00Z",
+      "datahubCreatedBy": "flux-import-pipeline",
+      "sourceQuery":    "SELECT * FROM ${domain.replace(/[^a-zA-Z]/g, "_").toUpperCase()}",
+      "permissions":    [{ "role-name": "app-user", "capabilities": ["read"] }],
+      "classifications": []
+    },
+    "instance": {
+      "${domain.replace(/[^a-zA-Z]/g, "_").toLowerCase()}": {
+        "info": { "title": "${domain}", "version": "1.0.0" }
+      }
+    },
+    "attachments": {
+      "raw": "<original source document preserved here>"
+    },
+    "triples": []
+  }
+}
+\`\`\`
+
+**Zone responsibilities:**
+- \`headers\` — provenance, permissions, ingest metadata, Semaphore classifications. Never contains business data.
+- \`instance\` — canonical model: the normalized, business-ready version of the data. This is what queries target.
+- \`attachments\` — raw source document, preserved for audit and re-processing. Optional but recommended.
+- \`triples\` — RDF relationships expressed as \`[{"triple":{"subject":"...","predicate":"...","object":"..."}}]\`. Use the **plural** key \`"triples"\` with each element wrapped in \`"triple"\`.
+
+## Section 2: COLLECTION + URI STRATEGY
+
+Design the collection and URI scheme for ${domain}:
+
+${source_systems ? source_systems.split(",").map(s => `- Collection \`${s.trim().toLowerCase()}-raw\` — raw documents from ${s.trim()} before harmonization`).join("\n") : "- Collection `<source>-raw` — raw documents from each source system"}
+- Collection \`${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}\` — all harmonized ${domain} entity documents
+- Collection \`${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}-envelopes\` — optional: scope envelope queries only
+
+**URI pattern:**
+\`\`\`
+/entities/${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}/{sourceSystem}-{primaryKey}.json
+\`\`\`
+Examples:
+${source_systems ? source_systems.split(",").map(s => `- \`/entities/${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}/${s.trim().toLowerCase()}-12345.json\``).join("\n") : `- \`/entities/${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}/sap-12345.json\``}
+
+**Rules:**
+- URI = stable identity. Include ONLY immutable primary key fields.
+- Prefix matches the collection name so ml_document_list can scope by directory.
+- Never embed mutable fields (status, owner, date) in URIs.
+
+## Section 3: HEADER DESIGN
+
+Mandatory header fields for ${domain} documents:
+
+\`\`\`json
+"headers": {
+  "sourceDocument":    "<URI of the raw source record>",
+  "sourceSystem":      "${source_systems ? source_systems.split(",")[0].trim() : "<system>"}",
+  "sourceFormat":      "json | xml | csv",
+  "ingestTime":        "<ISO-8601 timestamp>",
+  "datahubCreatedBy":  "flux-import | dhf-flow | rest-transform",
+  "datahubCreatedOn":  "<ISO-8601 timestamp>",
+  "id":                "<primary key value for dedup>",
+  "permissions":       [{ "role-name": "app-user", "capabilities": ["read", "update"] }],
+  "classifications":   []
+}
+\`\`\`
+
+Optional but recommended:
+- \`"sourceQuery"\` — the JDBC query or file path that produced this document
+- \`"schemaVersion"\` — instance model version for schema evolution
+- \`"mergeHash"\` — fingerprint for mastering/dedup (DHF mastering step)
+
+## Section 4: INSTANCE DOCUMENT DESIGN
+
+The \`instance\` zone holds the canonical model for ${domain}:
+
+\`\`\`json
+"instance": {
+  "${domain.replace(/[^a-zA-Z]/g, "_").toLowerCase()}": {
+    "info": {
+      "title": "${domain}",
+      "version": "1.0.0",
+      "baseUri": "http://example.org/${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}/"
+    },
+    "primaryKey": "<value>",
+    "canonicalField1": "<mapped value>",
+    "canonicalField2": "<mapped value>"
+  }
+}
+\`\`\`
+
+**Field mapping rules:**
+- All source field names mapped to a canonical schema (run ml_schema_discover on source docs to get field list).
+- Conflicting values from different source systems: keep both under source-qualified keys, or use the "last-writer-wins" or "most-trusted-source" strategy.
+- Empty strings → omit the field entirely (never store \`""\`; it pollutes range indexes).
+- Date fields → ISO-8601 strings for consistency with range index scalar type \`"dateTime"\`.
+
+**DHF mapping step**: If using DHF, the mapping step transforms source → instance automatically from an entity model descriptor. Use \`project_setup_advisor\` for DHF project layout.
+
+## Section 5: TRIPLE ATTACHMENT
+
+When to add triples to ${domain} documents and how:
+
+Use \`envelope.triples\` when:
+- ${domain} entities have relationships to other entities (e.g. order → customer, patient → provider).
+- You need graph traversal via ml_sparql_query alongside document search.
+- Semaphore classification produces concept URIs that should link to a taxonomy.
+
+\`\`\`json
+"triples": [
+  {
+    "triple": {
+      "subject":   "http://example.org/${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}/12345",
+      "predicate": "http://schema.org/relatedTo",
+      "object":    "http://example.org/other-entity/67890"
+    }
+  },
+  {
+    "triple": {
+      "subject":   "http://example.org/${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}/12345",
+      "predicate": "http://schema.org/name",
+      "object":    { "datatype": "http://www.w3.org/2001/XMLSchema#string", "value": "<name>" }
+    }
+  }
+]
+\`\`\`
+
+Key rules:
+- Use the **plural** key \`"triples"\` (not \`"triple"\`).
+- Each element MUST be wrapped in \`{"triple": {...}}\`.
+- IRI objects → plain URI string. Literal objects → \`{"datatype":"...","value":"..."}\`.
+- Do NOT use \`"sem:triples"\` as the root key — that marks a managed triple document, not an envelope.
+
+## Section 6: INGEST SEQUENCE
+
+Exact MCP tool call order to build this envelope pipeline:
+
+1. **ml_document_sample** — sample the raw source documents to understand current structure
+2. **ml_schema_discover** — infer canonical field names and types from the source collection
+3. **ml_indexes_list** — check which range indexes exist for the canonical fields
+4. **flux_import** with an SJS transform:
+   - Use \`flux_import\` with \`extra_args: ["--transform", "<transform-name>"]\`
+   - The SJS transform (generated via \`sjs_module_generator\` prompt with \`module_type="transform"\`) maps source fields to \`envelope.instance\` structure
+   - Deploy the transform via \`ml_extension_put\` or ml-gradle before running import
+5. **ml_schema_get_tde** — verify a TDE template covers \`envelope.instance.*\` paths
+6. **ml_tde_validate** — confirm rows are extracted correctly from harmonized documents
+7. **ml_optic_query** — validate row extraction: \`SELECT * FROM schema.view LIMIT 5\`
+
+## Section 7: QUERY PATTERNS
+
+How to query ${domain} envelope documents:
+
+**Full-text search over instance fields:**
+\`\`\`
+ml_search(q="<term>", collection="${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}")
+\`\`\`
+
+**Structured filter on a canonical field (requires range index):**
+\`\`\`
+ml_search(structured_query={"range-query":{"json-property":"canonicalField","value":"<val>"}},
+          collection="${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}")
+\`\`\`
+
+**Aggregate across source systems using Optic (requires TDE):**
+\`\`\`
+ml_optic_query(plan={"fn":"from-view","args":["schema","view"],
+  "select":[...], "group-by":[{"fn":"col","args":["sourceSystem"]}],
+  "aggregate":[{"fn":"count","args":["count","uri"]}]})
+\`\`\`
+
+**Graph traversal across relationships:**
+\`\`\`
+ml_sparql_query(query="SELECT ?related WHERE { <entity-IRI> schema:relatedTo ?related }")
+\`\`\`
+
+**Faceted navigation (requires range index on classification fields):**
+\`\`\`
+ml_facets_query(collection="${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}",
+                facet_options=[{"name":"sourceSystem","type":"collection"}])
+\`\`\``,
         },
       }],
     })
