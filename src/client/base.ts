@@ -97,7 +97,7 @@ export class MarkLogicBaseClient {
             ? "?" + new URLSearchParams(
                 Object.entries(params)
                   .filter(([, v]) => v != null)
-                  .map(([k, v]) => [k, String(v)])
+                  .map(([k, v]) => [k, String(v)] as [string, string])
               ).toString()
             : "";
           const digestUri = basePath + qs;
