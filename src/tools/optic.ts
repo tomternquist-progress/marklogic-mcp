@@ -75,6 +75,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
       k: z.number().int().positive().max(1000).optional().describe("Number of nearest neighbours to return (default: 10)"),
       score_column: z.string().optional().describe("Name for the similarity score column in results (default: similarity_score)"),
       database: z.string().optional().describe("Target database (uses server default if omitted)"),
+      strip_schema_prefix: z.boolean().optional().describe("Strip the 'schema.view.' prefix from result column names (default: true for vector search)"),
     },
     async ({ schema, view, vector_column, query_vector, k, score_column, database, strip_schema_prefix }) => {
       const scoreCol = score_column ?? "similarity_score";
