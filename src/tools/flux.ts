@@ -119,7 +119,7 @@ export function registerFluxTools(
   // ── flux_import ──────────────────────────────────────────────────────────────
   server.tool(
     "flux_import",
-    "Import data into MarkLogic using Flux. The FIRST-CHOICE tool for any bulk or URL-based data loading task — prefer this over ml_eval_javascript or ml_document_put for anything beyond ~5 documents.\n\nCAP ABILITIES: bulk-import, http-fetch, csv, tsv, json, json-lines, parquet, avro, orc, jdbc, s3, zip-extract, gzip-extract, tde-generation, column-mapping, headerless-csv, uri-template, rdf-turtle, rdf-ntriples, rdf-jsonld\n\nUSE THIS TOOL WHEN:\n- Loading data from an HTTP/HTTPS URL (open data portals, Socrata, GDELT, government datasets)\n- Importing CSV, TSV, JSON-Lines, Parquet, Avro, ORC, or MLCP archives (compressed or not)\n- Importing RDF files (Turtle, N-Triples, JSON-LD, RDF/XML) into named graphs — use subcommand='import-rdf-files'\n- Fetching from a JDBC database (PostgreSQL, MySQL, Oracle, SQL Server, etc.)\n- You need one MarkLogic document per source row/record\n- You want automatic TDE view generation (set generate_tde=true)\n- The source file has no header row — use column_names to inject field names\n- Batch size, thread count, or URI templates need configuring\n\nUSE ml_graph_put INSTEAD WHEN: you have a small RDF string (< ~1 MB) to load directly into a named graph without going through Flux.\nUSE ml_document_put INSTEAD WHEN: inserting fewer than ~10 individual documents, or writing a TDE template / SJS module to the Schemas or Modules database.\nUSE ml_eval_javascript INSTEAD WHEN: running server-side logic, calling MarkLogic built-ins, or custom in-database transforms — NOT for bulk insert.\n\nCANONICAL RECIPES:\n\n1. Import CSV from public URL with auto-TDE (most common):\n   subcommand=\"import-delimited-files\", http_url=\"https://example.com/data.csv\", collections=[\"my-data\"], generate_tde=true, tde_schema=\"myschema\", tde_view=\"myview\"\n\n2. Import Socrata open data — two valid options:\n   a) CSV (recommended for large imports): subcommand=\"import-delimited-files\", http_url=\"https://data.wa.gov/resource/abc.csv?$limit=50000\"\n   b) JSON resource API (returns proper objects): subcommand=\"import-files\", http_url=\"https://data.wa.gov/resource/abc.json?$limit=50000\"\n   WARNING: Use /resource/{id}.csv or /resource/{id}.json — NOT /rows.json (the Socrata bulk export). /rows.json returns array-of-arrays, not objects.\n\n3. Import headerless CSV (e.g. GDELT events — no column headers in source file):\n   subcommand=\"import-delimited-files\", http_url=\"https://...\", column_names=[\"Col1\",\"Col2\",...], extra_args=[\"--delimiter\",\"\\t\",\"--ignore-null-fields\"]\n\n4. Import from JDBC database:\n   subcommand=\"import-jdbc\", jdbc_url=\"jdbc:postgresql://host/db\", jdbc_driver=\"org.postgresql.Driver\", query=\"SELECT * FROM mytable\", collections=[\"my-data\"], generate_tde=true\n\n5. Import JSON or XML files from S3:\n   subcommand=\"import-files\", path=\"s3a://my-bucket/data/\", collections=[\"my-data\"]\n\n6. Import a Turtle/RDF file into a named graph:\n   subcommand=\"import-rdf-files\", http_url=\"https://example.org/data.ttl\", extra_args=[\"--graph\",\"http://example.org/mygraph\"]\n\n7. Import a JSON file that contains an array of records OR a JSONL file (one object per line):\n   Both cases use subcommand=\"import-aggregate-json-files\":\n   a) Nested JSON array (e.g. openFDA {\"results\":[...]}, Socrata .json export):\n      subcommand=\"import-aggregate-json-files\", http_url=\"https://api.fda.gov/drug/event.json?limit=100\", collections=[\"fda-events\"]\n   b) JSONL / JSON Lines (one JSON object per line — the format written by Python scripts fetching API data):\n      subcommand=\"import-aggregate-json-files\", path=\"/tmp/data.jsonl\", extra_args=[\"--json-lines\"], uri_template=\"/data/{id}.json\", collections=[\"my-data\"]\n   NOTE: import-files treats each line as a separate file URI — it does NOT parse JSON inside lines. Always use import-aggregate-json-files for multi-record JSON files.\n\n8. Import and classify content inline with Semaphore (auto-tag documents at ingest time):\n   Add to any import recipe: classify_with_semaphore=true\n   Or manually via extra_args: [\"--classifier-host\",\"<host>\",\"--classifier-port\",\"5058\",\"--classifier-path\",\"/\",\"--classifier-http\"]\n   First verify Semaphore is reachable with semaphore_status, then list available taxonomies with semaphore_publish_sets.\n   Semaphore categories are stored on each MarkLogic document at ingest time.\n\nWARNING: Only the Socrata bulk export endpoint (/rows.json) returns array-of-arrays — avoid that. The resource API (/resource/{id}.csv or /resource/{id}.json?$limit=N) returns proper records and works correctly with flux_import.",
+    "Import data into MarkLogic using Flux. The FIRST-CHOICE tool for any bulk or URL-based data loading task — prefer this over ml_eval_javascript or ml_document_put for anything beyond ~5 documents.\n\nCAP ABILITIES: bulk-import, http-fetch, csv, tsv, json, json-lines, parquet, avro, orc, jdbc, s3, zip-extract, gzip-extract, tde-generation, column-mapping, headerless-csv, uri-template, rdf-turtle, rdf-ntriples, rdf-jsonld\n\nUSE THIS TOOL WHEN:\n- Loading data from an HTTP/HTTPS URL (open data portals, Socrata, GDELT, government datasets)\n- Importing CSV, TSV, JSON-Lines, Parquet, Avro, ORC, or MLCP archives (compressed or not)\n- Importing RDF files (Turtle, N-Triples, JSON-LD, RDF/XML) into named graphs — use subcommand='import-rdf-files'\n- Fetching from a JDBC database (PostgreSQL, MySQL, Oracle, SQL Server, etc.)\n- You need one MarkLogic document per source row/record\n- You want automatic TDE view generation (set generate_tde=true)\n- The source file has no header row — use column_names to inject field names\n- Batch size, thread count, or URI templates need configuring\n\nUSE ml_graph_put INSTEAD WHEN: you have a small RDF string (< ~1 MB) to load directly into a named graph without going through Flux.\nUSE ml_document_put INSTEAD WHEN: inserting fewer than ~10 individual documents, or writing a TDE template / SJS module to the Schemas or Modules database.\nUSE ml_eval_javascript INSTEAD WHEN: running server-side logic, calling MarkLogic built-ins, or custom in-database transforms — NOT for bulk insert.\n\nCANONICAL RECIPES:\n\n1. Import CSV from public URL with auto-TDE (most common):\n   subcommand=\"import-delimited-files\", http_url=\"https://example.com/data.csv\", collections=[\"my-data\"], generate_tde=true, tde_schema=\"myschema\", tde_view=\"myview\"\n\n2. Import Socrata open data — two valid options:\n   a) CSV (recommended for large imports): subcommand=\"import-delimited-files\", http_url=\"https://data.wa.gov/resource/abc.csv?$limit=50000\"\n   b) JSON resource API (returns proper objects): subcommand=\"import-files\", http_url=\"https://data.wa.gov/resource/abc.json?$limit=50000\"\n   WARNING: Use /resource/{id}.csv or /resource/{id}.json — NOT /rows.json (the Socrata bulk export). /rows.json returns array-of-arrays, not objects.\n\n3. Import headerless CSV (e.g. GDELT events — no column headers in source file):\n   subcommand=\"import-delimited-files\", http_url=\"https://...\", column_names=[\"Col1\",\"Col2\",...], extra_args=[\"--delimiter\",\"\\t\",\"--ignore-null-fields\"]\n\n4. Import from JDBC database:\n   subcommand=\"import-jdbc\", jdbc_url=\"jdbc:postgresql://host/db\", jdbc_driver=\"org.postgresql.Driver\", query=\"SELECT * FROM mytable\", collections=[\"my-data\"], generate_tde=true\n\n5. Import JSON or XML files from S3:\n   subcommand=\"import-files\", path=\"s3a://my-bucket/data/\", collections=[\"my-data\"]\n\n6. Import a Turtle/RDF file into a named graph:\n   subcommand=\"import-rdf-files\", http_url=\"https://example.org/data.ttl\", extra_args=[\"--graph\",\"http://example.org/mygraph\"]\n\n7. Import a JSON file that contains an array of records OR a JSONL file (one object per line):\n   Both cases use subcommand=\"import-aggregate-json-files\":\n   a) Flat JSON array at the root (e.g. [{...}, {...}]):\n      subcommand=\"import-aggregate-json-files\", http_url=\"https://example.com/records.json\", collections=[\"my-data\"]\n   b) JSONL / JSON Lines (one JSON object per line — the format written by Python scripts fetching API data):\n      subcommand=\"import-aggregate-json-files\", path=\"/tmp/data.jsonl\", extra_args=[\"--json-lines\"], uri_template=\"/data/{id}.json\", collections=[\"my-data\"]\n   NOTE: import-files treats each line as a separate file URI — it does NOT parse JSON inside lines. Always use import-aggregate-json-files for multi-record JSON files.\n   ⚠ NESTED WRAPPER LIMITATION: Many REST APIs return records inside a wrapper object (e.g. {\"results\":[...],\"count\":10000} from Federal Register, openFDA, GitHub). import-aggregate-json-files treats the entire wrapper as one record — uri_template variables (e.g. {document_number}) resolve to null, producing malformed URIs. Workarounds: (1) pre-process to JSONL: python3 -c \"import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)['results']]\" < wrapper.json > records.jsonl, then import with --json-lines via extra_args; (2) use ml_eval_javascript with vars for smaller payloads (< ~500 records); (3) paginate the API with smaller pages that return flat arrays.\n\n8. Import and classify content inline with Semaphore (auto-tag documents at ingest time):\n   Add to any import recipe: classify_with_semaphore=true\n   Or manually via extra_args: [\"--classifier-host\",\"<host>\",\"--classifier-port\",\"5058\",\"--classifier-path\",\"/\",\"--classifier-http\"]\n   First verify Semaphore is reachable with semaphore_status, then list available taxonomies with semaphore_publish_sets.\n   Semaphore categories are stored on each MarkLogic document at ingest time.\n\nWARNING: Only the Socrata bulk export endpoint (/rows.json) returns array-of-arrays — avoid that. The resource API (/resource/{id}.csv or /resource/{id}.json?$limit=N) returns proper records and works correctly with flux_import.",
     {
       subcommand: z.enum([
         "import-delimited-files",
@@ -630,10 +630,22 @@ export function registerFluxTools(
     "  MarkLogic's transaction timeout (default 600 s) on any non-trivial dataset and cannot use\n" +
     "  Flux's parallel threads. The two-phase split lets Flux distribute work across thread_count\n" +
     "  threads with batch_size URIs per transaction — the only approach that scales.\n\n" +
+    "⚠ WRITE-INVOKE AND OUTBOUND HTTP: If your transform module calls xdmp.httpPost() to an\n" +
+    "external service (e.g. Semaphore CLS), it may silently no-op inside Flux's reprocess context,\n" +
+    "even if the same module works when called from ml_eval_javascript or ml_invoke_module.\n" +
+    "Flux may run write-invoke modules in a restricted transaction mode that prevents outbound HTTP\n" +
+    "or conflicts with writing back to the same URI in the same transaction.\n" +
+    "'Success count: N' does NOT guarantee N documents were actually updated — it only means N\n" +
+    "invocations returned without throwing. A suspiciously fast runtime (e.g. 200 docs in ~6 s\n" +
+    "when each CLS call should take 100–200 ms) is a strong signal of silent no-ops.\n" +
+    "Always spot-check a sample document after the run: ml_document_get on 1–2 URIs to verify\n" +
+    "that the expected fields were actually written.\n" +
+    "WORKAROUND: Use ml_eval_javascript in batches (10–20 URIs per call) with URIs passed via\n" +
+    "vars, running the full classify-and-write logic in the eval context instead.\n\n" +
     "WORKFLOW:\n" +
     "1. Write the transform module to Modules DB: ml_document_put (database='Modules').\n" +
     "2. Optionally write a reader module to Modules DB for custom URI selection logic.\n" +
-    "3. Call flux_reprocess with invoke_module + (collections OR read_module).\n\n" +
+    "3. Call flux_reprocess with invoke_module + (collections OR read_module OR read_javascript).\n\n" +
     "RDF USE CASE — building hybrid entity documents from a named graph:\n" +
     "  Reader: SPARQL SELECT DISTINCT ?subject → returns subject IRIs as array.\n" +
     "  Transform: receives one IRI as URI, SPARQL for that subject's predicates, writes one JSON\n" +
@@ -648,7 +660,8 @@ export function registerFluxTools(
     {
       invoke_module: z.string().describe("URI of the transform module in the Modules database (Phase 2, --write-invoke). Receives one URI per invocation via the injected 'var URI' variable (Flux flag: --external-variable-name URI). e.g. /transforms/build-entity.sjs"),
       read_module: z.string().optional().describe("URI of the reader/collector module in the Modules database (Phase 1, --read-invoke). Must return a Sequence or Array of URI strings. Use this instead of 'collections' when URIs come from SPARQL or custom logic rather than an existing collection. e.g. /transforms/gather-subject-uris.sjs"),
-      collections: z.array(z.string()).optional().describe("Reprocess documents in these collections (Phase 1 alternative to read_module — generates --read-javascript with cts.uris(). Use when the URIs to reprocess already exist as MarkLogic documents in a known collection)"),
+      read_javascript: z.string().optional().describe("Inline JavaScript expression (Phase 1, --read-javascript) that returns a Sequence or Array of URI strings for Flux to distribute. Use this to scope reprocessing to a subset without a separate read_module file and without creating a temporary collection. Example: \"cts.uris(null, null, cts.andQuery([cts.collectionQuery('federal-register'), cts.jsonPropertyRangeQuery('year', '=', 2024)]))\" or \"Sequence.from(['/doc/a.json', '/doc/b.json'])\" for single-URI testing. Takes priority over 'collections' if both are provided. Ignored if 'read_module' is set."),
+      collections: z.union([z.string(), z.array(z.string())]).optional().describe("Reprocess documents in these collections (Phase 1 alternative to read_module — generates --read-javascript with cts.uris(). Use when the URIs to reprocess already exist as MarkLogic documents in a known collection). Accepts a single collection name as a string or an array of names."),
       query: z.string().optional().describe("CTS query to select documents to reprocess (Phase 1 alternative to read_module)"),
       database: z.string().optional().describe("MarkLogic database (defaults to configured database)"),
       thread_count: z.number().int().positive().optional().describe("Parallel threads — set to 4–16 for large datasets; each thread processes batch_size URIs per transaction"),
@@ -677,7 +690,14 @@ export function registerFluxTools(
         "Default: '/'. Note: the URL path does not filter results — use classifier_publish_sets for that."
       ),
     },
-    async ({ invoke_module, read_module, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore, classifier_publish_sets, classifier_path }) => {
+    async ({ invoke_module, read_module, read_javascript, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore, classifier_publish_sets, classifier_path }) => {
+      // Coerce collections: accept string or array
+      const collectionsArr: string[] | undefined = collections === undefined
+        ? undefined
+        : typeof collections === "string"
+          ? [collections]
+          : collections;
+
       const args: string[] = [
         "reprocess",
         "--connection-string", flux.connectionString(database),
@@ -686,12 +706,16 @@ export function registerFluxTools(
         "--external-variable-name", "URI",
       ];
 
-      if (read_module) args.push("--read-invoke", read_module);
-      if (collections?.length) {
+      if (read_module) {
+        args.push("--read-invoke", read_module);
+      } else if (read_javascript) {
+        // Explicit read_javascript takes priority over collections
+        args.push("--read-javascript", read_javascript);
+      } else if (collectionsArr?.length) {
         // flux reprocess does not support --collections; generate inline --read-javascript using cts.uris()
-        const colQuery = collections.length === 1
-          ? `cts.collectionQuery(${JSON.stringify(collections[0])})`
-          : `cts.orQuery([${collections.map(c => `cts.collectionQuery(${JSON.stringify(c)})`).join(",")}])`;
+        const colQuery = collectionsArr.length === 1
+          ? `cts.collectionQuery(${JSON.stringify(collectionsArr[0])})`
+          : `cts.orQuery([${collectionsArr.map(c => `cts.collectionQuery(${JSON.stringify(c)})`).join(",")}])`;
         args.push("--read-javascript", `cts.uris(null,null,${colQuery})`);
       }
       if (query) args.push("--query", query);
@@ -732,7 +756,24 @@ export function registerFluxTools(
       }
 
       const result = await flux.run(args);
-      return { content: [{ type: "text", text: formatResult(result) }], isError: !result.success };
+
+      // ── Detect potential silent no-op: Flux reports success but modules may have not written ──
+      let reprocessNote = "";
+      if (result.success) {
+        const successMatch = result.output.match(/Success count:\s*(\d+)/i);
+        const successCount = successMatch ? parseInt(successMatch[1], 10) : undefined;
+        if (successCount !== undefined && successCount > 0) {
+          reprocessNote =
+            "\n\nNOTE: 'Success count' means the transform module ran without throwing — it does NOT\n" +
+            "guarantee documents were updated. If your module calls xdmp.httpPost() (e.g. Semaphore\n" +
+            "CLS) or writes back to the same URI, verify changes with ml_document_get on a sample URI.\n" +
+            "Silent no-ops can occur when write-invoke modules use outbound HTTP or when declareUpdate()\n" +
+            "is misplaced (see tool description).";
+        }
+      }
+
+      const finalOutput = result.output + reprocessNote;
+      return { content: [{ type: "text", text: formatResult({ ...result, output: finalOutput }) }], isError: !result.success };
     }
   );
 
