@@ -334,6 +334,20 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "        skos:altLabel \"EC2\"@en, \"Elastic Compute Cloud\"@en, \"virtual machine\"@en .\n\n" +
     "  Use semaphore_taxonomy_scaffold to generate a properly structured SKOS skeleton,\n" +
     "  and semaphore_taxonomy_validate to check an existing model for structural issues.\n\n" +
+    "CRITICAL — CONCEPTSCHEME URI CONVENTION:\n" +
+    "  The Semaphore Publisher expects the ConceptScheme URI to follow a strict pattern:\n" +
+    "    {default_namespace}{name}Taxonomy\n" +
+    "  Example: model name='MoviesModel', namespace='http://example.org/ontology/movies/'\n" +
+    "    → ConceptScheme URI must be: http://example.org/ontology/movies/MoviesModelTaxonomy\n\n" +
+    "  If you use any other URI (e.g. ex:MoviesScheme), the publisher's concept-enumeration\n" +
+    "  query will find no concepts and publish only 1 rule.\n\n" +
+    "  The semaphore_taxonomy_scaffold tool generates the correct URI automatically — it is the\n" +
+    "  recommended starting point for new taxonomies.\n\n" +
+    "  For hand-crafted SKOS, use this pattern at the top of your Turtle:\n" +
+    "    @prefix ns: <{default_namespace}> .\n" +
+    "    ns:{name}Taxonomy a skos:ConceptScheme ;\n" +
+    "        skos:prefLabel \"{name} Taxonomy\"@en ;\n" +
+    "        skos:hasTopConcept ns:TopConcept1, ns:TopConcept2 .\n\n" +
     "NEXT STEP: After creating a model, load taxonomy content with semaphore_kmm_skos_load " +
     "(pass skos_content with the Turtle text for locally created taxonomies, or skos_url for public vocabulary endpoints). " +
     "then use semaphore_publish_config_fix_plain_skos (for plain skos:prefLabel vocabularies) and " +
@@ -364,6 +378,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       }
       try {
         const modelUri = await semaphore.createKmmModel(name, default_namespace, description);
+        const ns = default_namespace.endsWith("/") || default_namespace.endsWith("#")
+          ? default_namespace : default_namespace + "/";
+        const expectedSchemeUri = `${ns}${name}Taxonomy`;
         const lines = [
           "KMM MODEL CREATED",
           "─".repeat(50),
@@ -373,19 +390,35 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           `  Default namespace: ${default_namespace}`,
           description ? `  Description:       ${description}` : "",
           "",
+          "REQUIRED — CONCEPTSCHEME URI CONVENTION:",
+          "  The Semaphore Publisher finds concepts by querying for a ConceptScheme at a specific URI.",
+          "  Your ConceptScheme MUST use this exact URI:",
+          `    ${expectedSchemeUri}`,
+          "",
+          "  Turtle snippet to include at the top of your SKOS vocabulary:",
+          `    @prefix ns: <${ns}> .`,
+          `    ns:${name}Taxonomy a <http://www.w3.org/2004/02/skos/core#ConceptScheme> ;`,
+          `        <http://www.w3.org/2004/02/skos/core#prefLabel> "${name} Taxonomy"@en ;`,
+          `        <http://www.w3.org/2004/02/skos/core#hasTopConcept> ns:TopConcept1 .`,
+          "",
+          "  TIP: Use semaphore_taxonomy_scaffold — it generates this URI automatically.",
+          "",
           "NEXT STEPS:",
           `  1. Load SKOS:       semaphore_kmm_skos_load  model_uri="${modelUri}"`,
           `                      skos_content="<turtle-or-rdf-text>"  (for locally created taxonomies — read file with Read tool)`,
           `                      skos_url="<public-https-url>"        (for publicly reachable vocabulary endpoints only)`,
           `  2. Verify concepts: semaphore_kmm_sparql     model_uri="${modelUri}"`,
-          `                      query: SELECT (COUNT(?s) AS ?n) WHERE { ?s a <http://www.w3.org/2004/02/skos/core#Concept> }`,
+          `                      query: PREFIX skos: <http://www.w3.org/2004/02/skos/core#>`,
+          `                             SELECT (COUNT(?s) AS ?n) WHERE { GRAPH <urn:x-evn-master:${name}> { ?s a skos:Concept } }`,
           "  3. Add sem:guid:    semaphore_kmm_sparql_update — add sem:guid to each concept (required for",
           "                      ContextualCitation.kid template). Use a SPARQL INSERT with UUID generation.",
-          "  4. Fix plain SKOS:  semaphore_publish_config_fix_plain_skos  model_uri=\"" + modelUri + "\"",
+          "  4. Validate:        semaphore_taxonomy_validate  model_uri=\"" + modelUri + "\"",
+          "                      (checks hierarchy, orphans, ConceptScheme URI, missing labels)",
+          "  5. Fix plain SKOS:  semaphore_publish_config_fix_plain_skos  model_uri=\"" + modelUri + "\"",
           "                      (Skip if vocabulary uses SKOS-XL reification; required for plain skos:prefLabel)",
-          `  5. Publish to CLS:  semaphore_publish  model_uri="${modelUri}"  async=true`,
-          "  6. Verify in CLS:   semaphore_publish_sets → confirm new rule set is active",
-          "  7. Test:            semaphore_classify  threshold=0  content=\"<sample text>\"",
+          `  6. Publish to CLS:  semaphore_publish  model_uri="${modelUri}"  wait_for_completion=true`,
+          "  7. Verify in CLS:   semaphore_publish_sets → confirm new rule set is active",
+          "  8. Test:            semaphore_classify  threshold=0  content=\"<sample text>\"",
         ].filter(Boolean);
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
@@ -517,11 +550,15 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           // Detect which language the vocabulary uses, then verify all concepts
           // have a prefLabel in that language. Bare (untagged) literals will
           // produce 0 rules when the publisher SPARQL filters by language.
+          // IMPORTANT: Query the model's named graph (urn:x-evn-master:{ModelId}),
+          // not the default graph — data lives in the named graph after import.
           try {
             const PREFIX = "PREFIX skos: <http://www.w3.org/2004/02/skos/core#> ";
+            const modelName = model_uri.replace(/^model:/, "");
+            const graphClause = `GRAPH <urn:x-evn-master:${modelName}>`;
             // Find the dominant prefLabel language in the imported data
             const langRes = await semaphore.kmmSparqlQuery(model_uri,
-              PREFIX + "SELECT (LANG(?l) AS ?lang) (COUNT(?l) AS ?n) WHERE { ?s a skos:Concept ; skos:prefLabel ?l } GROUP BY LANG(?l) ORDER BY DESC(COUNT(?l)) LIMIT 5"
+              PREFIX + `SELECT (LANG(?l) AS ?lang) (COUNT(?l) AS ?n) WHERE { ${graphClause} { ?s a skos:Concept ; skos:prefLabel ?l } } GROUP BY LANG(?l) ORDER BY DESC(COUNT(?l)) LIMIT 5`
             );
             const langRows = langRes?.rows ?? [];
             const dominantLang = langRows.find(r => r.lang && r.lang !== "")?.lang ?? null;
@@ -529,10 +566,10 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
 
             const [totalRes, taggedRes] = await Promise.all([
               semaphore.kmmSparqlQuery(model_uri,
-                PREFIX + "SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ?s a skos:Concept }"),
+                PREFIX + `SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ${graphClause} { ?s a skos:Concept } }`),
               dominantLang
                 ? semaphore.kmmSparqlQuery(model_uri,
-                    PREFIX + `SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ?s a skos:Concept ; skos:prefLabel ?l FILTER(LANG(?l) = "${dominantLang}") }`)
+                    PREFIX + `SELECT (COUNT(DISTINCT ?s) AS ?n) WHERE { ${graphClause} { ?s a skos:Concept ; skos:prefLabel ?l FILTER(LANG(?l) = "${dominantLang}") } }`)
                 : Promise.resolve({ rows: [{ n: "0" }] }),
             ]);
             const totalConcepts  = parseInt(totalRes?.rows?.[0]?.n ?? "0", 10);
@@ -563,8 +600,29 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
               lines.push("  WHERE  { ?c skos:altLabel ?l . FILTER(LANG(?l) = \"\") . BIND(STRLANG(?l,\"en\") AS ?lTagged) }");
               lines.push("");
               lines.push("  After running the updates, re-run semaphore_publish.");
-            } else {
-              lines.push("LABEL LANGUAGE CHECK: no concepts found yet.");
+            } else if (totalConcepts === 0) {
+              lines.push("LABEL LANGUAGE CHECK: 0 concepts found in the model's named graph.");
+              lines.push(`  Queried: GRAPH <urn:x-evn-master:${modelName}>`);
+              // Check for OWL constructs — a common mistake when loading OWL instead of SKOS
+              const contentToCheck = skos_content ?? "";
+              const hasOwlClass = contentToCheck.includes("owl:Class") || contentToCheck.includes("owl/2002/07/owl#Class");
+              const hasOwlOntology = contentToCheck.includes("owl:Ontology") || contentToCheck.includes("owl/2002/07/owl#Ontology");
+              if (hasOwlClass || hasOwlOntology) {
+                lines.push("⚠  WARNING: OWL constructs detected in the loaded content!");
+                lines.push("   Semaphore KMM only supports SKOS — OWL ontologies import silently but produce 0 concepts.");
+                lines.push("   Convert your ontology to SKOS before loading:");
+                lines.push("     owl:Class        → skos:Concept");
+                lines.push("     rdfs:subClassOf  → skos:broader / skos:narrower");
+                lines.push("     owl:inverseOf    → skos:related");
+                lines.push("     owl:Ontology     → skos:ConceptScheme");
+                lines.push("   Use semaphore_taxonomy_scaffold to generate a correct SKOS skeleton.");
+              } else {
+                lines.push("  This may be a timing issue — the named graph may not yet be committed.");
+                lines.push("  Run semaphore_kmm_sparql to verify:");
+                lines.push(`    model_uri="${model_uri}"`);
+                lines.push('    query: PREFIX skos: <http://www.w3.org/2004/02/skos/core#>');
+                lines.push(`           SELECT (COUNT(?c) AS ?n) WHERE { GRAPH <urn:x-evn-master:${modelName}> { ?c a skos:Concept } }`);
+              }
             }
           } catch {
             // Non-fatal: SPARQL check failure should not block the success response
@@ -949,6 +1007,49 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         };
       }
       try {
+        // ── Pre-check: verify ConceptScheme URI follows the expected pattern ──
+        // The publisher's concept-enumeration query looks for a ConceptScheme at
+        // {namespace}{ModelId}Taxonomy. Any other URI will result in 0 concepts found.
+        const modelName = model_uri.replace(/^model:/, "");
+        const expectedSuffix = `${modelName}Taxonomy`;
+        try {
+          const schemeRes = await semaphore.kmmSparqlQuery(model_uri,
+            `PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+             SELECT ?scheme WHERE { ?scheme a skos:ConceptScheme } LIMIT 20`
+          );
+          const schemes = schemeRes.rows.map(r => r.scheme ?? "");
+          const matchingScheme = schemes.find(s => s.endsWith(expectedSuffix));
+          if (schemes.length > 0 && !matchingScheme) {
+            const schemeList = schemes.slice(0, 5).join("\n    ");
+            return {
+              content: [{
+                type: "text",
+                text:
+                  "CONCEPTSCHEME URI MISMATCH — Config fix skipped\n" +
+                  "─".repeat(50) + "\n\n" +
+                  `  Model: ${model_uri}\n\n` +
+                  `  Expected ConceptScheme URI ending with: .../${expectedSuffix}\n` +
+                  `  Found scheme(s):\n    ${schemeList}\n\n` +
+                  "  The publisher's concept-enumeration query finds concepts by querying for a\n" +
+                  `  ConceptScheme whose URI ends with '${expectedSuffix}' (convention: {namespace}{ModelId}Taxonomy).\n` +
+                  "  None of the existing ConceptSchemes match this pattern — the publish will produce only 1 rule.\n\n" +
+                  "  FIX: Add a correctly named ConceptScheme via semaphore_kmm_sparql_update:\n" +
+                  `    PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n` +
+                  `    INSERT DATA {\n` +
+                  `      <{your-namespace}${expectedSuffix}> a skos:ConceptScheme ;\n` +
+                  `          skos:prefLabel "${modelName} Taxonomy"@en ;\n` +
+                  `          skos:hasTopConcept <{your-top-concept-uri}> .\n` +
+                  `    }\n` +
+                  "  Replace {your-namespace} with your model's base namespace.\n" +
+                  "  Then re-run semaphore_publish_config_fix_plain_skos.",
+              }],
+              isError: true,
+            };
+          }
+        } catch {
+          // Non-fatal: if SPARQL check fails, proceed with the patch anyway
+        }
+
         const summary = await semaphore.kmmPatchPublishConfigForPlainSkos(model_uri);
         const lines = [
           "PUBLISHER CONFIG FIX — PLAIN SKOS",
@@ -957,7 +1058,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           summary,
           "",
           "NEXT STEPS:",
-          `  1. Publish to CLS:  semaphore_publish  model_uri="${model_uri}"  async=true`,
+          `  1. Publish to CLS:  semaphore_publish  model_uri="${model_uri}"  wait_for_completion=true`,
           "  2. Verify rules:    semaphore_publish_sets → confirm the rule set is active",
           "  3. Test:            semaphore_classify  threshold=0  content=\"<test text>\"",
           "",
@@ -1602,7 +1703,9 @@ LIMIT 500`;
     "  3. Orphan concepts — concepts with no skos:broader and not declared skos:topConceptOf\n" +
     "  4. Missing prefLabels in the model's language — concepts lacking a skos:prefLabel in the expected language (breaks CLS publishing)\n" +
     "  5. Duplicate altLabels — the same altLabel string appearing on multiple concepts\n" +
-    "  6. Hierarchy depth — how many concepts exist at each depth level (1 = top, 2 = children, etc.)\n\n" +
+    "  6. Hierarchy depth — how many concepts exist at each depth level (1 = top, 2 = children, etc.)\n" +
+    "  7. ConceptScheme URI — verifies a ConceptScheme exists at {namespace}{ModelId}Taxonomy\n" +
+    "     (required for the Semaphore Publisher to enumerate concepts at publish time)\n\n" +
     "Run this after semaphore_kmm_skos_load and before semaphore_publish to catch issues early.\n\n" +
     "LANGUAGE: If omitted, the dominant prefLabel language is auto-detected from the model. " +
     "Override with the 'language' parameter if the auto-detection picks the wrong tag (e.g. if the model " +
@@ -1780,6 +1883,36 @@ LIMIT 500`;
           });
         }
 
+        // ── ConceptScheme URI check ──────────────────────────────────────────
+        // The Semaphore Publisher requires a ConceptScheme at {namespace}{ModelId}Taxonomy
+        const modelName = model_uri.replace(/^model:/, "");
+        const expectedSuffix = `${modelName}Taxonomy`;
+        let hasCorrectScheme = false;
+        let schemeUris: string[] = [];
+        try {
+          const schemeRes = await semaphore.kmmSparqlQuery(model_uri,
+            `PREFIX skos: <${SKOS}>
+             SELECT ?scheme WHERE { ?scheme a skos:ConceptScheme } LIMIT 10`
+          );
+          schemeUris = schemeRes.rows.map(r => r.scheme ?? "").filter(Boolean);
+          hasCorrectScheme = schemeUris.some(s => s.endsWith(expectedSuffix));
+        } catch { /* non-fatal */ }
+
+        lines.push("");
+        if (schemeUris.length === 0) {
+          lines.push(`  ✗ NO ConceptScheme found — required for publishing!`);
+          lines.push(`    Add a ConceptScheme URI ending with '${expectedSuffix}' via semaphore_kmm_sparql_update.`);
+        } else if (!hasCorrectScheme) {
+          lines.push(`  ✗ CONCEPTSCHEME URI MISMATCH:`);
+          lines.push(`    Expected URI ending with: .../${expectedSuffix}`);
+          schemeUris.forEach(s => lines.push(`    Found: ${s}`));
+          lines.push(`    The publisher's concept-enumeration query uses '{namespace}${expectedSuffix}'.`);
+          lines.push(`    Rename/add the scheme or the publish will produce only 1 rule.`);
+        } else {
+          const matchingScheme = schemeUris.find(s => s.endsWith(expectedSuffix))!;
+          lines.push(`  ✓ ConceptScheme URI is correct: ${matchingScheme}`);
+        }
+
         lines.push("");
         lines.push("NEXT STEPS:");
         if (missingLang > 0) {
@@ -1791,8 +1924,11 @@ LIMIT 500`;
         if (flatResult.rows.length > 0) {
           lines.push(`  - Review flat suspects: refactor by adding skos:narrower sub-concepts where appropriate`);
         }
-        if (missingLang === 0 && orphanResult.rows.length === 0) {
-          lines.push(`  - Taxonomy looks structurally sound — proceed with semaphore_publish`);
+        if (!hasCorrectScheme) {
+          lines.push(`  - Fix ConceptScheme URI: add a ConceptScheme ending with '${expectedSuffix}'`);
+        }
+        if (missingLang === 0 && orphanResult.rows.length === 0 && hasCorrectScheme) {
+          lines.push(`  - Taxonomy looks structurally sound — proceed with semaphore_publish_config_fix_plain_skos then semaphore_publish`);
         }
 
         return { content: [{ type: "text", text: lines.join("\n") }] };

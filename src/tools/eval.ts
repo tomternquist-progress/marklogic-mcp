@@ -98,6 +98,90 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
   );
 
   server.tool(
+    "ml_sparql",
+    "Execute a SPARQL query against the MarkLogic triple store using the sem:sparql() XQuery API. " +
+    "Wraps your SPARQL in the required XQuery boilerplate and returns results as JSON.\n\n" +
+    "USE THIS INSTEAD OF ml_eval_xquery when you need to run SPARQL — it handles all the boilerplate.\n\n" +
+    "TRIPLE SOURCES:\n" +
+    "  • Managed triples loaded via ml_graph_put or flux_import (RDF files)\n" +
+    "  • TDE-projected triples from documents (once a TDE with 'triples' section is installed in Schemas DB)\n" +
+    "  • Embedded 'triples' arrays in JSON documents (sem:triple format)\n\n" +
+    "IMPORTANT — SPARQL vs ml_sparql_query:\n" +
+    "  • ml_sparql_query (in graphs.ts) executes SPARQL directly via the MarkLogic SPARQL endpoint\n" +
+    "  • ml_sparql (this tool) uses sem:sparql() inside an XQuery eval — same results but goes through\n" +
+    "    the eval endpoint. Use ml_sparql_query for pure SPARQL; use ml_sparql when you need to\n" +
+    "    combine SPARQL results with XQuery logic.\n\n" +
+    "TDE-BACKED SPARQL:\n" +
+    "  Once a TDE template with a 'triples' section is installed in the Schemas database, MarkLogic\n" +
+    "  automatically projects triples from documents into the triple index. No extra setup is needed —\n" +
+    "  just run your SPARQL query and it will find TDE-generated triples alongside managed triples.\n\n" +
+    "EXAMPLES:\n" +
+    "  SELECT ?title ?director WHERE {\n" +
+    "    ?movie a schema:Movie ;\n" +
+    "           schema:name ?title ;\n" +
+    "           schema:director ?d .\n" +
+    "    ?d schema:name ?director .\n" +
+    "  }\n\n" +
+    "  CONSTRUCT { ?movie schema:genre ?genre } WHERE { ?movie schema:genre ?genre }\n\n" +
+    "Requires ML_ALLOW_EVAL=true.",
+    {
+      sparql: z.string().describe(
+        "SPARQL query string. Include PREFIX declarations. " +
+        "Supports SELECT, CONSTRUCT, ASK, DESCRIBE. " +
+        "Use FROM NAMED <graph-uri> or GRAPH { } to scope to a specific named graph."
+      ),
+      bindings: z.record(z.unknown()).optional().describe(
+        "Variable bindings to pass to the SPARQL query (mapped to sem:binding() calls). " +
+        "Keys are variable names (without '?'), values are strings (treated as IRIs if they start with 'http')."
+      ),
+      database: z.string().optional().describe("Target database (uses server default if omitted)"),
+    },
+    async ({ sparql, bindings, database }) => {
+      // Build the XQuery wrapper around sem:sparql()
+      const bindingLines = Object.entries(bindings ?? {}).map(([k, v]) => {
+        const val = typeof v === "string" && v.startsWith("http")
+          ? `sem:iri("${v}")`
+          : `"${String(v)}"`;
+        return `sem:binding("${k}", ${val})`;
+      });
+      const bindingsArg = bindingLines.length > 0
+        ? `(${bindingLines.join(", ")})`
+        : "()";
+
+      const xquery = `xquery version "1.0-ml";
+import module namespace sem = "http://marklogic.com/semantics"
+  at "/MarkLogic/semantics.xqy";
+
+let $results := sem:sparql(
+  ${JSON.stringify(sparql)},
+  ${bindingsArg}
+)
+return
+  array-node {
+    for $row in $results
+    return object-node {
+      for $key in map:keys($row)
+      return ($key, map:get($row, $key))
+    }
+  }`;
+
+      try {
+        const results = await clients.eval.evalXQuery(xquery, undefined, database);
+        return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+      } catch (err) {
+        const msg = toToolError(err);
+        return {
+          content: [{
+            type: "text",
+            text: `${msg}\nHint: ensure the triple data exists (run ml_graphs_list or check TDE with ml_schema_get_tde). For TDE-backed triples, the template must be in the Schemas database (use ml_tde_install).`,
+          }],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  server.tool(
     "ml_invoke_module",
     "Invoke a stored XQuery or SJS module from the MarkLogic modules database. Requires ML_ALLOW_EVAL=true.",
     {

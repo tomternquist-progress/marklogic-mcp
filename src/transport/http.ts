@@ -97,12 +97,27 @@ export async function startHttpTransport(
     // If no session ID is provided, this is a fresh connection — generate one.
     // If an unknown session ID is provided, the server likely restarted and lost
     // the session. Respond with 404 so the client knows to re-initialize cleanly.
+    //
+    // MCP HTTP SESSION PROTOCOL NOTE:
+    //   After POST /mcp { initialize } you receive an mcp-session-id header.
+    //   The notifications/initialized step is OPTIONAL for HTTP transports — you
+    //   can call tools directly after initialize without sending notifications/initialized.
+    //   This is important for stateless HTTP clients (PowerShell, curl, HttpClient) that
+    //   drop TCP connections between requests: skipping notifications/initialized avoids
+    //   session state confusion since the server ties the session to the connection only
+    //   during the initialize handshake, not afterwards.
+    //   Correct sequence:
+    //     POST /mcp  { "method": "initialize", ... }   → get mcp-session-id header
+    //     POST /mcp  { "method": "tools/call", ... }   → works immediately (skip notifications/initialized)
     if (incomingSessionId && !sessions.has(incomingSessionId)) {
       res.status(404).json({
         jsonrpc: "2.0",
         error: {
           code: -32001,
-          message: "Session not found: the server may have restarted. Please start a new session (re-initialize).",
+          message:
+            "Session not found: the server may have restarted or the session expired (TTL: 30 min). " +
+            "Start a new session: POST /mcp with {\"method\": \"initialize\", ...} to get a new mcp-session-id. " +
+            "NOTE: notifications/initialized is optional for HTTP transports — you can call tools directly after initialize.",
         },
         id: null,
       });
