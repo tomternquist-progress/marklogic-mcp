@@ -1991,150 +1991,313 @@ MCP_TRANSPORT=http
   // ── RAG Pipeline Designer ───────────────────────────────────────────────────
   server.prompt(
     "rag_pipeline_designer",
-    "Design a Retrieval-Augmented Generation (RAG) pipeline using MarkLogic 12 as the vector store. " +
-    "Returns a 6-section plan covering document + embedding design, TDE vec:vector column spec, " +
-    "hybrid search strategy (pure vector / filtered vector / keyword-scoped vector), " +
-    "retrieval → LLM prompt assembly sequence, reranking approach, and common pitfalls. " +
+    "Design a Retrieval-Augmented Generation (RAG) pipeline using MarkLogic 12 as the vector store and/or knowledge graph. " +
+    "Covers three composable paradigms — Lexical RAG (BM25, no embeddings), Vector RAG (ANN/KNN hybrid with vec:vectorScore), " +
+    "and Graph RAG (Semaphore concept classification → concept-scoped search) — and their layered combinations. " +
+    "Returns a 6-section plan: document+embedding design, TDE vec:vector column spec, retrieval strategy options, " +
+    "step-by-step tool sequence, reranking, and pitfalls from live testing. " +
     "Requires MarkLogic 12+. Call ml_views_list and ml_schema_get_tde first to check for existing vector TDE views.",
     {
       domain: z.string().describe("Type of content stored, e.g. 'legal contracts', 'news articles', 'product manuals'"),
-      embedding_source: z.string().optional().describe("How embeddings are generated, e.g. 'OpenAI text-embedding-3-small (1536d)', 'local BERT 768d'"),
+      embedding_source: z.string().optional().describe("How embeddings are generated, e.g. 'OpenAI text-embedding-3-small (1536d)', 'local BERT 768d'. Omit if using Lexical RAG only."),
       collection: z.string().optional().describe("MarkLogic collection holding the documents, if known"),
       filter_fields: z.string().optional().describe("Comma-separated fields used to pre-filter before vector search, e.g. 'category,date,language'"),
       k: z.number().int().positive().optional().describe("Number of nearest neighbours to retrieve (default: 10)"),
+      approach: z.enum(["lexical", "vector", "hybrid", "graph", "graph+lexical", "graph+vector", "all"]).optional()
+        .describe("Retrieval paradigm to focus on. 'all' (default) shows all options with tradeoffs. 'hybrid' = ANN vector + BM25 combined via vec:vectorScore."),
+      has_semaphore: z.boolean().optional().describe("Set true if Semaphore Classification Server is available for Graph RAG. Enables concept-scoped retrieval using semaphore_classify."),
     },
-    ({ domain, embedding_source, collection, filter_fields, k }) => ({
-      messages: [{
-        role: "user" as const,
-        content: {
-          type: "text" as const,
-          text: `You are a MarkLogic 12 architect. Design a complete RAG pipeline for the following context:
+    ({ domain, embedding_source, collection, filter_fields, k, approach, has_semaphore }) => {
+      const schema = domain.toLowerCase().replace(/[^a-z0-9]/g, "_") + "_schema";
+      const view   = domain.toLowerCase().replace(/[^a-z0-9]/g, "_") + "_view";
+      const kVal   = k ?? 10;
+      const focus  = approach ?? "all";
+      const hasSem = has_semaphore ?? false;
+      const dims   = embedding_source?.match(/(\d+)d/)?.[1] ?? "1536";
+      const col    = collection ?? "(use ml_collections_list to discover)";
+
+      return {
+        messages: [{
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `You are a MarkLogic 12 architect. Design a complete RAG pipeline for the following context:
 
 **Content domain:** ${domain}
 **Embedding model:** ${embedding_source ?? "not yet specified — recommend one based on domain"}
-**MarkLogic collection:** ${collection ?? "(not specified — use ml_collections_list to discover)"}
+**MarkLogic collection:** ${col}
 **Pre-filter fields:** ${filter_fields ?? "(none — consider adding for precision)"}
-**k (nearest neighbours):** ${k ?? 10}
+**k (nearest neighbours):** ${kVal}
+**Retrieval approach:** ${focus}
+**Semaphore available:** ${hasSem ? "yes — Graph RAG enabled" : "no — graph patterns require semaphore_classify"}
 
 Produce a 6-section design plan:
 
 ## Section 1: DOCUMENT + EMBEDDING DESIGN
 
 Describe how to store embeddings alongside content in MarkLogic JSON documents:
-- Use field name \`"embedding"\` containing a \`float[]\` array as a sibling of the content fields.
+- Use field name \`"embedding"\` containing a JSON array of floats as a sibling of the content fields.
 - Recommend chunk-vs-whole-document strategy based on the domain (legal contracts → chunk by clause; news articles → whole-document or paragraph; product manuals → chunk by section).
-- Include metadata fields to store alongside the vector: \`"embeddingModel"\`, \`"chunkIndex"\`, \`"chunkText"\`, \`"sourceUri"\` (if chunked).
+- Include metadata fields: \`"embeddingModel"\`, \`"embeddingDim"\`, \`"chunkIndex"\`, \`"chunkText"\`, \`"sourceUri"\` (if chunked).
 - Show a representative JSON document skeleton for ${domain}.
-- Note: embeddings must be generated externally (e.g. OpenAI, Cohere, local sentence-transformer) before inserting via flux_import or ml_document_put.
+- Important: embeddings must be generated externally (OpenAI, Cohere, local sentence-transformer) then stored via flux_import or ml_document_put. MarkLogic's xdmp.httpPost cannot reliably reach HTTPS embedding APIs from the server due to SSL SNI constraints — generate embeddings in your application tier and store the float array.
 
 ## Section 2: TDE VEC:VECTOR COLUMN
 
-Provide the exact TDE JSON template column spec to expose the embedding for vector search:
+Provide the exact TDE JSON template to expose the embedding for Optic vector queries.
+Deploy via ml_document_put to the Schemas database (collection \`http://marklogic.com/xdmp/tde\` is added automatically when the URI starts with /tde/).
 
 \`\`\`json
 {
   "template": {
-    "context": "/${collection ? collection.replace(/\//g, "/") + "/*" : "/*"}",
+    "context": "/",
+    "collections": ["${collection ?? domain.toLowerCase().replace(/[^a-z0-9]/g, "-")}"],
     "rows": [{
-      "schemaName": "${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_schema",
-      "viewName": "${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_view",
+      "schemaName": "${schema}",
+      "viewName": "${view}",
       "columns": [
-        {"name": "uri",       "scalar": "string",     "val": "xdmp:node-uri(.)"},
-        {"name": "embedding", "scalar": "vec:vector", "val": "embedding"},
-        {"name": "content",   "scalar": "string",     "val": "chunkText"}
-        ${filter_fields ? filter_fields.split(",").map(f => `,\n        {"name": "${f.trim()}", "scalar": "string", "val": "${f.trim()}"}`).join("") : ""}
+        { "name": "uri",       "scalarType": "string", "val": "xdmp:node-uri(.)" },
+        { "name": "content",   "scalarType": "string", "val": "chunkText" },
+        { "name": "embedding", "scalarType": "vector", "val": "array-node('embedding')",
+          "dimension": "${dims}", "invalidValues": "reject" }${filter_fields ? filter_fields.split(",").map(f =>
+          `,\n        { "name": "${f.trim()}", "scalarType": "string", "val": "${f.trim()}" }`).join("") : ""}
       ]
     }]
   }
 }
 \`\`\`
 
-Key rules:
-- \`"scalar": "vec:vector"\` is the ONLY valid type for vector columns (not \`"double"\` or \`"string"\`).
-- Dimensionality of the stored vector MUST match the query vector at search time (${embedding_source ? "match " + embedding_source + " dimensions" : "e.g. 1536 for text-embedding-3-small, 768 for BERT"}).
-- Deploy via ml_document_put to the Schemas database (collection \`http://marklogic.com/xdmp/tde\`).
-- After deployment, check ml_reindex_status until ready=true before issuing vector queries.
+Critical rules:
+- \`"scalarType": "vector"\` (not \`"vec:vector"\` or \`"scalar": "vec:vector"\` — those cause TDE-INVALIDTEMPLATENODEVAL).
+- \`"val": "array-node('embedding')"\` — selects the JSON array node as a whole; \`"val": "embedding"\` atomises to individual number nodes and causes XDMP-CAST.
+- \`"dimension"\` is required and must match the embedding model output exactly (${dims} for ${embedding_source ?? "your chosen model"}).
+- \`"invalidValues": "reject"\` — skips documents where embedding is missing/malformed instead of failing the whole view.
+- After deployment run ml_reindex_status(database="Documents") and wait for ready=true before issuing vector queries.
+- Validate with: tde.validate([cts.doc('/tde/your/template.json')],[]) in ml_eval_javascript — empty array = no errors.
 
-## Section 3: HYBRID SEARCH STRATEGY
+## Section 3: RETRIEVAL STRATEGY OPTIONS
 
-Recommend the best search strategy for this domain and explain when to use each:
+Three composable RAG paradigms. Choose one or layer them:
 
-**Option A — Pure vector search** (simplest, no index prerequisites beyond TDE):
+---
+
+### Paradigm 1 — LEXICAL RAG (BM25, no embeddings required)
+
+Best for: domains where exact terminology matters (legal, medical, technical); fast path with no embedding infrastructure.
+
+Limitations from live testing on a 5-article corpus:
+- Misses cross-concept connections: a query about "chemical contaminants in marine ecosystems" may miss an article about "urban air pollution" even though both share the Pollutants concept.
+- Single-term queries return sparse results when vocabulary doesn't overlap the document text.
+
+\`\`\`javascript
+// ml_search or ml_eval_javascript
+cts.search(cts.andQuery([
+  cts.collectionQuery("${collection ?? domain}"),
+  cts.wordQuery(queryTerms)
+]), ["score-bm25", "unfiltered"])
 \`\`\`
-ml_vector_search(
-  schema="${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_schema",
-  view="${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_view",
-  vector_column="embedding",
-  query_vector=[...${k ?? 10} floats at query time...],
-  k=${k ?? 10}
-)
+
+Via MCP: ml_search with collection="${collection ?? domain}" and the query text.
+
+---
+
+### Paradigm 2 — VECTOR RAG (ANN + BM25 hybrid)
+
+Requires: TDE view from Section 2 deployed and indexed. Embedding array stored on each document.
+
+**2a. Pure cosine similarity** (simplest):
+\`\`\`javascript
+const op = require('/MarkLogic/optic');
+// vec is a global in MarkLogic 12 — do NOT require('/MarkLogic/vec')
+const queryVec = vec.vector(queryEmbedding);  // float[]
+
+op.fromView("${schema}", "${view}")
+  .bind(op.as("score", op.vec.cosine(op.col("embedding"), op.vec.vector(queryVec))))
+  .orderBy(op.desc(op.col("score")))
+  .select(["uri", "content", "score"])
+  .limit(${kVal})
+  .result()
 \`\`\`
-Use when: no structured filters needed; pure semantic similarity is sufficient.
+Via MCP: ml_vector_search(schema="${schema}", view="${view}", vector_column="embedding", query_vector=[...], k=${kVal})
 
-**Option B — Pre-filtered vector** (precision: filter first, then rank by similarity):
+**2b. ANN top-k** (faster for large corpora, uses approximate nearest neighbour index):
+\`\`\`javascript
+const op = require('/MarkLogic/optic');
+const queryVec = vec.vector(queryEmbedding);
+
+// annTopK is a METHOD on the plan — not a function on op or vec
+op.fromView("${schema}", "${view}")
+  .annTopK(${kVal}, op.col("embedding"), queryVec, op.col("ann_distance"),
+           { distanceThreshold: 1.0 })
+  .select(["uri", "content", "ann_distance"])
+  .result()
+// Note: ann_distance is cosine distance (lower = more similar; 0=identical, 2=opposite)
 \`\`\`
-ml_optic_query(plan={
-  "$optic": {
-    "fn": "from-view",
-    "args": ["${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_schema", "${domain.toLowerCase().replace(/[^a-z0-9]/g, "_")}_view"]
-  },
-  "where": ${filter_fields ? `{"fn":"eq","args":["col","${filter_fields.split(",")[0].trim()}","<value>"]}` : '{"fn":"and-query","args":[]}'},
-  "bind": {"fn":"as","args":["score",{"fn":"vec:cosine-similarity","args":["col('embedding')","vec:vector([...])"]}]},
-  "order-by": {"fn":"desc","args":["score"]},
-  "limit": ${k ?? 10}
-})
+
+**2c. ANN hybrid (ANN + BM25 combined via vec.vectorScore)** — recommended for production:
+\`\`\`javascript
+// Two-step hybrid: ANN for candidates, fromSearchDocs for BM25 signal, vec.vectorScore to combine
+const op = require('/MarkLogic/optic');
+const queryVec = vec.vector(queryEmbedding);  // float[]
+const lexQuery = cts.andQuery([
+  cts.collectionQuery("${collection ?? domain}"),
+  cts.wordQuery(queryTerms)
+]);
+
+// Step 1: ANN top-k candidates
+const annRows = Array.from(
+  op.fromView("${schema}", "${view}")
+    .annTopK(${kVal * 3}, op.col("embedding"), queryVec, op.col("ann_distance"),
+             { distanceThreshold: 1.5 })
+    .result()
+);
+const candidateUris = annRows.map(r => r["${schema}.${view}.uri"]);
+
+// Step 2: BM25 scores for candidates via fromSearchDocs (returns normalized Optic scores)
+const lexScores = {};
+Array.from(
+  op.fromSearchDocs(cts.andQuery([cts.documentQuery(candidateUris), lexQuery]))
+    .select(["uri", "score"])
+    .result()
+).forEach(r => { lexScores[r.uri] = r.score; });
+
+// Step 3: Combine — vec.vectorScore(distance, bm25, weight) returns a RANK (lower = better)
+// weight = lexical signal weight (0.0–1.0); higher weight emphasises BM25
+const results = annRows.map(r => {
+  const uri  = r["${schema}.${view}.uri"];
+  const dist = r["ann_distance"];
+  const bm25 = lexScores[uri] || null;
+  return { uri, dist, bm25, rank: vec.vectorScore(dist, bm25, 0.7) };
+}).sort((a, b) => {
+  if (a.rank === null && b.rank === null) return a.dist - b.dist;  // both lex-only: sort by vector
+  if (a.rank === null) return 1;   // nulls (no BM25 match) go last
+  if (b.rank === null) return -1;
+  return a.rank - b.rank;          // ASCENDING — lower rank = better combined score
+}).slice(0, ${kVal});
 \`\`\`
-Use when: ${filter_fields ? `filtering by ${filter_fields} before scoring reduces false positives` : "you have structured metadata that narrows the candidate set"}. Always pre-filter BEFORE the cosine computation — not after.
 
-**Option C — Keyword-scoped vector** (recall: find relevant docs via keyword, then rank by similarity):
+**IMPORTANT — vec.vectorScore semantics (verified by live testing):**
+- Returns an integer RANK where **lower is better** → sort ASCENDING.
+- First arg: vector distance from annTopK (0–2, lower=closer).
+- Second arg: BM25 score from fromSearchDocs (large positive integer).
+- Documents matching ONLY the vector arm (null BM25) receive rank=null — sort them last.
+- The weight parameter controls lexical emphasis (0.7 = 70% lexical influence).
+- Do NOT use raw cts.score() values — use the Optic fromSearchDocs \`score\` column.
+
+---
+
+### Paradigm 3 — GRAPH RAG (Semaphore concept classification → concept-scoped retrieval)
+
+Requires: Semaphore Classification Server (semaphore_classify). ${hasSem ? "✓ Available." : "Not configured — set has_semaphore=true if you add Semaphore."}
+
+Best for: domains where cross-concept connections matter (news, research, policy). Bridges vocabulary gaps that lexical search misses.
+
+From live testing: a query about "health impacts of environmental pollution" correctly retrieved an article about "urban air pollution" AND surfaced a cross-concept connection via the shared "Pollutants" taxonomy concept — which pure lexical search missed for a related query.
+
+\`\`\`javascript
+// Step 1: Classify the user question → taxonomy concepts
+// MCP: semaphore_classify(content=userQuestion, threshold=40)
+// → [{label:"Health", id:"29a0..."}, {label:"Pollutants", id:"e821..."}, ...]
+
+// Step 2: Build concept-scope query from returned concept IDs
+const conceptIds = classificationResults.map(c => c.id);
+const conceptQuery = cts.jsonPropertyValueQuery("id", conceptIds);
+
+// Step 3: Retrieve concept-matched document URIs
+const scopedUris = Array.from(
+  cts.uris("", ["limit=100"], conceptQuery)
+).map(String);
+
+// Step 4: Lexical search within concept scope
+const results = Array.from(
+  cts.search(cts.andQuery([cts.documentQuery(scopedUris), cts.wordQuery(queryTerms)]),
+             ["score-bm25", "unfiltered"])
+);
 \`\`\`
-ml_optic_query(plan={
-  "$optic": {
-    "fn": "from-search",
-    "args": [{"fn":"cts:word-query","args":["<user query terms>"]}]
-  },
-  "bind": {"fn":"as","args":["score",{"fn":"vec:cosine-similarity","args":["col('embedding')","vec:vector([...])"]}]},
-  "order-by": {"fn":"desc","args":["score"]},
-  "limit": ${k ?? 10}
-})
+
+**Graph + Vector (recommended when both Semaphore and embeddings are available):**
+\`\`\`javascript
+// Concept scope narrows the ANN candidate set — eliminates false positives
+const queryVec = vec.vector(queryEmbedding);
+const conceptQuery = cts.jsonPropertyValueQuery("id", conceptIds);
+const scopedUris = Array.from(cts.uris("", ["limit=100"], conceptQuery)).map(String);
+
+// ANN scoped to concept-matched documents only
+const op = require('/MarkLogic/optic');
+const results = Array.from(
+  op.fromView("${schema}", "${view}")
+    .where(cts.documentQuery(scopedUris))          // concept filter BEFORE ANN
+    .annTopK(${kVal}, op.col("embedding"), queryVec,
+             op.col("ann_distance"), { distanceThreshold: 1.5 })
+    .select(["uri", "content", "ann_distance"])
+    .result()
+);
 \`\`\`
-Use when: user query contains specific keywords; keyword scoping prevents off-topic similarity matches.
 
-## Section 4: RETRIEVAL SEQUENCE
+Live test finding: Graph+Vector eliminated a CRISPR article that wrongly matched "chemical" and "ecosystem" lexically — the concept filter blocked it because it lacked the Marine Ecosystems concept.
 
-Exact MCP tool call order for a RAG query:
+---
 
-1. **ml_views_list** — confirm the TDE view exists (schema + view name match Section 2)
-2. **ml_schema_get_tde** — inspect the TDE template; verify vec:vector column dimensionality
-3. **ml_reindex_status** — confirm ready=true before any vector query
-4. **ml_vector_search** or **ml_optic_query** — retrieve top-${k ?? 10} URIs + cosine scores
-5. **ml_document_get** (for each URI) — retrieve full document content for context assembly
-6. *(In your application)* Assemble retrieved chunks + scores into the LLM prompt context window; pass to your LLM with the user's question.
+### Choosing and Layering Strategies
 
-For chunked documents: retrieve chunks by URI pattern using ml_document_list or ml_search scoped to sourceUri before calling ml_document_get.
+| Situation | Recommended approach |
+|---|---|
+| No embeddings, fast prototype | Lexical RAG |
+| Embeddings available, simple queries | Pure vector (2a) |
+| Mixed vocab + semantic queries | ANN Hybrid (2c) |
+| Knowledge graph / taxonomy available | Graph + Lexical |
+| Highest precision, all infrastructure | Graph + Vector (3+2b) |
+| Multi-hop concept traversal | Graph + ANN Hybrid |
+
+Graph layer can be added to ANY retrieval paradigm — it simply provides a URI scope filter. Apply it before any search/ANN step.
+
+## Section 4: RETRIEVAL SEQUENCE (step-by-step tool calls)
+
+For a production Graph + Vector RAG query:
+
+1. **semaphore_classify** (if has_semaphore) — classify the user question; extract concept IDs from results
+2. **ml_eval_javascript** — \`cts.uris("", ["limit=100"], cts.jsonPropertyValueQuery("id", conceptIds))\` → scoped URI list
+3. **ml_views_list** — confirm TDE view exists: schema="${schema}", view="${view}"
+4. **ml_reindex_status**(database="Documents") — confirm ready=true
+5. **ml_eval_javascript** — run ANN hybrid (Section 3 Step 2b/2c) scoped to concept URIs → top-${kVal} ranked results
+6. **ml_document_get** (for each URI) — retrieve full document content
+7. *(Application)* Assemble retrieved content + scores into LLM prompt. Pass to Claude/GPT with the user's question.
+
+For Lexical RAG only (steps 1–2 optional, skip 3–5):
+- Replace step 5 with: **ml_search** or **ml_eval_javascript** with cts.search + cts.wordQuery.
 
 ## Section 5: RERANKING
 
-Explain when a second-pass reranker adds value:
+When to add a second-pass reranker:
+- **Cosine alone is sufficient** for whole-document embeddings with high-quality models (e.g. text-embedding-3-small).
+- **Add a cross-encoder reranker** when: chunks are short (sentence-level), query is multi-faceted, or top-k results have inconsistent quality. Options: Cohere Rerank v3, cross-encoder/ms-marco-MiniLM.
+- **Graph pre-filter replaces reranking** in many cases — if concept scoping already eliminates off-topic results, a reranker adds overhead without benefit.
+- **Deduplication**: for chunked documents, group by \`sourceUri\` after reranking to avoid the LLM context window being filled by chunks from a single document.
+- **Score threshold for pure vector**: discard results where cosine similarity < 0.5 (distance > 1.0) to avoid weakly related context. For ANN hybrid, discard results where rank > 50 (heuristic — tune per domain).
 
-- **Cosine similarity alone** is sufficient when embeddings are high quality and chunks are semantically coherent (whole-document or section-level).
-- **Add a reranker** when: chunks are short (sentence-level), query is multi-faceted, or top-k results feel off-topic. Popular options: Cohere Rerank, cross-encoder/ms-marco-MiniLM.
-- **Deduplication**: if chunked, deduplicate by \`sourceUri\` after reranking to avoid repeating the same source document.
-- **Score threshold**: filter out chunks where cosine similarity < 0.7 to avoid including weakly related context. Adjust threshold based on domain.
+## Section 6: PITFALLS (from live testing)
 
-## Section 6: PITFALLS
+1. **TDE vec:vector format** — \`"scalar": "vec:vector"\` and \`"scalarType": "vec:vector"\` both fail. The correct field is \`"scalarType": "vector"\` (no namespace prefix) plus \`"dimension": "${dims}"\`. Validate before querying: tde.validate([cts.doc('/tde/...')],[]) returns [] on success.
 
-List the most common failures for this setup:
+2. **TDE val for JSON arrays** — \`"val": "embedding"\` atomises the JSON array into 1536 individual number nodes → XDMP-CAST. Use \`"val": "array-node('embedding')"\` to select the array node as a unit.
 
-1. **Dimensionality mismatch** — stored embedding has 1536 dimensions but query vector has 768 (or vice versa). MarkLogic will return an error. Always log embedding dimensions at ingest time.
-2. **Querying before reindex completes** — TDE is deployed but ml_reindex_status still shows indexing=true. Vector queries return no results until ready=true.
-3. **Filtering AFTER cosine computation** — computing cosine similarity over all vectors then filtering is O(n). Always push \`where()\` BEFORE \`bind(vec:cosine-similarity)\` in the Optic plan.
-4. **vec:vector scalar type** — using \`"scalar":"double"\` or \`"scalar":"string"\` instead of \`"scalar":"vec:vector"\` causes the TDE to silently ignore the column. Verify with ml_tde_validate.
-5. **Chunk size vs context window** — chunks too small lose semantic context; chunks too large waste LLM context tokens. For ${domain}: recommend ${domain.toLowerCase().includes("contract") || domain.toLowerCase().includes("legal") ? "clause-level (200–500 tokens)" : domain.toLowerCase().includes("manual") ? "section-level (300–800 tokens)" : "paragraph-level (100–300 tokens)"}.
-6. **Missing collection scope** — querying the TDE view without a collection filter scans all documents. Always set a collection or use fromSearch with a collection query as the scope.`,
-        },
-      }],
-    })
+3. **vec module** — \`require('/MarkLogic/vec')\` throws XDMP-MODNOTFOUND. \`vec\` is a global object in MarkLogic 12 SJS — use it directly: \`vec.vector([...])\`, \`vec.vectorScore(...)\`.
+
+4. **annTopK is a plan method** — call as \`.annTopK(k, op.col('embedding'), queryVec, op.col('distance'), options)\` on a ModifyPlan. It is NOT \`op.annTopK()\`. The query vector argument uses the global \`vec.vector()\`, not \`op.vec.vector()\`.
+
+5. **vec.vectorScore sort direction** — sorts ASCENDING (lower rank = better). The Optic \`op.vec.vectorScore\` used inside a plan sorts descending, but the SJS global \`vec.vectorScore()\` returns an integer rank where lower is better. If you use the two-step JS pattern, sort asc.
+
+6. **ANN hybrid false positives** — BM25 can surface articles that match query words in an irrelevant context (e.g. "chemical" in a gene-editing article matching a marine pollution query). Apply Graph concept pre-filtering to prune these before the hybrid step.
+
+7. **Dimensionality mismatch** — stored embeddings (${dims}d) must match query vector dimensions exactly. MarkLogic returns XDMP-DIMMISMATCH. Log \`embeddingDim\` at ingest time.
+
+8. **Querying before reindex** — ml_reindex_status shows indexing=true after TDE deployment. Vector queries return SQL-TABLEREINDEXING until ready=true.
+
+9. **OpenAI from MarkLogic server** — xdmp.httpPost to external HTTPS APIs often fails with \`tlsv1 unrecognized name\` (SSL SNI issue in MarkLogic's Java SSL client). Generate embeddings in your application tier and store the float array via ml_document_put or flux_import.`,
+          },
+        }],
+      };
+    }
   );
 
   // ── Envelope Pattern Advisor ────────────────────────────────────────────────

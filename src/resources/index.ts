@@ -116,10 +116,16 @@ Graph / entity       Triple store / SPARQL      ml_sparql_query           ml_gra
 relationships        + entity-oriented docs     (sparql_query_builder)
                                                 data_modeling_advisor
 
-Vector similarity    Optic vec:cosine-sim       ml_vector_search          ml_views_list
+Vector similarity    Optic annTopK / cosine      ml_vector_search          ml_views_list
 / RAG / embeddings   over TDE vec:vector col    ml_optic_query            ml_schema_get_tde
-(ML 12+)                                        data_modeling_advisor     ml_reindex_status
-                                                rag_pipeline_designer
+(ML 12+)             ANN hybrid: annTopK +      ml_eval_javascript        ml_reindex_status
+                     fromSearchDocs +            data_modeling_advisor
+                     vec.vectorScore             rag_pipeline_designer
+
+Graph RAG /          Semaphore classify →        semaphore_classify        semaphore_status
+concept-scoped       concept IDs →               ml_eval_javascript        semaphore_classes
+retrieval            cts.jsonPropertyValueQuery  ml_search                 ml_collections_list
+                     → URI scope → search/ANN    rag_pipeline_designer
 
 Multi-model design   Document + Triple +        data_modeling_advisor     ml_collections_list
 (combined)           Vector architecture        ml_vector_search          ml_graphs_list
