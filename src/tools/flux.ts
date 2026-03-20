@@ -328,7 +328,7 @@ export function registerFluxTools(
       // ── HTTP 404/403 on http_url: suggest how to fix ──
       if (!result.success && http_url && condensedOutput.includes("HTTP 404")) {
         const enhanced = condensedOutput +
-          "\n\nNOTE: The URL returned 404 (Not Found). Possible causes:" +
+          "\n\nHint: The URL returned 404 (Not Found). Possible causes:" +
           "\n  • The Socrata resource ID may be wrong — find the correct ID on the dataset's API page (look for the '?' docs button on the portal page)." +
           "\n  • The dataset may have moved or been deprecated — try searching the portal for an updated resource ID." +
           "\n  • Try running flux_preview with the same URL to debug the fetch before importing.";
@@ -336,7 +336,7 @@ export function registerFluxTools(
       }
       if (!result.success && http_url && condensedOutput.includes("HTTP 403")) {
         const enhanced = condensedOutput +
-          "\n\nNOTE: The URL returned 403 (Forbidden). The resource may require an API key or authentication." +
+          "\n\nHint: The URL returned 403 (Forbidden). The resource may require an API key or authentication." +
           "\n  • Some Socrata portals require an app token in the X-App-Token header — pass it via extra_args: ['--header', 'X-App-Token: <your-token>']." +
           "\n  • Check whether the dataset requires account registration or a license agreement." +
           "\n  • Try opening the URL in a browser to see the access requirements.";
@@ -346,7 +346,7 @@ export function registerFluxTools(
       // ── PATH_NOT_FOUND: explain runner-local paths ──
       if (!result.success && condensedOutput.includes("PATH_NOT_FOUND")) {
         const enhanced = condensedOutput +
-          "\n\nNOTE: --path must exist on the flux runner host (inside the flux runner container), " +
+          "\n\nHint: --path must exist on the flux runner host (inside the flux runner container), " +
           "not your local machine or the MCP server container.\n" +
           "  • Files written by shell commands land on the host OS, not inside either container.\n" +
           "  • Files placed via 'docker cp' into the runner container ARE visible to the runner's\n" +
@@ -360,7 +360,7 @@ export function registerFluxTools(
       // ── Pre-processing failed: runner tried to download http_url but got null ──
       if (!result.success && condensedOutput.includes("Pre-processing failed")) {
         const enhanced = condensedOutput +
-          "\n\nNOTE: The flux runner's pre-processor failed to download the http_url.\n" +
+          "\n\nHint: The flux runner's pre-processor failed to download the http_url.\n" +
           "  'Pre-processing failed: null' typically means the Java HttpClient in the runner\n" +
           "  received a null response — even if the URL is reachable (e.g. via wget from inside\n" +
           "  the container). This is a known runner limitation for certain URL patterns.\n" +
@@ -387,7 +387,7 @@ export function registerFluxTools(
       const hasUnnamedCols = condensedOutput.includes("_c0") || / _c\d+/.test(condensedOutput);
       let colNote = "";
       if (column_names?.length && hasUnnamedCols) {
-        colNote = "\n\nNOTE: Output contains unnamed columns (_c0, _cN…). " +
+        colNote = "\n\nHint: Output contains unnamed columns (_c0, _cN…). " +
           `The file may have more columns than the ${column_names.length} names provided in column_names. ` +
           "Run flux_preview to see the raw column layout and adjust column_names accordingly.";
       }

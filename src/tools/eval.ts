@@ -68,7 +68,7 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
             return {
               content: [{
                 type: "text",
-                text: `${msg}\n\nSyntaxError hint: a bare object literal \`{ key: val }\` at the end of a script is parsed as a block statement, not a return value. Fix: assign to a variable (\`var r = {...}; r\`) or wrap in parens (\`({...})\`).`,
+                text: `${msg}\nHint: a bare object literal \`{ key: val }\` at the end of a script is parsed as a block statement, not a return value. Fix: assign to a variable (\`var r = {...}; r\`) or wrap in parens (\`({...})\`).`,
               }],
               isError: true,
             };
@@ -79,7 +79,7 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
             return {
               content: [{
                 type: "text",
-                text: `${msg}\n\nError code detected: ${mlCode}. This is a server-side MarkLogic error — check your script for undefined variables, type mismatches, missing modules, or permission issues.`,
+                text: `${msg}\nHint: Error code ${mlCode} — check your script for undefined variables, type mismatches, missing modules, or permission issues.`,
               }],
               isError: true,
             };
@@ -87,7 +87,7 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
           return {
             content: [{
               type: "text",
-              text: `${msg}\n\nIf the response body was empty, the script payload may be too large (current script: ~${scriptKb} KB). Move large inline values (arrays, strings) into the vars parameter and reference them by variable name in the script.`,
+              text: `${msg}\nHint: The script payload may be too large (~${scriptKb} KB). Move large inline values (arrays, strings) into the vars parameter and reference them by variable name in the script.`,
             }],
             isError: true,
           };

@@ -21,7 +21,7 @@ export function registerSecurityTools(server: McpServer, clients: MarkLogicClien
       } catch (err) {
         const msg = toToolError(err);
         const note = msg.includes("401") || msg.includes("403")
-          ? "\nNOTE: The connecting account lacks the 'manage-user' privilege. Ask a MarkLogic admin to grant this role."
+          ? "\nHint: The connecting account lacks the 'manage-user' privilege. Ask a MarkLogic admin to grant this role."
           : "";
         return { content: [{ type: "text", text: msg + note }], isError: true };
       }
@@ -55,7 +55,7 @@ export function registerSecurityTools(server: McpServer, clients: MarkLogicClien
       } catch (err) {
         const msg = toToolError(err);
         const note = msg.includes("401") || msg.includes("403")
-          ? "\nNOTE: The connecting account lacks the 'manage-user' privilege. Ask a MarkLogic admin to grant this role."
+          ? "\nHint: The connecting account lacks the 'manage-user' privilege. Ask a MarkLogic admin to grant this role."
           : "";
         return { content: [{ type: "text", text: msg + note }], isError: true };
       }
@@ -88,7 +88,7 @@ export function registerSecurityTools(server: McpServer, clients: MarkLogicClien
             content: [{
               type: "text",
               text: `No permissions found for ${uri}.\n` +
-                "NOTE: This may mean the document does not exist, or the connecting account lacks " +
+                "Hint: This may mean the document does not exist, or the connecting account lacks " +
                 "permission to read its metadata. Verify the URI with ml_document_list.",
             }],
           };
@@ -97,7 +97,7 @@ export function registerSecurityTools(server: McpServer, clients: MarkLogicClien
       } catch (err) {
         const msg = toToolError(err);
         const note = msg.includes("401") || msg.includes("403")
-          ? "\nNOTE: The connecting account lacks 'manage-user' or read access to this document. " +
+          ? "\nHint: The connecting account lacks 'manage-user' or read access to this document. " +
             "Ask a MarkLogic admin to grant the 'manage-user' role or the appropriate document role."
           : "";
         return { content: [{ type: "text", text: msg + note }], isError: true };

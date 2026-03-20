@@ -81,7 +81,7 @@ export function registerExtensionTools(
           content: [{
             type: "text",
             text: toToolError(err) +
-              "\nNOTE: Check that the extension is deployed (ml_extension_list) and that " +
+              "\nHint: Check that the extension is deployed (ml_extension_list) and that " +
               "the module has no syntax errors (try ml_extension_get to inspect source code). " +
               "REST extensions run in the App Server's database context — ensure indexes " +
               "referenced in the extension exist (ml_indexes_list).",
@@ -148,7 +148,7 @@ export function registerExtensionTools(
             content: [{
               type: "text",
               text: toToolError(err) +
-                "\nNOTE: Syntax errors in the module will cause a 400 or 500 on deployment. " +
+                "\nHint: Syntax errors in the module will cause a 400 or 500 on deployment. " +
                 "Check the error message for line numbers. Use the rest_extension_generator " +
                 "prompt to generate a well-formed starting module.",
             }],

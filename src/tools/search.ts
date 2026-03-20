@@ -157,7 +157,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
           content: [{
             type: "text",
             text: toToolError(err) +
-              "\nNOTE: ml_geospatial_search requires a geospatial element pair index on the parent/lat/lon properties. " +
+              "\nHint: ml_geospatial_search requires a geospatial element pair index on the parent/lat/lon properties. " +
               "Run ml_indexes_list with index_type='geospatial' to verify the index exists. " +
               "If no index exists, create one with ml_eval_javascript using the Admin module.",
           }],

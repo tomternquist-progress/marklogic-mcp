@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
-import { toToolError } from "../utils/errors.js";
+import { toToolError, appendTdeHint } from "../utils/errors.js";
 
 export function registerOpticTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
@@ -38,13 +38,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
         const result = await clients.optic.query(planObj, database, strip_schema_prefix);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
-        let msg = toToolError(err);
-        if (msg.includes("SQL-TABLENOTFOUND") || (msg.includes("Table") && msg.includes("not found"))) {
-          msg += "\nHint: TDE templates must be stored in the Schemas database with collection 'http://marklogic.com/xdmp/tde'. Use ml_document_put with database='Schemas' to register your template, then use ml_schema_get_tde to verify it was applied.";
-        }
-        if (msg.includes("TABLEREINDEXING") || msg.includes("reindexing")) {
-          msg += "\nHint: The TDE view is still being built. Use ml_reindex_status (database=\"Documents\") to check when reindex-count reaches 0, then retry.";
-        }
+        let msg = appendTdeHint(toToolError(err));
         if (msg.includes("OPTIC-INVALARGS") && msg.includes("orderBy")) {
           msg += "\nHint: order-by accepts exactly 1 argument. For a single sort key use: {\"ns\":\"op\",\"fn\":\"order-by\",\"args\":[{\"ns\":\"op\",\"fn\":\"desc\",\"args\":[\"col\"]}]}. For MULTIPLE sort keys, wrap them in a nested array as the single argument: {\"ns\":\"op\",\"fn\":\"order-by\",\"args\":[[{\"ns\":\"op\",\"fn\":\"asc\",\"args\":[\"col1\"]},{\"ns\":\"op\",\"fn\":\"desc\",\"args\":[\"col2\"]}]]}.";
         }
@@ -119,13 +113,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
         const result = await clients.optic.query(plan, database, true);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
-        let msg = toToolError(err);
-        if (msg.includes("SQL-TABLENOTFOUND") || (msg.includes("Table") && msg.includes("not found"))) {
-          msg += "\nHint: Use ml_views_list to confirm the view exists. TDE template must be in the Schemas database with collection 'http://marklogic.com/xdmp/tde'.";
-        }
-        if (msg.includes("TABLEREINDEXING") || msg.includes("reindexing")) {
-          msg += "\nHint: TDE view is still indexing. Check ml_reindex_status (database='Documents') and retry when reindex-count reaches 0.";
-        }
+        let msg = appendTdeHint(toToolError(err));
         if (msg.includes("vec") || msg.includes("VEC") || msg.includes("cosine") || msg.includes("VECTOR-INVALIDTYPE")) {
           msg += "\nHint: The vector_column must map to a TDE column declared with scalar type 'vec:vector'. Check ml_schema_get_tde to inspect column types. MarkLogic 12+ required.";
         }
