@@ -670,7 +670,16 @@ function classify(task: string): ToolRecipe[] {
 export function registerSuggestApproachTool(server: McpServer): void {
   server.tool(
     "ml_suggest_approach",
-    "Analyse a natural-language task description and return the recommended MarkLogic MCP tool chain, with ready-to-use recipe parameters, rationale, and warnings. Call this before starting any non-trivial task to avoid using the wrong tool (e.g. ml_eval_javascript for bulk import). Returns 1–3 ranked suggestions.",
+    "PLANNING TOOL — call this first for any non-trivial task. Returns ranked tool chains with ready-to-use parameters, rationale, and warnings.\n\n" +
+    "COVERS ALL PROBLEM DOMAINS:\n" +
+    "  • Bulk data loading → Flux import pipeline\n" +
+    "  • Content classification / auto-tagging / concept extraction → Semaphore tools\n" +
+    "  • Full-text search, faceted navigation → ml_search, ml_facets_query\n" +
+    "  • Analytics, GROUP BY, joins → ml_optic_query over TDE views\n" +
+    "  • Graph / entity relationships → ml_sparql_query\n" +
+    "  • Vector similarity / RAG → ml_vector_search\n" +
+    "  • Schema, indexes, TDE discovery → ml_schema_discover, ml_indexes_list\n\n" +
+    "Call this instead of guessing when the right tool is not immediately obvious (e.g. use this for 'tag my articles by topic' → it will route to Semaphore, not eval). Returns 1–3 ranked suggestions.",
     {
       task: z.string().describe(
         "Natural-language description of what you want to accomplish, e.g. 'import a CSV from a public URL into MarkLogic and create a view', 'find all documents mentioning climate change', 'export the sales collection to Parquet'."

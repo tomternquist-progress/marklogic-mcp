@@ -25,6 +25,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
   // ── semaphore_status ──────────────────────────────────────────────────────────
   server.tool(
     "semaphore_status",
+    "USE THIS TOOL WHEN: the user wants to auto-tag documents with taxonomy concepts, classify content by topic or subject, " +
+    "add controlled-vocabulary categories to documents, build faceted navigation from a thesaurus, or extract named concepts " +
+    "from text. Semaphore is the Progress Data Platform's AI-powered taxonomy and auto-classification engine.\n\n" +
     "Check whether the Semaphore Classification Server (SCS) is configured and reachable, and return its version. " +
     "Run this first before any other semaphore_* tool to confirm connectivity.\n\n" +
     "CONFIGURATION: Set SEMAPHORE_URL in the MCP server .env to the SCS base URL, e.g. http://semaphore:5058",
@@ -974,16 +977,19 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
   // ── semaphore_classify ────────────────────────────────────────────────────────
   server.tool(
     "semaphore_classify",
-    "Classify text content using the Semaphore Classification Server (CLS). Returns scored taxonomy categories.\n\n" +
+    "AUTO-TAG / CLASSIFY text against a controlled-vocabulary taxonomy. Returns scored taxonomy categories " +
+    "drawn from the active Semaphore rule set (SKOS thesaurus, subject classification scheme, or custom ontology).\n\n" +
+    "USE THIS TOOL WHEN:\n" +
+    "  - The user asks to classify, tag, categorize, label, or annotate documents by topic or subject\n" +
+    "  - The user wants to extract concepts, themes, or entities using a taxonomy or controlled vocabulary\n" +
+    "  - Testing classification output on sample text before building a bulk pipeline\n" +
+    "  - Classifying a small number of documents individually (for bulk, use flux_import or flux_reprocess)\n" +
+    "  - Verifying that a publish set produces the expected categories after semaphore_publish\n" +
+    "  - Designing the MarkLogic document model for storing classification results\n\n" +
     "HOW IT WORKS:\n" +
     "  The CLS parses your text, matches it against the loaded classification rules (publish sets),\n" +
     "  and returns categories above the threshold score. Each category has a class name (taxonomy domain),\n" +
     "  a label (concept name), a stable UUID, and a score (0.0–1.0 float).\n\n" +
-    "USE THIS TOOL WHEN:\n" +
-    "  - Testing classification output on sample text before building a pipeline\n" +
-    "  - Classifying a small number of documents individually (for bulk, use Flux)\n" +
-    "  - Verifying that a publish set produces the expected categories\n" +
-    "  - Designing the MarkLogic document model for storing classification results\n\n" +
     "FOR BULK CLASSIFICATION (preferred for production):\n" +
     "  Use flux_import or flux_reprocess with classify_with_semaphore=true. To scope results to\n" +
     "  specific taxonomies, pass classifier_publish_sets=[\"name1\",\"name2\"] — Flux injects\n" +
