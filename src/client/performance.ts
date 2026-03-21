@@ -178,13 +178,15 @@ function buildXQueryMetersWrapper(userCode: string): string {
  * Returns a plain JS object with elapsedMs, resultCount, querySample, and queryMeters.
  */
 function buildSjsMetersWrapper(userCode: string): string {
+  // JSON.stringify produces a quoted string literal that eval() can evaluate as code,
+  // capturing the completion value of arbitrary expressions and multi-statement code.
+  // This avoids the block-body IIFE problem where expression statements are not returned.
+  const encodedCode = JSON.stringify(userCode);
   return [
     "const __t0 = new Date().getTime();",
     "let __cnt = 0, __sample = [];",
     "try {",
-    "  const __raw = (() => {",
-    userCode,
-    "  })();",
+    `  const __raw = eval(${encodedCode});`,
     "  if (__raw !== null && __raw !== undefined) {",
     "    const __arr = typeof __raw[Symbol.iterator] === 'function' ? Array.from(__raw) : [__raw];",
     "    __cnt = __arr.length;",

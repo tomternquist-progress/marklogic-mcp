@@ -98,6 +98,55 @@ describeIfLive("DocumentsClient write (live)", () => {
       const result = await documents.get(TEST_URI);
       expect((result.content as Record<string, unknown>).patched).toBe(true);
     });
+
+    it("deletes a field via patch delete operation", async () => {
+      // Regression: patch "delete" operation wasn't tested — only "replace" and "insert" were.
+      // This verifies the ML REST patch delete envelope: {"patch":[{"delete":{"select":"fieldName"}}]}
+      await documents.put(TEST_URI, TEST_CONTENT, "application/json");
+
+      await documents.patchDocument(TEST_URI, {
+        patch: [{ delete: { select: "value" } }],
+      });
+
+      const result = await documents.get(TEST_URI);
+      // The "value" field (42) should be gone after the delete patch
+      expect((result.content as Record<string, unknown>).value).toBeUndefined();
+    });
+
+    it("replaces a nested field path via patch", async () => {
+      // Seed a doc with nested structure to test path-based replace
+      const nestedContent = JSON.stringify({
+        meta: { status: "draft", priority: 1 },
+        title: "Nested patch test",
+      });
+      await documents.put(TEST_URI, nestedContent, "application/json");
+
+      await documents.patchDocument(TEST_URI, {
+        patch: [{ replace: { select: "meta/status", content: "published" } }],
+      });
+
+      const result = await documents.get(TEST_URI);
+      const meta = (result.content as Record<string, unknown>).meta as Record<string, unknown>;
+      expect(meta.status).toBe("published");
+      // Sibling field should be untouched
+      expect(meta.priority).toBe(1);
+    });
+
+    it("inserts an element at a specific array position", async () => {
+      // Verify insert with position "last-child" appends to array-like context
+      await documents.put(TEST_URI, TEST_CONTENT, "application/json");
+
+      // Insert a new tag at the end of the tags array
+      await documents.patchDocument(TEST_URI, {
+        patch: [{ insert: { context: "/tags[last()]", position: "after", content: "c" } }],
+      });
+
+      const result = await documents.get(TEST_URI);
+      const tags = (result.content as Record<string, unknown>).tags as string[];
+      expect(Array.isArray(tags)).toBe(true);
+      // Original tags were ["a", "b"]; "c" should now be present
+      expect(tags).toContain("c");
+    });
   });
 
   describe("del", () => {

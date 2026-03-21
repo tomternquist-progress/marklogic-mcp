@@ -90,9 +90,9 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
                   ns: "op", fn: "as", args: [
                     scoreCol,
                     {
-                      ns: "vec", fn: "cosine-similarity", args: [
+                      ns: "op", fn: "vec.cosineSimilarity", args: [
                         { ns: "op", fn: "col", args: [vector_column] },
-                        { ns: "vec", fn: "vector", args: [query_vector] },
+                        { ns: "op", fn: "vec.vector", args: [query_vector] },
                       ],
                     },
                   ],

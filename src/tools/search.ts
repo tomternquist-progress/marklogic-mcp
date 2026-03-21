@@ -57,18 +57,21 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
 
   server.tool(
     "ml_values_query",
-    "Query MarkLogic lexicons and range indexes to get facet values, counts, and aggregates.",
+    "Query MarkLogic lexicons and range indexes to get facet values, counts, and aggregates. " +
+    "Requires a named values definition in search options (deploy via ml_search_options_put) that references a range index. " +
+    "Pass the options name to target a specific values config; omit it to use the default app-services options.",
     {
       values_name: z.string().describe("Named values/tuples definition configured in search options"),
       query: z.string().optional().describe("Constraining search query to filter values"),
       limit: z.number().int().positive().max(1000).optional().describe("Maximum values to return (default: 20)"),
       direction: z.enum(["ascending", "descending"]).optional().describe("Sort direction (default: descending by frequency)"),
       aggregate: z.string().optional().describe("Aggregate function: sum, count, avg, min, max, stddev"),
+      options: z.string().optional().describe("Named search options node that contains the values definition (deploy via ml_search_options_put)"),
       database: z.string().optional().describe("Database name"),
     },
-    async ({ values_name, query, limit, direction, aggregate, database }) => {
+    async ({ values_name, query, limit, direction, aggregate, options, database }) => {
       try {
-        const result = await clients.search.values(values_name, { query, limit, direction, aggregate, database });
+        const result = await clients.search.values(values_name, { query, limit, direction, aggregate, options, database });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };

@@ -134,14 +134,24 @@ describeIfLive("QuickSight tools (live)", () => {
     });
 
     it("values query with direction returns ordered results", async () => {
-      const result = await search.values("collections", {
+      // Note: the direction parameter sorts by VALUE not by frequency.
+      // "descending" returns collection names in reverse alphabetical order.
+      const descResult = await search.values("collections", {
         options: OPTIONS_NAME,
         direction: "descending",
       });
-      expect(Array.isArray(result.values)).toBe(true);
-      // Values should be sorted by frequency descending (if multiple collections)
-      if (result.values.length >= 2) {
-        expect(result.values[0].frequency).toBeGreaterThanOrEqual(result.values[1].frequency);
+      const ascResult = await search.values("collections", {
+        options: OPTIONS_NAME,
+        direction: "ascending",
+      });
+      expect(Array.isArray(descResult.values)).toBe(true);
+      expect(Array.isArray(ascResult.values)).toBe(true);
+      // If there are multiple values, ascending and descending should differ in order
+      if (descResult.values.length >= 2 && ascResult.values.length >= 2) {
+        // First value in descending should be >= first value in ascending (by string)
+        const descFirst = String(descResult.values[0].value);
+        const ascFirst = String(ascResult.values[0].value);
+        expect(descFirst >= ascFirst).toBe(true);
       }
     });
   });

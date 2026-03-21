@@ -63,7 +63,18 @@ export class EvalClient {
     if (vars && Object.keys(vars).length > 0) {
       body.append("vars", JSON.stringify(vars));
     }
-    return this.evalRequest(body, database);
+    // Module invocation requires /v1/invoke — /v1/eval only accepts xquery= or javascript=
+    const params: Record<string, string> = {};
+    if (database) params.database = database;
+    const res = await this.base.http.post("/v1/invoke", body.toString(), {
+      params,
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "multipart/mixed",
+      },
+      responseType: "text",
+    });
+    return parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
   }
 
   private async evalRequest(body: URLSearchParams, database?: string): Promise<EvalResult[]> {

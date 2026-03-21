@@ -82,7 +82,7 @@ describeIfLive("EvalClient extended (live)", () => {
       const xquery = `
         declare namespace sem = "http://marklogic.com/semantics";
         let $results := sem:sparql("${sparqlQuery.trim().replace(/"/g, '\\"').replace(/\n/g, " ")}")
-        for $r in $results return sem:sparql-values($r, ("s","p","o"))
+        for $r in $results return map:get($r, "s")
       `;
       // This may return an empty sequence if the graphs test hasn't run first — that's fine
       const results = await evalClient.evalXQuery(xquery);

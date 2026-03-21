@@ -33,7 +33,7 @@ describeIfLive("ExtensionsClient call (live)", () => {
   const { extensions } = buildClients();
 
   beforeAll(async () => {
-    await extensions.putExtension(EXT_NAME, EXT_CODE, "application/javascript");
+    await extensions.putExtension(EXT_NAME, EXT_CODE, "javascript");
     // Wait a moment for the extension to register
     await new Promise((r) => setTimeout(r, 1000));
   }, 20_000);
