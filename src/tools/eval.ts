@@ -183,10 +183,14 @@ return
 
   server.tool(
     "ml_invoke_module",
-    "Invoke a stored XQuery or SJS module from the MarkLogic modules database. Requires ML_ALLOW_EVAL=true.",
+    "Invoke a stored XQuery or SJS module from the MarkLogic modules database. Requires ML_ALLOW_EVAL=true.\n\n" +
+    "SJS EXTERNAL VARIABLES (ML 12): In ML 12, the `external` global does NOT exist in SJS modules. " +
+    "Variables passed via the vars parameter are available as a JSON string via xdmp.getRequestField('vars'). " +
+    "Pattern: var vars = JSON.parse(xdmp.getRequestField('vars') || '{}'); var myVar = vars.myVar || 'default'; " +
+    "For XQuery modules, declare: declare variable $myVar external;",
     {
       module_uri: z.string().describe("URI of the stored module, e.g. /lib/transform.xqy"),
-      vars: z.record(z.unknown()).optional().describe("Variable bindings to pass to the module"),
+      vars: z.record(z.unknown()).optional().describe("Variable bindings to pass to the module (JSON object; in SJS access via JSON.parse(xdmp.getRequestField('vars')||'{}'))"),
       database: z.string().optional().describe("Content database"),
       modules_database: z.string().optional().describe("Modules database name (uses server default if omitted)"),
     },

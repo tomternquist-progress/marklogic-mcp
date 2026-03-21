@@ -82,8 +82,9 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
   server.tool(
     "ml_geospatial_search",
     "Find MarkLogic documents within a geospatial region — circle (radius from a point), bounding box, or polygon. " +
-    "Requires a geospatial element pair index on the parent/lat/lon JSON properties. " +
-    "Call ml_indexes_list with index_type='geospatial' first to confirm the index exists and note the parentLocalname, latLocalname, and lonLocalname values.",
+    "For JSON documents: requires a geospatial JSON property pair index (geospatial-json-property-pair type in ml_indexes_list). " +
+    "For XML documents: requires a geospatial element pair index. " +
+    "Call ml_indexes_list with index_type='geospatial' first to confirm the index type and property names.",
     {
       region_type: z.enum(["circle", "box", "polygon"]).describe("Shape of the search region"),
       // Circle params
@@ -135,11 +136,13 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
           region = { polygon: [{ point: points.map(p => ({ latitude: p.lat, longitude: p.lon })) }] };
         }
 
+        // Use JSON property pair query — the correct type for JSON documents.
+        // If documents are XML, use "geo-elem-pair-query" with {ns:"", name:...} syntax instead.
         const geoQuery = {
-          "geo-elem-pair-query": {
-            parent: { ns: "", name: parentName },
-            lat: { ns: "", name: latName },
-            lon: { ns: "", name: lonName },
+          "geo-json-property-pair-query": {
+            "parent-property": parentName,
+            "lat-property": latName,
+            "lon-property": lonName,
             ...region,
           },
         };
