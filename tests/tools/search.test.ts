@@ -238,7 +238,7 @@ describe("ml_geospatial_search handler", () => {
     expect(clients.search.search).toHaveBeenCalledWith(
       expect.objectContaining({
         structuredQuery: expect.objectContaining({
-          "geo-elem-pair-query": expect.objectContaining({
+          "geo-json-property-pair-query": expect.objectContaining({
             circle: { radius: 10, point: [{ latitude: 40.7, longitude: -74.0 }] },
           }),
         }),
@@ -271,7 +271,7 @@ describe("ml_geospatial_search handler", () => {
     expect(clients.search.search).toHaveBeenCalledWith(
       expect.objectContaining({
         structuredQuery: expect.objectContaining({
-          "geo-elem-pair-query": expect.objectContaining({
+          "geo-json-property-pair-query": expect.objectContaining({
             box: [{ s: 40.0, w: -74.5, n: 41.0, e: -73.5 }],
           }),
         }),
@@ -306,7 +306,7 @@ describe("ml_geospatial_search handler", () => {
     expect(clients.search.search).toHaveBeenCalledWith(
       expect.objectContaining({
         structuredQuery: expect.objectContaining({
-          "geo-elem-pair-query": expect.objectContaining({
+          "geo-json-property-pair-query": expect.objectContaining({
             polygon: expect.any(Array),
           }),
         }),
@@ -340,10 +340,10 @@ describe("ml_geospatial_search handler", () => {
     expect(clients.search.search).toHaveBeenCalledWith(
       expect.objectContaining({
         structuredQuery: expect.objectContaining({
-          "geo-elem-pair-query": expect.objectContaining({
-            parent: { ns: "", name: "geo" },
-            lat: { ns: "", name: "lat" },
-            lon: { ns: "", name: "lng" },
+          "geo-json-property-pair-query": expect.objectContaining({
+            "parent-property": "geo",
+            "lat-property": "lat",
+            "lon-property": "lng",
           }),
         }),
       })
