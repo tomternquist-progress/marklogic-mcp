@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
-import { toToolError } from "../utils/errors.js";
+import { toToolError, appendTdeHint } from "../utils/errors.js";
 
 export function registerSchemaTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
@@ -41,7 +41,7 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
 
   server.tool(
     "ml_tde_validate",
-    "Verify a TDE template is working by querying its Optic row view and returning sample rows. Reports row count vs document count, surfaces SQL-TABLENOTFOUND and TABLEREINDEXING errors, and shows sample rows so you can confirm the right data is being extracted. Uses Optic row queries for validation. NOTE: tde.validate([node],[]) (array-of-nodes signature) works in SJS on MarkLogic 12.0.1 and can be used for schema-level validation via ml_eval_javascript: tde.validate([cts.doc('/tde/my.json')],[])",
+    "Verify a TDE template is working by querying its Optic row view and returning sample rows. Reports row count vs document count, surfaces SQL-TABLENOTFOUND and TABLEREINDEXING errors, and shows sample rows so you can confirm the right data is being extracted. Uses Optic row queries for validation. NOTE: tde.validate([node],[]) (array-of-nodes signature) works in SJS on MarkLogic 12.0.1 and can be used for schema-level validation via ml_eval_javascript: tde.validate([cts.doc('/tde/my.json')],[])\n\nIMPORTANT — TDE JSON SYNTAX RULES (common mistakes):\n  1. Triple subject/object references must use { \"val\": \"<XPath-expression>\" }, NOT { \"column\": \"<name>\" }.\n     'column' is invalid in TDE triples and causes TDE-INVALIDTEMPLATEPROPNODE.\n     Correct: { \"subject\": { \"val\": \"sem:iri(fn:concat('http://.../', id))\" } }\n  2. Parent axis (../id) does NOT work in JSON sub-templates.\n     Use fn:root() to navigate back to the document root:\n     Correct: { \"val\": \"fn:root()/movie/id\" }\n  3. scalarType 'IRI' is NOT valid for row column definitions.\n     Row columns support: string, integer, long, float, double, decimal, dateTime, date, time, boolean, anyURI.\n     Construct IRIs only in the 'triples' section using sem:iri().\n  4. The template must be in the Schemas database with collection 'http://marklogic.com/xdmp/tde'.\n     Use ml_tde_install (or ml_document_put with database='Schemas') to deploy it correctly.",
     {
       tde_uri: z.string().describe("URI of the TDE template in the Schemas database, e.g. /tde/gdelt/events.json"),
       collection: z.string().describe("Collection to sample documents from, e.g. gdelt-events"),
@@ -52,12 +52,12 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
         const result = await clients.schema.validateTde({ tdeUri: tde_uri, collection, sampleSize: sample_size });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
-        const msg = toToolError(err);
-        if (msg.includes("reindexing") || msg.includes("TABLEREINDEXING")) {
+        const msg = appendTdeHint(toToolError(err));
+        if (msg.includes("TDE-INVALIDTEMPLATEPROPNODE") || msg.includes("INVALIDTEMPLATEPROPNODE")) {
           return {
             content: [{
               type: "text",
-              text: `REINDEXING_IN_PROGRESS: The TDE view is not yet queryable — MarkLogic is still reindexing documents against the new template.\n\nRetry ml_tde_validate in a few seconds. Use ml_reindex_status (database="Documents") to check when reindex-count reaches 0 before retrying.`,
+              text: `${msg}\nHint: TDE-INVALIDTEMPLATEPROPNODE — an invalid property was used in the template.\n  • Using { "column": "name" } in a triple subject/predicate/object is invalid.\n    Fix: use { "val": "<XPath-expression>" } — e.g. { "subject": { "val": "sem:iri(fn:concat('http://example.org/', id))" } }\n  • scalarType "IRI" is not valid for row columns — use "string"; construct IRIs in the triples section via sem:iri().\n  • ../id does not navigate to parent in JSON sub-templates — use fn:root()/parentElement/id.`,
             }],
             isError: true,
           };
@@ -101,6 +101,57 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
       try {
         const collections = await clients.schema.listCollections(database, limit ?? 50);
         return { content: [{ type: "text", text: JSON.stringify(collections, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_tde_install",
+    "Install a TDE (Template Driven Extraction) template into the MarkLogic Schemas database with the correct collection. " +
+    "This is a convenience wrapper around ml_document_put that automatically sets database='Schemas' and " +
+    "adds the required collection 'http://marklogic.com/xdmp/tde'.\n\n" +
+    "Use this instead of ml_document_put when deploying TDE templates — it removes the friction of remembering " +
+    "the database name and TDE collection URI.\n\n" +
+    "AFTER INSTALLING:\n" +
+    "  1. Run ml_tde_validate to verify the template produces the expected rows.\n" +
+    "  2. MarkLogic reindexes asynchronously — ml_tde_validate will report TABLEREINDEXING while in progress.\n" +
+    "  3. Once indexed, query via ml_optic_query or ml_eval_javascript with the op.fromView() API.\n\n" +
+    "TDE SYNTAX RULES (common mistakes that cause TDE-INVALIDTEMPLATEPROPNODE):\n" +
+    "  1. Triple subject/object must use { \"val\": \"<XPath>\" }, NOT { \"column\": \"<name>\" }\n" +
+    "     Correct: { \"subject\": { \"val\": \"sem:iri(fn:concat('http://.../', id))\" } }\n" +
+    "  2. Parent axis (../id) does NOT work in JSON sub-templates — use fn:root()/parentElement/field\n" +
+    "  3. scalarType 'IRI' is NOT valid for row columns — use 'string' and construct IRIs in triples section",
+    {
+      uri: z.string().describe("URI for the TDE template in the Schemas database, e.g. /tde/my-template.json"),
+      content: z.string().describe("TDE template content (JSON or XML)"),
+      content_type: z.enum(["application/json", "application/xml"]).optional().describe(
+        "Content type (default: application/json)"
+      ),
+    },
+    async ({ uri, content, content_type }) => {
+      try {
+        const TDE_COLLECTION = "http://marklogic.com/xdmp/tde";
+        await clients.documents.put(uri, content, content_type ?? "application/json", {
+          collections: [TDE_COLLECTION],
+          database: "Schemas",
+        });
+        return {
+          content: [{
+            type: "text",
+            text:
+              `TDE TEMPLATE INSTALLED\n` +
+              "─".repeat(50) + "\n\n" +
+              `  URI:        ${uri}\n` +
+              `  Database:   Schemas\n` +
+              `  Collection: ${TDE_COLLECTION}\n\n` +
+              "MarkLogic will begin reindexing documents against this template asynchronously.\n\n" +
+              "NEXT STEPS:\n" +
+              `  1. Validate: ml_tde_validate  tde_uri="${uri}"  collection="<your-collection>"\n` +
+              "  2. Query:    ml_optic_query   schema=\"<schemaName>\"  query=\"op.fromView('<schemaName>','<viewName>').result()\"",
+          }],
+        };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }

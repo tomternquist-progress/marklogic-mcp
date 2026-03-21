@@ -131,13 +131,31 @@ ${sample_schema ?? "(not provided — infer reasonable fields from the collectio
 Requirements:
 - Output valid TDE JSON format (not XML)
 - Include a template context matching the collection
-- Map fields to appropriate SQL types: string, long, double, dateTime, date, boolean
+- Map fields to appropriate SQL types: string, long, double, dateTime, date, boolean, anyURI
+  (NEVER use scalarType "IRI" — it is NOT a valid row column type)
 - Handle optional fields with nullable: true
 - For nested objects, use object-node() path expressions
 - For arrays, create a separate row-level template
 - Include a schemaName and viewName
 - Add a context/path that correctly matches document structure
-- The template should be directly deployable via: tde.templateInsert("/tde/${target_view_name}.json", template)
+- The template should be directly deployable via: ml_tde_install (or ml_document_put with database='Schemas')
+
+CRITICAL TDE SYNTAX RULES — common mistakes that cause TDE-INVALIDTEMPLATEPROPNODE:
+1. Triple subject/predicate/object MUST use { "val": "<XPath-expression>" }, NOT { "column": "<name>" }.
+   The "column" key is INVALID in TDE triples.
+   WRONG:   { "subject": { "column": "movieIRI" } }
+   CORRECT: { "subject": { "val": "sem:iri(fn:concat('http://example.org/movie/', id))" } }
+
+2. Parent axis navigation (../id) does NOT work in JSON sub-templates.
+   Use fn:root() to navigate back to the document root instead:
+   WRONG:   { "val": "fn:concat('http://example.org/', ../id)" }
+   CORRECT: { "val": "fn:concat('http://example.org/', fn:root()/rootElement/id)" }
+
+3. scalarType "IRI" is NOT valid for row column definitions.
+   Use "string" for URI columns. Construct IRIs only in the triples section via sem:iri().
+   WRONG:   { "name": "movieUri", "scalarType": "IRI" }
+   CORRECT: { "name": "movieId",  "scalarType": "string" }
+   Then in triples: { "subject": { "val": "sem:iri(fn:concat('http://example.org/', movieId))" } }
 
 Generate the TDE template JSON now.`,
         },
@@ -640,9 +658,9 @@ Available tools (use only these):
               ml_document_delete, ml_document_patch
   Search:     ml_search, ml_search_qbe, ml_values_query, ml_suggest, ml_facets_query,
               ml_geospatial_search
-  Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_indexes_list,
-              ml_collections_list, ml_namespaces_list
-  Eval:       ml_eval_javascript, ml_eval_xquery, ml_invoke_module
+  Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_tde_install,
+              ml_indexes_list, ml_collections_list, ml_namespaces_list
+  Eval:       ml_eval_javascript, ml_eval_xquery, ml_sparql, ml_invoke_module
   Graph:      ml_sparql_query, ml_graphs_list, ml_graph_put
   QuickSight: ml_aggregate_query, ml_timeseries_query, ml_export_tabular, ml_facets_query
   Optic:      ml_optic_query, ml_views_list, ml_vector_search
@@ -659,8 +677,11 @@ Available tools (use only these):
               semaphore_kmm_sparql, semaphore_kmm_sparql_update,
               semaphore_publish, semaphore_publish_config_fix_plain_skos,
               semaphore_publish_diagnose, semaphore_concept_search,
-              semaphore_concept_get, semaphore_concept_labels_update
+              semaphore_concept_get, semaphore_concept_labels_update,
+              semaphore_taxonomy_validate, semaphore_taxonomy_scaffold
   Security:   ml_users_list, ml_roles_list, ml_document_permissions
+  Performance: ml_explain_optic, ml_search_query_plan, ml_forest_metrics,
+              ml_profile_query (eval-gated)
   Planning:   ml_suggest_approach
   Prompts:    uri_designer, xquery_function_generator, sjs_module_generator,
               tde_schema_generator, rest_extension_generator, structured_query_builder,
@@ -668,8 +689,9 @@ Available tools (use only these):
               data_modeling_advisor, data_import_advisor, project_setup_advisor,
               gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
               fasttrack_search_designer, fasttrack_app_scaffold,
-              semaphore_integration_advisor,
-              rag_pipeline_designer, envelope_pattern_advisor
+              semaphore_integration_advisor, semaphore_model_workflow,
+              rag_pipeline_designer, envelope_pattern_advisor,
+              performance_advisor
 
 ## 5. PITFALLS TO AVOID
 List 2–5 specific, concrete pitfalls for this goal. Examples of good pitfalls:
@@ -2694,5 +2716,138 @@ Provide the analysis now.`,
         },
       }],
     })
+  );
+
+  // ── Semaphore Model Workflow ───────────────────────────────────────────────
+
+  server.prompt(
+    "semaphore_model_workflow",
+    "Step-by-step workflow for creating and publishing a new Semaphore taxonomy model end-to-end. " +
+    "Covers all required steps from model creation through classification testing, with common pitfalls and fixes.",
+    {
+      model_name: z.string().describe("CamelCase model identifier, e.g. 'MoviesModel'"),
+      namespace: z.string().describe("Base namespace URI for concepts, e.g. 'http://example.org/ontology/movies/'"),
+      description: z.string().optional().describe("What this taxonomy is for"),
+    },
+    ({ model_name, namespace, description }) => {
+      const ns = namespace.endsWith("/") || namespace.endsWith("#") ? namespace : namespace + "/";
+      const expectedSchemeUri = `${ns}${model_name}Taxonomy`;
+      return {
+        messages: [{
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `Guide me through creating and publishing a Semaphore taxonomy model end-to-end.
+
+**Model name:** ${model_name}
+**Namespace:** ${ns}
+**Purpose:** ${description ?? "(not specified)"}
+
+Follow these steps in order, calling each tool before proceeding to the next:
+
+## Step 1 — Create the Model
+\`\`\`
+semaphore_kmm_model_create(
+  name="${model_name}",
+  default_namespace="${ns}"
+)
+\`\`\`
+Expected output: model URI = model:${model_name}
+
+## Step 2 — Prepare SKOS Content (ConceptScheme URI is CRITICAL)
+The ConceptScheme URI MUST follow the convention: {namespace}{ModelId}Taxonomy
+Required URI: **${expectedSchemeUri}**
+
+Use semaphore_taxonomy_scaffold to generate correctly-structured Turtle, OR ensure your
+hand-crafted SKOS includes:
+\`\`\`turtle
+@prefix ns: <${ns}> .
+ns:${model_name}Taxonomy a skos:ConceptScheme ;
+    skos:prefLabel "${model_name} Taxonomy"@en ;
+    skos:hasTopConcept ns:TopConcept1 .
+\`\`\`
+
+⚠️  DO NOT use OWL constructs (owl:Class, owl:Ontology) — Semaphore KMM only supports SKOS.
+    Convert OWL to SKOS: owl:Class → skos:Concept, rdfs:subClassOf → skos:broader.
+
+## Step 3 — Load SKOS Content
+\`\`\`
+semaphore_kmm_skos_load(
+  model_uri="model:${model_name}",
+  skos_content="<your Turtle content>"
+)
+\`\`\`
+After loading, verify the concept count in the named graph:
+\`\`\`
+semaphore_kmm_sparql(
+  model_uri="model:${model_name}",
+  query="PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+         SELECT (COUNT(?c) AS ?n) WHERE { GRAPH <urn:x-evn-master:${model_name}> { ?c a skos:Concept } }"
+)
+\`\`\`
+
+## Step 4 — Add sem:guid to All Concepts (Required for CLS publishing)
+\`\`\`
+semaphore_kmm_sparql_update(
+  model_uri="model:${model_name}",
+  sparql="PREFIX sem: <http://www.smartlogic.com/2014/08/semaphore-core#>
+          PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+          INSERT { ?c sem:guid ?g }
+          WHERE { ?c a skos:Concept .
+                  FILTER NOT EXISTS { ?c sem:guid ?x }
+                  BIND(STRUUID() AS ?g) }"
+)
+\`\`\`
+
+## Step 5 — Validate Taxonomy Structure
+\`\`\`
+semaphore_taxonomy_validate(model_uri="model:${model_name}")
+\`\`\`
+Fix any issues reported (orphan concepts, missing labels, wrong ConceptScheme URI) before continuing.
+
+## Step 6 — Fix Publisher Config for Plain SKOS
+\`\`\`
+semaphore_publish_config_fix_plain_skos(model_uri="model:${model_name}")
+\`\`\`
+This patches the publisher to:
+  - Query the model's named graph (urn:x-evn-master:${model_name})
+  - Use plain skos:prefLabel instead of SKOS-XL reification
+  - Generate one rule per concept (not just 1 for the ConceptScheme root)
+
+## Step 7 — Publish to CLS
+\`\`\`
+semaphore_publish(
+  model_uri="model:${model_name}",
+  wait_for_completion=true
+)
+\`\`\`
+Expected: rule count should be approximately equal to concept count (not just 1).
+If only 1 rule loads, re-run Step 6 then retry.
+
+## Step 8 — Verify Model is Active
+\`\`\`
+semaphore_publish_sets()
+\`\`\`
+Confirm model:${model_name} (as a lowercase publish set name) appears as ACTIVE.
+
+## Step 9 — Test Classification
+\`\`\`
+semaphore_classify(
+  content="<sample text relevant to your taxonomy>",
+  threshold=0
+)
+\`\`\`
+
+## Common Pitfalls
+- **Only 1 rule published**: ConceptScheme URI doesn't match '${expectedSchemeUri}', or plain-SKOS config fix wasn't applied.
+- **0 concepts after load**: OWL ontology loaded instead of SKOS — convert to SKOS first.
+- **Label check shows 0**: Language check queries named graph; if 0 results, verify your prefLabels have @en (or correct language) tags.
+- **Score=0 after publish**: Rulenet index still building — wait 1-2 minutes and retry semaphore_classify.
+
+Begin by calling semaphore_status to verify connectivity, then proceed step by step.`,
+          },
+        }],
+      };
+    }
   );
 }

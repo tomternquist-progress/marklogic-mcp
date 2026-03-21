@@ -31,23 +31,27 @@ function createMockClients() {
       listCollections: vi.fn(),
       listNamespaces: vi.fn(),
     },
+    documents: {
+      put: vi.fn(),
+    },
   };
 }
 
 // ─── Tool registration ─────────────────────────────────────────────────────
 
 describe("registerSchemaTools – tool registration", () => {
-  it("registers all 6 schema tools", () => {
+  it("registers all 7 schema tools", () => {
     const { server, tools } = createMockServer();
     registerSchemaTools(server as never, createMockClients() as never);
 
     expect(tools.has("ml_schema_discover")).toBe(true);
     expect(tools.has("ml_schema_get_tde")).toBe(true);
     expect(tools.has("ml_tde_validate")).toBe(true);
+    expect(tools.has("ml_tde_install")).toBe(true);
     expect(tools.has("ml_indexes_list")).toBe(true);
     expect(tools.has("ml_collections_list")).toBe(true);
     expect(tools.has("ml_namespaces_list")).toBe(true);
-    expect(tools.size).toBe(6);
+    expect(tools.size).toBe(7);
   });
 });
 
@@ -171,7 +175,7 @@ describe("ml_tde_validate handler", () => {
     });
 
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("REINDEXING_IN_PROGRESS");
+    expect(result.content[0].text).toContain("TABLEREINDEXING");
     expect(result.content[0].text).toContain("ml_reindex_status");
   });
 

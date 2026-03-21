@@ -98,6 +98,11 @@ Load data (bulk)     Flux import pipeline       flux_import               flux_s
 Load data (few docs) REST document API          ml_document_put           —
                                                 ml_document_patch
 
+Install TDE        Schema database             ml_tde_install            ml_schema_get_tde
+template           (convenience wrapper for    ml_tde_validate
+                   ml_document_put with        (use ml_tde_validate after
+                   correct DB+collection)      install to verify rows)
+
 Full-text search     Universal index /          ml_search                 ml_collections_list
                      Search API                 ml_search_qbe             ml_schema_discover
                                                 ml_suggest
@@ -618,10 +623,10 @@ Documents (3–6, config-dependent):
 Search (5):    ml_search, ml_search_qbe, ml_values_query, ml_suggest,
                ml_geospatial_search
 
-Schema (6):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
-               ml_indexes_list, ml_collections_list, ml_namespaces_list
+Schema (7):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
+               ml_tde_install, ml_indexes_list, ml_collections_list, ml_namespaces_list
 
-Eval (3, gated): ml_eval_javascript, ml_eval_xquery, ml_invoke_module
+Eval (4, gated): ml_eval_javascript, ml_eval_xquery, ml_sparql, ml_invoke_module
 
 Graph (3):     ml_sparql_query, ml_graphs_list, ml_graph_put
 
@@ -642,7 +647,7 @@ Extensions (3–5, config-dependent):
                ml_extension_list, ml_extension_get, ml_extension_call
                [write-enabled] ml_extension_put, ml_extension_delete
 
-Semaphore (18): semaphore_status, semaphore_studio_status,
+Semaphore (20): semaphore_status, semaphore_studio_status,
                 semaphore_publish_sets, semaphore_classes, semaphore_classify,
                 semaphore_cls_languages, semaphore_kmm_models_list,
                 semaphore_kmm_model_create, semaphore_kmm_model_delete,
@@ -650,7 +655,8 @@ Semaphore (18): semaphore_status, semaphore_studio_status,
                 semaphore_kmm_sparql_update, semaphore_publish,
                 semaphore_publish_config_fix_plain_skos,
                 semaphore_publish_diagnose, semaphore_concept_search,
-                semaphore_concept_get, semaphore_concept_labels_update
+                semaphore_concept_get, semaphore_concept_labels_update,
+                semaphore_taxonomy_validate, semaphore_taxonomy_scaffold
 
 Performance (3–4, eval-dependent):
                ml_explain_optic, ml_search_query_plan, ml_forest_metrics
@@ -667,7 +673,7 @@ Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                rag_pipeline_designer, envelope_pattern_advisor,
                gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
                fasttrack_search_designer, fasttrack_app_scaffold,
-               semaphore_integration_advisor,
+               semaphore_integration_advisor, semaphore_model_workflow,
                oauth_setup_advisor,
                problem_advisor
 `;

@@ -42,14 +42,15 @@ describe("registerEvalTools – tool registration", () => {
     expect(tools.size).toBe(0);
   });
 
-  it("registers exactly 3 tools when allowEval=true", () => {
+  it("registers exactly 4 tools when allowEval=true", () => {
     const { server, tools } = createMockServer();
     registerEvalTools(server as never, createMockEvalClients() as never, true);
 
     expect(tools.has("ml_eval_xquery")).toBe(true);
     expect(tools.has("ml_eval_javascript")).toBe(true);
+    expect(tools.has("ml_sparql")).toBe(true);
     expect(tools.has("ml_invoke_module")).toBe(true);
-    expect(tools.size).toBe(3);
+    expect(tools.size).toBe(4);
   });
 });
 
