@@ -1377,22 +1377,52 @@ mlRestPort=<port>
 mlAppName=<name>
 mlUsername=<admin-user>
 mlPassword=<password>        # Never commit — use gradle-local.properties
-mlAuth=digest
+mlAuthentication=basic       # ml-gradle 4.5.0+ — sets all four auth sub-properties at once
+\`\`\`
+
+For DHF projects, always override the default ports (8010 conflicts with other MarkLogic servers):
+\`\`\`properties
+mlStagingPort=8020
+mlFinalPort=8021
+mlJobsPort=8022
 \`\`\`
 
 ---
 
 ## Section 6 — Deployment checklist
 
-Ordered list of gradle tasks to run for initial deployment, and what each does:
-
+### Plain ml-gradle
 1. \`gradle mlDeploy\` — deploys databases, servers, security, loads schemas + modules
 2. \`gradle mlLoadSchemas\` — (re)deploy TDE templates without full redeploy
 3. \`gradle mlLoadModules\` — (re)deploy XQuery/SJS modules
 4. Check \`ml_reindex_status\` in MCP after adding indexes
 5. Verify with \`ml_views_list\` that TDE views are live before querying
 
-For DHF also include: \`gradle hubDeployArtifacts\` after deploying entities/flows.
+### DHF (Data Hub Framework)
+**Important:** \`gradle mlDeployApp\` and \`gradle hubDeploy\` fail under Java 21 with an
+\`IllegalAccessError\` on \`URLDecoder\` (bytecode-level violation, not fixable with \`--add-opens\`).
+Use individual tasks in this order:
+
+1. \`gradle hubInstallModules\` — loads DHF internal modules into data-hub-MODULES
+2. \`gradle hubDeployAsSecurityAdmin\` — security roles, privileges, amps
+3. \`gradle mlDeployDatabases\` — database configuration
+4. \`gradle mlDeployTriggers\` — **required before first flow run** — deploys the trigger that
+   compiles mapping steps into XSLT; without this, mapping fails with XDMP-MODNOTFOUND
+5. \`gradle hubDeployArtifacts\` — DHF built-in artifacts (default flows, step definitions)
+6. \`gradle hubDeployUserArtifacts\` — your entities, flows, and steps
+
+**Kubernetes / single-host note:** DHF creates one forest per cluster host per database.
+If cluster nodes are offline, databases hang silently. Use \`ml_database_set_forests\` to
+restrict each DHF database to only forests on available hosts before running any flows.
+
+**Mapping XSLT not found?** If a mapping step fails with \`XDMP-MODNOTFOUND: *.step.xml.xslt\`,
+the trigger hasn't fired yet. Touch the step document in STAGING to re-fire it:
+\`\`\`javascript
+// Run via ml_eval_javascript on database: data-hub-STAGING
+declareUpdate();
+var uri = "/steps/mapping/YourStep.step.json";
+xdmp.nodeReplace(cts.doc(uri), cts.doc(uri));
+\`\`\`
 
 Generate the complete plan now.`,
         },
