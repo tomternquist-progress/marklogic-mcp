@@ -48,12 +48,32 @@ export function registerAdminTools(server: McpServer, clients: MarkLogicClients)
 
   server.tool(
     "ml_forests_list",
-    "List forests attached to the MarkLogic cluster or a specific database.",
-    { database: z.string().optional().describe("Filter by database name (optional)") },
-    async ({ database }) => {
+    "List forests attached to the MarkLogic cluster or a specific database. Set include_details=true to also return each forest's host assignment, state (open/unmounted/sync-replicating), and attached database — useful for diagnosing forest hangs where offline hosts are blocking a database.",
+    {
+      database: z.string().optional().describe("Filter by database name (optional)"),
+      include_details: z.boolean().optional().describe("Include host, state, and database info for each forest (default: false)"),
+    },
+    async ({ database, include_details }) => {
       try {
-        const forests = await clients.admin.listForests(database);
+        const forests = await clients.admin.listForests(database, include_details ?? false);
         return { content: [{ type: "text", text: JSON.stringify(forests, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_database_set_forests",
+    "Set the list of forests attached to a MarkLogic database. Use this to restrict a database to only forests on available hosts when cluster nodes are offline — the primary fix for the forest-hang pattern where HTTP connections are accepted but never respond. Pass only the names of forests on running hosts.",
+    {
+      database: z.string().describe("Database name"),
+      forests: z.array(z.string()).describe("Forest names to attach — replaces the current list"),
+    },
+    async ({ database, forests }) => {
+      try {
+        await clients.admin.setDatabaseForests(database, forests);
+        return { content: [{ type: "text", text: `Forest list updated for database "${database}": [${forests.join(", ")}]` }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
@@ -99,6 +119,43 @@ export function registerAdminTools(server: McpServer, clients: MarkLogicClients)
       try {
         const status = await clients.admin.getClusterStatus();
         return { content: [{ type: "text", text: JSON.stringify(status, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_logs_list",
+    "List available MarkLogic log files (ErrorLog.txt, AccessLog.txt, port-specific logs like 8002_AccessLog.txt, etc.). Use this to discover which log files exist before calling ml_logs_read.",
+    {
+      host: z.string().optional().describe("Filter to a specific cluster host (optional — defaults to primary host)"),
+    },
+    async ({ host }) => {
+      try {
+        const files = await clients.admin.listLogFiles(host);
+        return { content: [{ type: "text", text: JSON.stringify(files, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "ml_logs_read",
+    "Read a MarkLogic server log file via the Management API. Use ml_logs_list first to discover available filenames. Key files: ErrorLog.txt (server errors), 8002_AccessLog.txt (Management API), 8000_AccessLog.txt (App-Services), 8020_AccessLog.txt (DHF Staging), 8021_AccessLog.txt (DHF Final). Supports server-side filtering by time range and regex pattern.",
+    {
+      filename: z.string().describe("Log filename, e.g. 'ErrorLog.txt' or '8020_AccessLog.txt'"),
+      host: z.string().optional().describe("Cluster host name to read logs from (optional — defaults to primary)"),
+      start: z.string().optional().describe("Start time filter in ISO 8601 format, e.g. '2026-03-21T00:00:00'"),
+      end: z.string().optional().describe("End time filter in ISO 8601 format"),
+      regex: z.string().optional().describe("Filter log lines matching this regex pattern"),
+      tail: z.number().int().positive().optional().describe("Return only the last N lines (default: all lines)"),
+    },
+    async ({ filename, host, start, end, regex, tail }) => {
+      try {
+        const result = await clients.admin.readLogs({ filename, host, start, end, regex, tail });
+        return { content: [{ type: "text", text: result.content }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
