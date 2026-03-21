@@ -53,14 +53,19 @@ export class SecurityClient {
       `/manage/v2/roles/${encodeURIComponent(roleName)}/properties`,
       { params: { format: "json" } }
     );
-    // Normalise the parent-role and privilege lists to simple string arrays
-    const roleRef = raw?.["role"] as Array<{ roleref: string }> | undefined;
+    // Normalise parent-role and privilege lists to simple string arrays.
+    // The Management API returns "role" as string[] and "privilege" as
+    // Array<{"privilege-name": string}> in ML 12.
+    const roleRaw = raw?.["role"];
     const privRef = raw?.["privilege"] as Array<{ "privilege-name": string }> | undefined;
+    const roles: string[] = Array.isArray(roleRaw)
+      ? roleRaw.map((r) => (typeof r === "string" ? r : (r as Record<string, string>)["roleref"] ?? (r as Record<string, string>)["role-name"] ?? String(r)))
+      : [];
     return {
       ...raw,
       "role-name": raw?.["role-name"] as string,
       description: raw?.["description"] as string | undefined,
-      roles: (roleRef ?? []).map((r) => r.roleref),
+      roles,
       privileges: (privRef ?? []).map((p) => p["privilege-name"]),
     } as RoleProperties;
   }

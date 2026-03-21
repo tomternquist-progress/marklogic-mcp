@@ -16,7 +16,8 @@ export class PerformanceClient {
     );
   }
 
-  /** Search with debug=true to see the resolved CTS query. No eval required. */
+  /** Search with debug=true to see the resolved CTS query. No eval required.
+   *  Falls back to a plain pageLength=0 search if debug is unsupported (ML 12+). */
   async searchDebug(opts: {
     q?: string;
     structuredQuery?: Record<string, unknown>;
@@ -24,20 +25,39 @@ export class PerformanceClient {
     database?: string;
     searchOptions?: string;
   }): Promise<Record<string, unknown>> {
-    const params: Record<string, string> = { format: "json", debug: "true" };
-    if (opts.q) params.q = opts.q;
-    if (opts.collection) params.collection = opts.collection;
-    if (opts.database) params.database = opts.database;
-    if (opts.searchOptions) params.options = opts.searchOptions;
-    if (opts.structuredQuery) {
-      return this.base.post<Record<string, unknown>>(
-        this.base.http,
-        "/v1/search",
-        { search: { query: opts.structuredQuery } },
-        { params, headers: { "Content-Type": "application/json", Accept: "application/json" } }
-      );
+    const buildParams = (includeDebug: boolean): Record<string, string> => {
+      const p: Record<string, string> = { format: "json", pageLength: "0" };
+      if (includeDebug) p.debug = "true";
+      if (opts.q) p.q = opts.q;
+      if (opts.collection) p.collection = opts.collection;
+      if (opts.database) p.database = opts.database;
+      if (opts.searchOptions) p.options = opts.searchOptions;
+      return p;
+    };
+
+    const doRequest = (params: Record<string, string>) => {
+      if (opts.structuredQuery) {
+        return this.base.post<Record<string, unknown>>(
+          this.base.http,
+          "/v1/search",
+          { search: { query: opts.structuredQuery } },
+          { params, headers: { "Content-Type": "application/json", Accept: "application/json" } }
+        );
+      }
+      return this.base.get<Record<string, unknown>>(this.base.http, "/v1/search", { params });
+    };
+
+    try {
+      return await doRequest(buildParams(true));
+    } catch (err: unknown) {
+      // ML 12 removed the debug=true query parameter — fall back to a plain
+      // pageLength=0 search which still returns total, qtext, and metrics.
+      const msg = String((err as { message?: string }).message ?? "");
+      if (msg.includes("UNSUPPORTEDPARAM") || msg.includes("debug")) {
+        return await doRequest(buildParams(false));
+      }
+      throw err;
     }
-    return this.base.get<Record<string, unknown>>(this.base.http, "/v1/search", { params });
   }
 
   /** Per-forest status from Management API. */
