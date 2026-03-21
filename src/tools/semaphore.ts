@@ -1460,19 +1460,24 @@ LIMIT ${limit}`;
             }],
           };
         }
+        // Compute column widths from data so the full concept URI is never truncated.
+        const conceptWidth = Math.max(11, ...rows.map(r => (r.concept ?? "").length));
+        const prefWidth = Math.max(9, ...rows.map(r => (r.prefLabel ?? "").length));
+        const ltWidth = Math.max(9, ...rows.map(r => (r.labelType ?? "").length));
+        const header = "concept_uri".padEnd(conceptWidth) + "  " + "prefLabel".padEnd(prefWidth) + "  " + "labelType".padEnd(ltWidth) + "  matchedLabel";
         const lines = [
           `CONCEPT SEARCH — "${keyword}" in ${model_uri}`,
           "─".repeat(60),
           `Found ${rows.length} match(es)${rows.length === limit ? ` (limit ${limit} — may be more)` : ""}`,
           "",
-          "concept_uri                                   prefLabel              labelType    matchedLabel",
-          "─".repeat(110),
+          header,
+          "─".repeat(header.length + 44),
         ];
         for (const r of rows) {
-          const concept = (r.concept ?? "").slice(0, 44).padEnd(44);
-          const pref = (r.prefLabel ?? "").slice(0, 22).padEnd(22);
-          const lt = (r.labelType ?? "").slice(0, 12).padEnd(12);
-          const ml = (r.matchedLabel ?? "").slice(0, 40);
+          const concept = (r.concept ?? "").padEnd(conceptWidth);
+          const pref = (r.prefLabel ?? "").padEnd(prefWidth);
+          const lt = (r.labelType ?? "").padEnd(ltWidth);
+          const ml = (r.matchedLabel ?? "").slice(0, 60);
           lines.push(`${concept}  ${pref}  ${lt}  ${ml}`);
         }
         lines.push("");
