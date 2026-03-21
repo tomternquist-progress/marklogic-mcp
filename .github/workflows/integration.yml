@@ -1,0 +1,72 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  integration:
+    name: Integration tests (live MarkLogic)
+    runs-on: ubuntu-latest
+
+    services:
+      marklogic:
+        image: marklogicdb/marklogic-db:12-centos-1.1.2
+        ports:
+          - 8000:8000
+          - 8002:8002
+        env:
+          MARKLOGIC_INIT: "true"
+          MARKLOGIC_ADMIN_USERNAME: admin
+          MARKLOGIC_ADMIN_PASSWORD: admin
+        options: >-
+          --health-cmd "curl -sf http://localhost:8001/admin/v1/timestamp || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Wait for MarkLogic to initialise
+        run: |
+          echo "Waiting for MarkLogic REST API on port 8000..."
+          for i in $(seq 1 30); do
+            if curl -sf -u admin:admin http://localhost:8000/v1/config/properties > /dev/null 2>&1; then
+              echo "MarkLogic is ready."
+              break
+            fi
+            echo "  attempt $i/30 — sleeping 5s"
+            sleep 5
+          done
+
+      - name: Seed test data
+        run: node scripts/integration-seed.mjs
+        env:
+          ML_HOST: localhost
+          ML_USER: admin
+          ML_PASSWORD: admin
+
+      - name: Run integration tests
+        run: npm run test:integration
+        env:
+          ML_HOST: localhost
+          ML_PORT: "8000"
+          ML_MGMT_PORT: "8002"
+          ML_USER: admin
+          ML_PASSWORD: admin
+          ML_AUTH_TYPE: digest
+          ML_ALLOW_EVAL: "true"
+          ML_READONLY: "false"
