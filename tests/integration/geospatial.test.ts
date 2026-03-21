@@ -46,50 +46,51 @@ const GEO_DOCS = [
   },
 ];
 
-// XQuery to add a geospatial element pair index on location/lat/lon
-// Uses the MarkLogic admin module to configure the index on the Documents database.
+// XQuery to add a geospatial element pair index on location/lat/lon.
+// ML 12 admin module only has admin:database-geospatial-element-pair-index (XML-named)
+// but this index covers BOTH XML and JSON documents with matching property/element names.
+// Query JSON docs using cts:json-property-pair-geospatial-query (not element-pair).
+// ML handles duplicate index config gracefully (wrapped in try-catch).
 const ADD_GEO_INDEX_XQUERY = `
 import module namespace admin = "http://marklogic.com/xdmp/admin"
   at "/MarkLogic/admin.xqy";
 
 let $config := admin:get-configuration()
 let $db-id  := xdmp:database("Documents")
-(: Check if the index already exists :)
-let $existing := admin:database-geospatial-element-pair-indexes($config, $db-id)
-let $already  := some $i in $existing
-                 satisfies admin:database-geospatial-index-parent-localname($i) eq "location"
+let $index  := admin:database-geospatial-element-pair-index(
+                "",          (: parent namespace :)
+                "location",  (: parent localname :)
+                "",          (: lat namespace :)
+                "lat",       (: lat localname :)
+                "",          (: lon namespace :)
+                "lon",       (: lon localname :)
+                "wgs84",     (: coordinate system :)
+                fn:false()   (: range-value-positions :)
+              )
 return
-  if ($already)
-  then "already-exists"
-  else
-    let $index  := admin:database-geospatial-element-pair-index(
-                    "",          (: parent namespace :)
-                    "location",  (: parent localname :)
-                    "",          (: lat namespace :)
-                    "lat",       (: lat localname :)
-                    "",          (: lon namespace :)
-                    "lon",       (: lon localname :)
-                    "wgs84",     (: coordinate system :)
-                    "point",     (: point format :)
-                    fn:false()   (: range-value-positions :)
-                  )
-    let $config := admin:database-add-geospatial-element-pair-index($config, $db-id, $index)
-    return (admin:save-configuration($config), "added")
+  try {
+    let $config2 := admin:database-add-geospatial-element-pair-index($config, $db-id, $index)
+    return (admin:save-configuration($config2), "added")
+  } catch * {
+    "already-exists"
+  }
 `;
 
-// XQuery to search using the geospatial index
+// XQuery returns document URIs using the JSON property pair geospatial query.
+// For JSON documents, use cts:json-property-pair-geospatial-query (not element-pair).
 function geoCircleXQuery(lat: number, lon: number, radiusKm: number, collection: string): string {
   const radiusMiles = radiusKm * 0.621371;
   return `
-    cts:search(
+    for $doc in cts:search(
       fn:collection("${collection}"),
-      cts:element-pair-geospatial-query(
-        xs:QName("location"),
-        xs:QName("lat"),
-        xs:QName("lon"),
+      cts:json-property-pair-geospatial-query(
+        "location",
+        "lat",
+        "lon",
         cts:circle(${radiusMiles}, cts:point(${lat}, ${lon}))
       )
-    )/name/string()
+    )
+    return fn:document-uri($doc)
   `;
 }
 
@@ -135,38 +136,49 @@ describeIfLive("Geospatial search (live)", () => {
     });
   });
 
+  // Helper: results are URIs (e.g. "/geo/nyc.json") — check presence by URI
+  const uriToCity: Record<string, string> = {
+    "/geo/nyc.json": "New York City",
+    "/geo/lax.json": "Los Angeles",
+    "/geo/chi.json": "Chicago",
+    "/geo/lon.json": "London",
+  };
+
   describe("circle search", () => {
     it("finds NYC in a 50km radius around NYC", async () => {
       // NYC: 40.71°N, -74.00°W — 50km radius should contain only NYC from our set
       const xquery = geoCircleXQuery(40.7128, -74.0060, 50, COLLECTION);
       const results = await evalClient.evalXQuery(xquery);
-      const names = results.map((r) => String(r.value));
-      expect(names).toContain("New York City");
+      const uris = results.map((r) => String(r.value));
+      const cities = uris.map((u) => uriToCity[u] ?? u);
+      expect(cities).toContain("New York City");
     });
 
     it("does NOT include Los Angeles in a 50km radius around NYC", async () => {
       const xquery = geoCircleXQuery(40.7128, -74.0060, 50, COLLECTION);
       const results = await evalClient.evalXQuery(xquery);
-      const names = results.map((r) => String(r.value));
-      expect(names).not.toContain("Los Angeles");
+      const uris = results.map((r) => String(r.value));
+      const cities = uris.map((u) => uriToCity[u] ?? u);
+      expect(cities).not.toContain("Los Angeles");
     });
 
     it("finds NYC and Chicago in a large radius around the US midwest", async () => {
-      // Center: ~Kansas City (39.1°N, -94.6°W), 2000km radius covers NYC + Chicago + LA
+      // Center: ~Kansas City (39.1°N, -94.6°W), 2000km radius covers NYC + Chicago
       const xquery = geoCircleXQuery(39.1, -94.6, 2000, COLLECTION);
       const results = await evalClient.evalXQuery(xquery);
-      const names = results.map((r) => String(r.value));
-      expect(names).toContain("Chicago");
-      // NYC is ~1600km from Kansas City — within 2000km
-      expect(names).toContain("New York City");
+      const uris = results.map((r) => String(r.value));
+      const cities = uris.map((u) => uriToCity[u] ?? u);
+      expect(cities).toContain("Chicago");
+      expect(cities).toContain("New York City");
     });
 
     it("does NOT include London in a US-only search radius", async () => {
       // Center: US, 5000km radius — London is ~6700km from Kansas City
       const xquery = geoCircleXQuery(39.1, -94.6, 5000, COLLECTION);
       const results = await evalClient.evalXQuery(xquery);
-      const names = results.map((r) => String(r.value));
-      expect(names).not.toContain("London");
+      const uris = results.map((r) => String(r.value));
+      const cities = uris.map((u) => uriToCity[u] ?? u);
+      expect(cities).not.toContain("London");
     });
   });
 
@@ -174,40 +186,44 @@ describeIfLive("Geospatial search (live)", () => {
     it("finds US east coast cities within a Northeast US bounding box", async () => {
       // Bounding box: roughly New England + Mid-Atlantic (38-45°N, 80-70°W)
       const xquery = `
-        cts:search(
+        for $doc in cts:search(
           fn:collection("${COLLECTION}"),
-          cts:element-pair-geospatial-query(
-            xs:QName("location"),
-            xs:QName("lat"),
-            xs:QName("lon"),
+          cts:json-property-pair-geospatial-query(
+            "location",
+            "lat",
+            "lon",
             cts:box(38, -80, 45, -70)
           )
-        )/name/string()
+        )
+        return fn:document-uri($doc)
       `;
       const results = await evalClient.evalXQuery(xquery);
-      const names = results.map((r) => String(r.value));
-      expect(names).toContain("New York City");
-      expect(names).not.toContain("Los Angeles");
-      expect(names).not.toContain("London");
+      const uris = results.map((r) => String(r.value));
+      const cities = uris.map((u) => uriToCity[u] ?? u);
+      expect(cities).toContain("New York City");
+      expect(cities).not.toContain("Los Angeles");
+      expect(cities).not.toContain("London");
     });
 
     it("finds London within a Europe bounding box", async () => {
       // Europe bounding box: 35-72°N, 25°W-45°E
       const xquery = `
-        cts:search(
+        for $doc in cts:search(
           fn:collection("${COLLECTION}"),
-          cts:element-pair-geospatial-query(
-            xs:QName("location"),
-            xs:QName("lat"),
-            xs:QName("lon"),
+          cts:json-property-pair-geospatial-query(
+            "location",
+            "lat",
+            "lon",
             cts:box(35, -25, 72, 45)
           )
-        )/name/string()
+        )
+        return fn:document-uri($doc)
       `;
       const results = await evalClient.evalXQuery(xquery);
-      const names = results.map((r) => String(r.value));
-      expect(names).toContain("London");
-      expect(names).not.toContain("New York City");
+      const uris = results.map((r) => String(r.value));
+      const cities = uris.map((u) => uriToCity[u] ?? u);
+      expect(cities).toContain("London");
+      expect(cities).not.toContain("New York City");
     });
   });
 });

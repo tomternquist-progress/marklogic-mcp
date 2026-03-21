@@ -13,10 +13,14 @@ import { ML_HOST, buildClients } from "./helpers.js";
 const describeIfLive = ML_HOST ? describe : describe.skip;
 
 const MODULE_URI = "/integration-test/hello.sjs";
+// In ML 12 SJS modules, the `external` global does not exist.
+// Variables passed via vars= in /v1/invoke are accessible as a JSON string
+// via xdmp.getRequestField("vars").
 const MODULE_CONTENT = `
 'use strict';
-// A simple Main Module for integration testing
-var greeting = external.greeting || "Hello";
+var varsJson = xdmp.getRequestField("vars");
+var vars = varsJson ? JSON.parse(varsJson) : {};
+var greeting = vars.greeting || "Hello";
 greeting + " from MarkLogic";
 `;
 

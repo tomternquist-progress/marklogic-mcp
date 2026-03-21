@@ -14,12 +14,14 @@ const describeIfLive = ML_HOST ? describe : describe.skip;
 const EXT_NAME = "integration-test-callable";
 
 // A simple REST extension that returns a JSON response
+// In ML 12, params values are plain strings (not arrays as in older versions).
 const EXT_CODE = `
 'use strict';
 // REST extension: GET handler returns { called: true, method: "GET", params: {...} }
 exports.GET = function(context, params, input) {
   context.outputTypes = ['application/json'];
-  const label = (params.label && params.label[0]) || 'default';
+  const raw = params.label;
+  const label = (raw && (Array.isArray(raw) ? raw[0] : raw)) || 'default';
   return { called: true, method: 'GET', label: label };
 };
 exports.POST = function(context, params, input) {

@@ -24,10 +24,11 @@ const describeIfLive = ML_HOST ? describe : describe.skip;
 
 const OPTIONS_NAME = "integration-test-suggest-options";
 
-// Search options with word-lexicon enabled and collection constraint
+// Search options with a value constraint on "source".
+// Note: "word-lexicon" is NOT a valid search options element (XDMP-VALIDATEUNEXPECTED);
+// word lexicon indexes are a database-level configuration, not a per-options setting.
 const SUGGEST_OPTIONS = {
   options: {
-    "word-lexicon": {},
     constraint: [
       {
         name: "source",

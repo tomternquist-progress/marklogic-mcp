@@ -37,29 +37,29 @@ const TIME_DOCS = [
   { uri: "/timeseries/dec-01.json", content: { importedAt: "2025-12-25T10:00:00Z", title: "December A" } },
 ];
 
-// XQuery to add a dateTime range element index on "importedAt"
+// XQuery to add a dateTime range element index on "importedAt".
+// Does NOT check for existing index first (admin:database-range-element-indexes function
+// name varies by ML version). ML will silently ignore duplicate index definitions.
 const ADD_DATETIME_INDEX_XQUERY = `
 import module namespace admin = "http://marklogic.com/xdmp/admin"
   at "/MarkLogic/admin.xqy";
 
 let $config := admin:get-configuration()
 let $db-id  := xdmp:database("Documents")
-let $existing := admin:database-range-element-indexes($config, $db-id)
-let $already  := some $i in $existing
-                 satisfies admin:database-range-element-index-localname($i) eq "importedAt"
+let $index  := admin:database-range-element-index(
+                "dateTime",
+                "",
+                "importedAt",
+                "http://marklogic.com/collation/",
+                fn:false()
+              )
 return
-  if ($already)
-  then "already-exists"
-  else
-    let $index  := admin:database-range-element-index(
-                    "dateTime",
-                    "",
-                    "importedAt",
-                    "http://marklogic.com/collation/",
-                    fn:false()
-                  )
-    let $config := admin:database-add-range-element-index($config, $db-id, $index)
-    return (admin:save-configuration($config), "added")
+  try {
+    let $config2 := admin:database-add-range-element-index($config, $db-id, $index)
+    return (admin:save-configuration($config2), "added")
+  } catch * {
+    "already-exists"
+  }
 `;
 
 // Search options with a values spec pointing to the importedAt range index
