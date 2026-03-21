@@ -4,17 +4,24 @@
  * Covers the full prerequisite chain that agents must follow:
  *  1. Use ml_indexes_list to discover geospatial indexes
  *  2. Seed documents with lat/lon properties
- *  3. Configure a geospatial element pair index via the XQuery admin library
+ *  3. Configure a geospatial element pair index via the Management API
  *  4. Test circle, bounding-box, and polygon searches
  *
- * Uses the XQuery admin module to add the index programmatically — this
+ * Uses the Management API to add the index programmatically — this
  * mirrors what an agent would guide a user to do when no index exists.
  *
  * Catches bugs that unit tests miss:
- *  - Wrong cts:element-pair-geospatial-query argument order (lat vs lon)
+ *  - Wrong cts:json-property-pair-geospatial-query argument order (lat vs lon)
  *  - Radius unit conversion (km → miles internally)
- *  - Polygon winding order (MarkLogic expects counter-clockwise)
  *  - Index not yet built when search runs (reindexing race condition)
+ *
+ * Key MarkLogic behaviour:
+ *  - geospatial-element-pair-index covers BOTH XML element pair queries and
+ *    JSON property pair queries (ML maps JSON properties to XML elements internally).
+ *  - cts:json-property-pair-geospatial-query uses string property names and works
+ *    against a geospatial-element-pair-index for JSON documents.
+ *  - JSON docs return object-node() from cts:search; xdmp:node-uri() extracts the
+ *    correct URI (fn:document-uri() returns empty string for object-node()).
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -46,51 +53,53 @@ const GEO_DOCS = [
   },
 ];
 
-// XQuery to add a geospatial element pair index on location/lat/lon.
-// admin:database-geospatial-element-pair-index creates an element-pair index that
-// covers BOTH XML elements and JSON properties (via MarkLogic's JSON→XML model).
-// Query this index with cts:element-pair-geospatial-query + xs:QName args, NOT with
-// cts:json-property-pair-geospatial-query (which requires a distinct json-property-pair index).
-// ML handles duplicate index config gracefully (wrapped in try-catch).
-const ADD_GEO_INDEX_XQUERY = `
-import module namespace admin = "http://marklogic.com/xdmp/admin"
-  at "/MarkLogic/admin.xqy";
+// Add a geospatial element pair index via the Management REST API (port 8002).
+// cts:json-property-pair-geospatial-query works against geospatial-element-pair-index:
+// MarkLogic maps JSON properties to XML elements in its internal index model, so the
+// element-pair index serves both XML element pair queries and JSON property pair queries.
+async function addGeoElementPairIndex(base: ReturnType<typeof buildClients>["base"]) {
+  const props = await base.get<Record<string, unknown>>(
+    base.mgmt,
+    "/manage/v2/databases/Documents/properties",
+    { params: { format: "json" } }
+  );
+  const existing = (props["geospatial-element-pair-index"] as Array<Record<string, unknown>>) ?? [];
+  if (existing.some((idx) => idx["parent-localname"] === "location" && idx["latitude-localname"] === "lat")) return;
+  await base.put(
+    base.mgmt,
+    "/manage/v2/databases/Documents/properties",
+    {
+      "geospatial-element-pair-index": [
+        ...existing,
+        {
+          "parent-namespace-uri": "",
+          "parent-localname": "location",
+          "latitude-namespace-uri": "",
+          "latitude-localname": "lat",
+          "longitude-namespace-uri": "",
+          "longitude-localname": "lon",
+          "coordinate-system": "wgs84",
+          "range-value-positions": false,
+          "invalid-values": "ignore",
+        },
+      ],
+    },
+    { params: { format: "json" }, headers: { "Content-Type": "application/json" } }
+  );
+}
 
-let $config := admin:get-configuration()
-let $db-id  := xdmp:database("Documents")
-let $index  := admin:database-geospatial-element-pair-index(
-                "",          (: parent namespace :)
-                "location",  (: parent localname :)
-                "",          (: lat namespace :)
-                "lat",       (: lat localname :)
-                "",          (: lon namespace :)
-                "lon",       (: lon localname :)
-                "wgs84",     (: coordinate system :)
-                fn:false()   (: range-value-positions :)
-              )
-return
-  try {
-    let $config2 := admin:database-add-geospatial-element-pair-index($config, $db-id, $index)
-    return (admin:save-configuration($config2), "added")
-  } catch * {
-    "already-exists"
-  }
-`;
-
-// XQuery returns document URIs using the element-pair geospatial query.
-// The admin module creates a geospatial-element-pair index (not a json-property-pair index).
-// cts:element-pair-geospatial-query uses the element-pair index and works for BOTH XML elements
-// and JSON properties (since MarkLogic indexes JSON via its XML element model).
-// cts:json-property-pair-geospatial-query requires a separate json-property-pair index type.
+// XQuery using cts:json-property-pair-geospatial-query (string property names).
+// This works against geospatial-element-pair-index for JSON documents.
+// JSON docs return object-node() from cts:search; xdmp:node-uri() extracts the URI correctly.
 function geoCircleXQuery(lat: number, lon: number, radiusKm: number, collection: string): string {
   const radiusMiles = radiusKm * 0.621371;
   return `
     for $doc in cts:search(
       fn:collection("${collection}"),
-      cts:element-pair-geospatial-query(
-        xs:QName("location"),
-        xs:QName("lat"),
-        xs:QName("lon"),
+      cts:json-property-pair-geospatial-query(
+        "location",
+        "lat",
+        "lon",
         cts:circle(${radiusMiles}, cts:point(${lat}, ${lon}))
       )
     )
@@ -99,7 +108,7 @@ function geoCircleXQuery(lat: number, lon: number, radiusKm: number, collection:
 }
 
 describeIfLive("Geospatial search (live)", () => {
-  const { documents, eval: evalClient, schema } = buildClients();
+  const { base, documents, eval: evalClient, schema } = buildClients();
 
   beforeAll(async () => {
     // Seed geo documents
@@ -109,8 +118,8 @@ describeIfLive("Geospatial search (live)", () => {
       });
     }
 
-    // Add geospatial index via XQuery admin module
-    await evalClient.evalXQuery(ADD_GEO_INDEX_XQUERY);
+    // Add geospatial element pair index via Management API
+    await addGeoElementPairIndex(base);
 
     // Allow time for the index to be built
     await new Promise((r) => setTimeout(r, 3000));
@@ -192,10 +201,10 @@ describeIfLive("Geospatial search (live)", () => {
       const xquery = `
         for $doc in cts:search(
           fn:collection("${COLLECTION}"),
-          cts:element-pair-geospatial-query(
-            xs:QName("location"),
-            xs:QName("lat"),
-            xs:QName("lon"),
+          cts:json-property-pair-geospatial-query(
+            "location",
+            "lat",
+            "lon",
             cts:box(38, -80, 45, -70)
           )
         )
@@ -214,10 +223,10 @@ describeIfLive("Geospatial search (live)", () => {
       const xquery = `
         for $doc in cts:search(
           fn:collection("${COLLECTION}"),
-          cts:element-pair-geospatial-query(
-            xs:QName("location"),
-            xs:QName("lat"),
-            xs:QName("lon"),
+          cts:json-property-pair-geospatial-query(
+            "location",
+            "lat",
+            "lon",
             cts:box(35, -25, 72, 45)
           )
         )

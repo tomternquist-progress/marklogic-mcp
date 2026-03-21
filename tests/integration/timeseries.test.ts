@@ -38,26 +38,28 @@ const TIME_DOCS = [
 ];
 
 // Index creation via Management REST API (port 8002).
-// The TIMESERIES_OPTIONS uses "json-property": "importedAt" in the values spec, which
-// resolves to cts:json-property-reference — requiring a range-json-property-index, NOT
-// a range-element-index. These are distinct types in MarkLogic's Management API.
+// cts:json-property-reference("importedAt", "type=dateTime") in the search options
+// requires a range-element-index with a matching localname — MarkLogic maps JSON
+// property names to XML element names in its index model. The admin XQuery approach
+// silently swallows failures via try/catch; the Management API throws on error.
 async function addDateTimeRangeIndex(base: ReturnType<typeof buildClients>["base"]) {
   const props = await base.get<Record<string, unknown>>(
     base.mgmt,
     "/manage/v2/databases/Documents/properties",
     { params: { format: "json" } }
   );
-  const existing = (props["range-json-property-index"] as Array<Record<string, unknown>>) ?? [];
-  if (existing.some((idx) => idx["property-name"] === "importedAt")) return; // already present
+  const existing = (props["range-element-index"] as Array<Record<string, unknown>>) ?? [];
+  if (existing.some((idx) => idx.localname === "importedAt" && idx["scalar-type"] === "dateTime")) return;
   await base.put(
     base.mgmt,
     "/manage/v2/databases/Documents/properties",
     {
-      "range-json-property-index": [
+      "range-element-index": [
         ...existing,
         {
           "scalar-type": "dateTime",
-          "property-name": "importedAt",
+          "namespace-uri": "",
+          "localname": "importedAt",
           "collation": "",
           "range-value-positions": false,
           "invalid-values": "ignore",

@@ -33,6 +33,10 @@ export interface RangeIndex {
   latLocalname?: string;
   lonLocalname?: string;
   coordinateSystem?: string;
+  // JSON property pair geospatial index fields
+  parentProperty?: string;
+  latProperty?: string;
+  lonProperty?: string;
 }
 
 export interface TdeValidationResult {
@@ -642,6 +646,7 @@ function extractRangeIndexes(props: Record<string, unknown>): RangeIndex[] {
   const geoPath = (props["geospatial-path-index"] as Array<Record<string, string>> | undefined) ?? [];
   const geoAttrPair = (props["geospatial-element-attribute-pair-index"] as Array<Record<string, string>> | undefined) ?? [];
   const geoChild = (props["geospatial-element-child-index"] as Array<Record<string, string>> | undefined) ?? [];
+  const geoJsonPropPair = (props["geospatial-json-property-pair-index"] as Array<Record<string, string>> | undefined) ?? [];
 
   for (const idx of geoPair) {
     indexes.push({
@@ -687,6 +692,16 @@ function extractRangeIndexes(props: Record<string, unknown>): RangeIndex[] {
       scalarType: "geospatial",
       parentLocalname: idx["parent-localname"],
       localname: idx.localname,
+      coordinateSystem: idx["coordinate-system"],
+    });
+  }
+  for (const idx of geoJsonPropPair) {
+    indexes.push({
+      type: "geospatial-json-property-pair",
+      scalarType: "geospatial",
+      parentProperty: idx["parent-property"],
+      latProperty: idx["lat-property"],
+      lonProperty: idx["lon-property"],
       coordinateSystem: idx["coordinate-system"],
     });
   }
