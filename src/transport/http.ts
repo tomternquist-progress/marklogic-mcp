@@ -206,7 +206,12 @@ export async function startHttpTransport(
   });
 
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", sessions: sessions.size });
+    res.json({
+      status: "ok",
+      sessions: sessions.size,
+      commit: process.env.GIT_COMMIT ?? "dev",
+      buildTime: process.env.BUILD_TIME ?? "local",
+    });
   });
 
   return new Promise((resolve) => {

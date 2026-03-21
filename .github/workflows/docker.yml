@@ -80,6 +80,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=mcp
           cache-to: type=gha,mode=max,scope=mcp
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp }}
 
   # ── Flux runner sidecar image ─────────────────────────────────────────────────
   build-flux-runner:
