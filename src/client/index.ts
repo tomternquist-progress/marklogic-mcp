@@ -12,6 +12,7 @@ import { FastTrackClient } from "./fasttrack.js";
 import { SemaphoreClient } from "./semaphore.js";
 import { ExtensionsClient } from "./extensions.js";
 import { SecurityClient } from "./security.js";
+import { PerformanceClient } from "./performance.js";
 
 export interface MarkLogicClients {
   admin: AdminClient;
@@ -26,6 +27,7 @@ export interface MarkLogicClients {
   semaphore: SemaphoreClient;
   extensions: ExtensionsClient;
   security: SecurityClient;
+  performance: PerformanceClient;
 }
 
 export function createClients(config: AppConfig, oauthToken?: string): MarkLogicClients {
@@ -50,8 +52,9 @@ export function createClients(config: AppConfig, oauthToken?: string): MarkLogic
   const semaphore = new SemaphoreClient(semaphoreConfig);
   const extensions = new ExtensionsClient(base);
   const security = new SecurityClient(base);
+  const performance = new PerformanceClient(base);
 
-  return { admin, documents, search, eval: evalClient, schema, graphs, optic, flux, fasttrack, semaphore, extensions, security };
+  return { admin, documents, search, eval: evalClient, schema, graphs, optic, flux, fasttrack, semaphore, extensions, security, performance };
 }
 
 export {
@@ -68,4 +71,5 @@ export {
   SemaphoreClient,
   ExtensionsClient,
   SecurityClient,
+  PerformanceClient,
 };

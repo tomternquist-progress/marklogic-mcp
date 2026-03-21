@@ -2535,4 +2535,164 @@ ml_facets_query(collection="${domain.replace(/[^a-zA-Z]/g, "-").toLowerCase()}",
       }],
     })
   );
+
+  // ── performance_advisor ──────────────────────────────────────────────────────
+
+  server.prompt(
+    "performance_advisor",
+    "Diagnose MarkLogic performance bottlenecks. Given a symptom description, returns a structured " +
+    "plan: likely causes, diagnostic tool calls (ml_explain_optic, ml_profile_query, " +
+    "ml_search_query_plan, ml_forest_metrics), interpretation guide, quick wins, and index recommendations.",
+    {
+      symptoms: z.string().describe(
+        "Describe the performance problem. Examples: 'Optic query takes 30s on 1M docs', " +
+        "'ingest slowing after 10M documents', 'SPARQL aggregation times out', " +
+        "'search returns results slowly on first query', 'cts:search with date range is slow'"
+      ),
+      query_type: z.enum(["optic", "search", "sparql", "ingest", "general"]).optional().describe(
+        "Category of the bottleneck: 'optic' (Optic/row queries), 'search' (cts:search / ml_search), " +
+        "'sparql' (SPARQL / semantics), 'ingest' (flux_import / write throughput), 'general'"
+      ),
+      current_approach: z.string().optional().describe(
+        "Describe what you are currently doing — the query, import pipeline, or API call that is slow"
+      ),
+    },
+    ({ symptoms, query_type, current_approach }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are a MarkLogic performance engineer. Analyze this performance issue and return a structured diagnostic plan.
+
+SYMPTOMS: ${symptoms}
+QUERY TYPE: ${query_type ?? "not specified"}
+CURRENT APPROACH: ${current_approach ?? "not provided"}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+MARKLOGIC PERFORMANCE FUNDAMENTALS (use to inform your analysis)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ARCHITECTURE
+  E-node (Evaluator): parses requests, executes XQuery/SJS, handles filtering,
+    snippeting, joins (including ALL SPARQL joins), and tree expansion.
+  D-node (Data Manager): stores data and indexes; handles index resolution,
+    data reads from disk, and background merges.
+  Combined node = both roles. At ~16+ nodes, separate E/D for analytics workloads.
+
+THE TWO-STEP SEARCH PROCESS
+  Step 1 — Index resolution (D-nodes): produces candidate fragment IDs from indexes.
+  Step 2 — Filtering (E-nodes): loads each candidate document, verifies full match.
+  cts:search runs FILTERED by default.
+  → Add "unfiltered" option when the query is fully backed by range/word indexes.
+  → Diagnostic: ml_profile_query → filterMisses > 0 means Step 2 is doing real work.
+  → False-positive rate: cts:contains(result, query) returns false for false positives.
+
+CACHES (key for interpreting ml_profile_query output)
+  List cache     — holds index term lists (D-node). Miss = disk read for index resolution.
+  Compressed tree cache — holds document bodies (D-node). Miss = disk read for filtering.
+  Expanded tree cache   — holds uncompressed doc trees (E-node). Miss = doc expansion work.
+  Triple cache   — holds triple data for SPARQL. Misses on first query are normal.
+  Cold run (first query) = many misses. Warm run (repeated) = steady-state behavior.
+  Compare cold vs warm to distinguish "startup slowness" from "structural bottleneck".
+
+RANGE INDEXES (when required)
+  cts:range-query, cts:element-range-query → require element/attribute/path range index.
+  ORDER BY in FLWOR → requires range index on the ORDER BY field (last XPath step).
+  ml_values_query, ml_facets_query         → require range index or element word index.
+  Always run ml_indexes_list before writing any range-dependent query.
+  Missing range index + filtered search = worst case: full document scan.
+
+OPTIC PERFORMANCE RULES
+  ml_explain_optic shows the plan. Key nodes:
+    "lexicon" / "TemplateLexiconPlan" = index-only (fast, no document expansion).
+    "document" / "DocumentPlan"       = document expansion needed (acceptable but slower).
+    "join"                            = join between two sources; ensure both have TDE views.
+  Push .where() BEFORE .groupBy() to reduce row count before aggregation.
+  .select() only needed columns to avoid loading unused column data.
+  .limit(N) prevents full-collection scans during development.
+  ORDER BY requires a range index on the sort column. Without one: loads all docs to sort.
+
+SPARQL PERFORMANCE
+  ALL SPARQL joins execute in-memory on the E-node. Large joins = high E-node memory.
+  Minimum 64 GB RAM on E-nodes for production semantics workloads.
+  Filter by rdf:type first (cheapest triple filter) before graph traversal predicates.
+  Use NAMED GRAPH scoping: GRAPH <uri> { ... } to avoid scanning all graphs.
+  SPARQL aggregations (GROUP BY, COUNT) happen on E-node — need sufficient Expanded Tree Cache.
+
+INGEST HEALTH (ml_forest_metrics)
+  Stand count → max 64 per forest; forest unavailable if it hits 64.
+  Fragment count → warn at 96 million per forest; hard limit ~160 million.
+  deletedFragmentPct > 20% → significant fragmentation (normal during heavy ingest;
+    background merges reclaim automatically).
+  Merge in progress → expected during heavy ingest; high background I/O is normal.
+  In-memory stand full errors (XDMP-INMMTREEFULL, XDMP-INMMLISTFULL, etc.) → increase
+    in-memory stand settings for the database in the Admin UI.
+  background-io-limit = 100 (MB/sec per host) is a good throttle starting point.
+
+DIAGNOSTIC TOOLS AVAILABLE
+  ml_explain_optic      — Optic query plan (no eval). Shows join strategy, index vs doc access.
+  ml_search_query_plan  — Search debug (no eval). Shows resolved CTS query, candidate count.
+  ml_profile_query      — Runtime metrics (eval-gated). Elapsed time, cache stats, filter activity.
+                          language: "xquery" | "javascript" | "sparql"
+  ml_forest_metrics     — Forest health (no eval). Fragment counts, stand count, merge status.
+
+  Also useful in XQuery/SJS (via ml_eval_xquery / ml_profile_query):
+    xdmp:plan(search_expr)     — query plan showing which indexes will be used
+    xdmp:estimate(search_expr) — fast index-only count without executing the search
+    xdmp:query-trace(true())   — logs "searchable/unsearchable" steps to ErrorLog.txt
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RESPONSE FORMAT — complete all 6 sections
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## 1. LIKELY CAUSES
+List the 2–4 most probable root causes based on the symptoms and query type.
+Be specific: "filtered search with high false-positive rate" not just "slow query".
+
+## 2. DIAGNOSTIC STEPS
+Ordered list of specific tool calls to run. For each step:
+  a. The exact tool to call (ml_explain_optic / ml_profile_query / etc.)
+  b. What inputs to provide
+  c. What to look for in the output
+
+Prioritize no-eval tools first (ml_explain_optic, ml_search_query_plan, ml_forest_metrics),
+then eval-gated tools if those are inconclusive.
+
+## 3. INTERPRETING THE RESULTS
+Map specific metric values to diagnoses:
+  • elapsedMs > 1000 + filterMisses > 0 → filtered search bottleneck
+  • elapsedMs > 1000 + filterMisses = 0 + listCacheMisses > 0 → cold cache or index too large
+  • ml_explain_optic shows "document" nodes + no "limit" → full-scan risk
+  • ml_forest_metrics standCount > 50 → merge falling behind ingest
+  • ml_search_query_plan total >> expected results → query not selective enough
+
+## 4. QUICK WINS (implement immediately, no schema changes)
+List 2–4 low-effort, high-impact changes:
+  • Add "unfiltered" to cts:search (if fully index-backed)
+  • Add collection scope before field filters
+  • Add .limit(N) to Optic query
+  • Push .where() before .groupBy() in Optic
+  • Scope SPARQL to named graph
+  • Add OFFSET/LIMIT for SPARQL
+
+## 5. INDEX RECOMMENDATIONS
+Which indexes to add, and why, based on the query pattern:
+  • element-range-index: for exact field value, date range, numeric comparison, ORDER BY
+  • path-range-index: for nested JSON paths (e.g. envelope.instance.price)
+  • element-word-index: for full-text search on a specific element
+  • triple-index: always required when using semantics/SPARQL (verify it is enabled)
+  State the deployment path: ml-gradle content-database.json → gradle mlDeploy → ml_reindex_status.
+
+## 6. ARCHITECTURE NOTES
+Longer-term recommendations if the bottleneck is structural:
+  Optic:   TDE column types (lexicon vs. document), fragmentation of large views
+  SPARQL:  E/D node separation, E-node RAM sizing, named graph design
+  Ingest:  in-memory stand sizes, Fast Data Directory (SSD) for journals, forest count
+  Search:  unfiltered pagination pattern, search options and index configuration
+
+Provide the analysis now.`,
+        },
+      }],
+    })
+  );
 }

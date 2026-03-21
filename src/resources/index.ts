@@ -68,11 +68,17 @@ pitfalls → alternatives) before any tool is called.
    Bucketed time aggregations hit range indexes directly via ml_timeseries_query and
    ml_values_query. No document scanning. Prerequisite: verify with ml_indexes_list.
 
-9. ASK problem_advisor WHEN UNSURE
-   If the goal does not map cleanly to the table below, invoke the problem_advisor
-   prompt before picking any tool.
+9. DIAGNOSE BEFORE GUESSING ON PERFORMANCE
+   Never assume a query is slow due to a particular cause. Use the diagnostic tools:
+   ml_explain_optic (Optic plan), ml_search_query_plan (CTS debug),
+   ml_forest_metrics (ingest health), ml_profile_query (runtime metrics + cache stats).
+   Then invoke performance_advisor with the symptoms for a structured remediation plan.
 
-10. FASTTRACK APPS START WITH SEARCH OPTIONS
+10. ASK problem_advisor WHEN UNSURE
+    If the goal does not map cleanly to the table below, invoke the problem_advisor
+    prompt before picking any tool.
+
+11. FASTTRACK APPS START WITH SEARCH OPTIONS
     FastTrack UI widgets (SearchBar, FacetFilters, Geospatial Map, Timeline) are
     configured entirely through named search-options sets stored in MarkLogic.
     Use ml_search_options_list to see existing configs, ml_search_options_get to
@@ -168,6 +174,12 @@ Security / RBAC      Management API +           ml_users_list             ml_rol
 audit                REST permissions API        ml_roles_list             ml_users_list
 ("why can't user                                ml_document_permissions
 X see doc Y?")
+
+Query performance    Performance diagnostic      ml_explain_optic          ml_indexes_list
+/ bottleneck         tools + advisor            ml_search_query_plan      ml_views_list
+diagnosis            (filtered vs unfiltered,   ml_forest_metrics         ml_collections_list
+                     range index coverage,      ml_profile_query (eval)   ml_reindex_status
+                     Optic/SPARQL/ingest)       performance_advisor (prompt)
 
 Query planning       Query approach advisor     query_approach_advisor    ml_views_list
 (cts.search/Optic)                                                         ml_indexes_list
@@ -377,6 +389,83 @@ WHEN TO COMBINE THEM (hybrid):
   → Use the query_approach_advisor prompt to build the plan
 
 
+── PERFORMANCE DIAGNOSTICS ──────────────────────────────────────────────────
+
+DIAGNOSTIC TOOLS (use BEFORE guessing at root cause):
+
+ml_explain_optic       — Optic execution plan without running the query. No eval required.
+                         Key: "lexicon" nodes = index-only (fast); "document" nodes = disk reads.
+                         No "limit" node + high cardinality = full-scan risk.
+
+ml_search_query_plan   — Search debug mode (debug=true). Shows resolved CTS query and
+                         candidate count from index resolution. No eval required.
+                         Compare "total" against expected results: large gap → low selectivity.
+
+ml_profile_query       — Runtime profiling: elapsed time + query meters (cache stats, filter
+                         activity). language: "xquery" | "javascript" | "sparql". Requires eval.
+                         Returns: elapsedMs, filterMisses, listCacheMisses, expandedTreeCacheMisses.
+
+ml_forest_metrics      — Per-forest health: stand count (max 64), fragment count (warn at 96M),
+                         deleted-fragment % (fragmentation), merge-in-progress. No eval required.
+
+Also useful (via ml_eval_xquery / ml_profile_query XQuery code):
+  xdmp:plan(expr)      — shows index plan for a search expression (which indexes are used)
+  xdmp:estimate(expr)  — fast index-only count; compare to fn:count() to measure selectivity
+  xdmp:query-trace()   — logs "searchable" vs "unsearchable" XPath steps to ErrorLog.txt
+
+
+FILTERED vs UNFILTERED SEARCH (most common performance issue):
+  cts:search runs FILTERED by default: Step 1 = index resolution → Step 2 = load and verify.
+  Step 2 loads every candidate document from disk — expensive for large result sets.
+  → Add option "unfiltered" when the query is fully backed by range or word indexes.
+  → Detect: ml_profile_query filterMisses > 0 = Step 2 is doing significant work.
+  → Estimate false-positive rate: xdmp:estimate(unfiltered_expr) vs fn:count(filtered_result).
+  → Unfiltered fast pagination: cts:search(fn:doc(), query, "unfiltered")[100001 to 100010]
+    skips directly to position 100001 without fetching preceding fragments.
+
+
+RANGE INDEX REQUIREMENTS (missing range index = full scan):
+  cts:element-range-query, cts:attribute-range-query, cts:path-range-query
+    → require a matching element/attribute/path range index
+  ORDER BY in FLWOR  → requires range index on the last step of the order-by expression
+  ml_values_query    → requires range index or element word index
+  ml_facets_query    → requires range index per facet field
+  Always: ml_indexes_list BEFORE writing any range-dependent query.
+  After adding an index: ml_reindex_status until reindex-count = 0.
+
+
+INGEST PERFORMANCE CHECKLIST:
+  1. ml_forest_metrics to see stand count, fragment count, and merge activity.
+  2. Stand count approaching 64 → reduce ingest rate or increase background-io-limit.
+  3. XDMP-INMMTREEFULL / XDMP-INMMLISTFULL in error log → increase in-memory stand settings
+     in Admin UI (Databases → {name} → in-memory tree/list/range-index size).
+  4. Fragmentation > 20% → normal during heavy ingest; merge handles it automatically.
+  5. For maximum ingest throughput: use flux_import (parallel batching, not ml_document_put loop).
+
+
+SPARQL PERFORMANCE:
+  All SPARQL joins execute in-memory on the E-node. Complex graph traversals need RAM.
+  Minimum 64 GB RAM on E-nodes for production semantics workloads.
+  • Filter by rdf:type first (cheapest triple filter) before traversal predicates.
+  • Use NAMED GRAPH scoping: GRAPH <uri> { ... } to avoid scanning all graphs.
+  • SPARQL aggregations (GROUP BY, COUNT) happen on E-node — not D-node index.
+  • Profile SPARQL: ml_profile_query(language="sparql", code="SELECT ...").
+  For semantics-heavy clusters: separate E-nodes and D-nodes (reduces E-node memory contention).
+
+
+QUERY METERS INTERPRETATION (ml_profile_query output):
+  elapsedMs                     → total wall time
+  filterMisses > 0              → documents loaded to verify match (filtered search)
+  filterHits                    → documents that passed filter verification
+  listCacheMisses > 0           → index term lists read from disk (cold or cache too small)
+  expandedTreeCacheMisses > 0   → document trees expanded from disk (E-node pressure)
+  Cold run has higher misses than warm — compare both for structural vs startup diagnosis.
+  If listCacheMisses stay high on warm runs: List Cache is undersized for the indexed data.
+  If expandedTreeCacheMisses stay high: too many documents in working set for E-node cache.
+
+→ Invoke performance_advisor prompt with symptoms for a full structured remediation plan.
+
+
 ── PROJECT SETUP / DEPLOYMENT (ml-gradle) ──────────────────────────────────────
 
 MarkLogic projects are configured as code via ml-gradle. When advising on adding
@@ -563,9 +652,14 @@ Semaphore (18): semaphore_status, semaphore_studio_status,
                 semaphore_publish_diagnose, semaphore_concept_search,
                 semaphore_concept_get, semaphore_concept_labels_update
 
+Performance (3–4, eval-dependent):
+               ml_explain_optic, ml_search_query_plan, ml_forest_metrics
+               [eval-enabled] ml_profile_query
+
 Planning (1):  ml_suggest_approach
 
 Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
+               performance_advisor,
                tde_schema_generator, rest_extension_generator,
                structured_query_builder, optic_query_builder, sparql_query_builder,
                query_approach_advisor, data_modeling_advisor, data_import_advisor,

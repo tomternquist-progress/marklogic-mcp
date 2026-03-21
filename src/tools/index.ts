@@ -15,6 +15,7 @@ import { registerFastTrackTools } from "./fasttrack.js";
 import { registerSemaphoreTools } from "./semaphore.js";
 import { registerExtensionTools } from "./extensions.js";
 import { registerSecurityTools } from "./security.js";
+import { registerPerformanceTools } from "./performance.js";
 
 export function registerAllTools(server: McpServer, clients: MarkLogicClients, config: AppConfig): void {
   registerSuggestApproachTool(server);
@@ -31,4 +32,5 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerSemaphoreTools(server, clients);
   registerExtensionTools(server, clients, config.safety.readonly);
   registerSecurityTools(server, clients);
+  registerPerformanceTools(server, clients, config.safety.allowEval);
 }
