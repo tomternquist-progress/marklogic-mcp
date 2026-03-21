@@ -161,10 +161,10 @@ export class SchemaClient {
 
   async listCollections(database?: string, limit = 50): Promise<Array<{ name: string; count: number }>> {
     // Use xdmp:to-json(map:new(...)) instead of the object-node {} constructor.
-    // xdmp:estimate() takes node()* (search results), not a cts:query — wrap in cts:search().
+    // cts:estimate() takes a cts:query directly and returns a count estimate.
     const xquery = `
       for $c in cts:collections()
-      let $count := xdmp:estimate(cts:search(cts:collection-query($c)))
+      let $count := cts:estimate(cts:collection-query($c))
       order by $count descending
       return xdmp:to-json(map:new((map:entry("name", $c), map:entry("count", $count))))
     `;
