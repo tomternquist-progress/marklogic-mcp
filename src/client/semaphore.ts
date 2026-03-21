@@ -608,9 +608,14 @@ export class SemaphoreClient {
    * publish of 1000+ concepts produces a file well over 100 KB; the "1 rule only"
    * failure mode produces a file under 2 KB.
    *
+   * LIMITATION: Small taxonomies (≤ ~25 concepts) legitimately produce paks under 5 KB,
+   * so this function returns 1 for them even when publishing succeeded. Callers should
+   * compare against the KMM concept count (kmmConceptCount()) before raising a warning —
+   * only flag as broken if ruleCount ≤ 1 AND kmmCount > 10.
+   *
    * Returns:
    *   > 1   estimated rule count based on pak file size (may not match exact rule count)
-   *   1     publish set exists but pak is < 5 KB (strongly suggests the 1-rule failure mode)
+   *   1     publish set exists but pak is < 5 KB (may be the 1-rule failure mode OR a small taxonomy)
    *   0     publish set not found in CLS
    *  -1     could not reach CLS or parse HTML
    */
@@ -942,9 +947,9 @@ export class SemaphoreClient {
    * UPDATE operations work without triggering Semaphore's SHACL validation.
    *
    * Common use cases:
-   *   • Add sem:guid to concepts (required by ContextualCitation.kid template)
    *   • Fix or backfill labels
    *   • Remove unwanted triples before publishing
+   *   • Manually add sem:guid if loading via raw SPARQL INSERT (not needed when using semaphore_kmm_skos_load)
    *
    * @param modelUri  KMM model URI, e.g. "model:UNESCO"
    * @param sparql    SPARQL UPDATE string (INSERT DATA / DELETE DATA / etc.)

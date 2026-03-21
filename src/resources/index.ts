@@ -561,7 +561,7 @@ TOOLS FOR SEMAPHORE:
   semaphore_kmm_skos_load       — load a SKOS vocabulary from a public URL into KMM
   semaphore_kmm_sparql          — query model content via SPARQL SELECT
   semaphore_kmm_sparql_update   — run SPARQL INSERT/DELETE/LOAD to modify model triples
-                                  (use to add sem:guid before publishing)
+                                  (fix labels, delete unwanted triples, bulk updates)
   semaphore_publish             — trigger async KMM publish → compiles taxonomy into CLS rules
                                   always use async=true for models with 500+ concepts
   semaphore_publish_config_fix_plain_skos
@@ -573,11 +573,10 @@ TOOLS FOR SEMAPHORE:
 
 PLAIN SKOS WORKFLOW (UNESCO / EuroVoc / AGROVOC):
   1. semaphore_kmm_model_create
-  2. semaphore_kmm_skos_load (checkConstraints=false always applied)
-  3. semaphore_kmm_sparql_update — add sem:guid to all concepts (required by template)
-  4. semaphore_publish_config_fix_plain_skos — patch AllResources→AllConcepts + label SPARQL
-  5. semaphore_publish async=true — rebuild CLS rules
-  6. semaphore_publish_sets / semaphore_classify — verify
+  2. semaphore_kmm_skos_load — sem:guid auto-generated during OE import (no manual step needed)
+  3. semaphore_publish_config_fix_plain_skos — patch AllResources→AllConcepts + label SPARQL
+  4. semaphore_publish async=true — rebuild CLS rules
+  5. semaphore_publish_sets / semaphore_classify — verify
 
 KMM AUTHENTICATION NOTE:
   KMM uses Java EE form auth (not Basic auth). The MCP server handles the two-step
