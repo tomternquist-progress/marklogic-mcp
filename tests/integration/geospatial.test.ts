@@ -47,9 +47,10 @@ const GEO_DOCS = [
 ];
 
 // XQuery to add a geospatial element pair index on location/lat/lon.
-// ML 12 admin module only has admin:database-geospatial-element-pair-index (XML-named)
-// but this index covers BOTH XML and JSON documents with matching property/element names.
-// Query JSON docs using cts:json-property-pair-geospatial-query (not element-pair).
+// admin:database-geospatial-element-pair-index creates an element-pair index that
+// covers BOTH XML elements and JSON properties (via MarkLogic's JSON→XML model).
+// Query this index with cts:element-pair-geospatial-query + xs:QName args, NOT with
+// cts:json-property-pair-geospatial-query (which requires a distinct json-property-pair index).
 // ML handles duplicate index config gracefully (wrapped in try-catch).
 const ADD_GEO_INDEX_XQUERY = `
 import module namespace admin = "http://marklogic.com/xdmp/admin"
@@ -76,17 +77,20 @@ return
   }
 `;
 
-// XQuery returns document URIs using the JSON property pair geospatial query.
-// For JSON documents, use cts:json-property-pair-geospatial-query (not element-pair).
+// XQuery returns document URIs using the element-pair geospatial query.
+// The admin module creates a geospatial-element-pair index (not a json-property-pair index).
+// cts:element-pair-geospatial-query uses the element-pair index and works for BOTH XML elements
+// and JSON properties (since MarkLogic indexes JSON via its XML element model).
+// cts:json-property-pair-geospatial-query requires a separate json-property-pair index type.
 function geoCircleXQuery(lat: number, lon: number, radiusKm: number, collection: string): string {
   const radiusMiles = radiusKm * 0.621371;
   return `
     for $doc in cts:search(
       fn:collection("${collection}"),
-      cts:json-property-pair-geospatial-query(
-        "location",
-        "lat",
-        "lon",
+      cts:element-pair-geospatial-query(
+        xs:QName("location"),
+        xs:QName("lat"),
+        xs:QName("lon"),
         cts:circle(${radiusMiles}, cts:point(${lat}, ${lon}))
       )
     )
@@ -188,10 +192,10 @@ describeIfLive("Geospatial search (live)", () => {
       const xquery = `
         for $doc in cts:search(
           fn:collection("${COLLECTION}"),
-          cts:json-property-pair-geospatial-query(
-            "location",
-            "lat",
-            "lon",
+          cts:element-pair-geospatial-query(
+            xs:QName("location"),
+            xs:QName("lat"),
+            xs:QName("lon"),
             cts:box(38, -80, 45, -70)
           )
         )
@@ -210,10 +214,10 @@ describeIfLive("Geospatial search (live)", () => {
       const xquery = `
         for $doc in cts:search(
           fn:collection("${COLLECTION}"),
-          cts:json-property-pair-geospatial-query(
-            "location",
-            "lat",
-            "lon",
+          cts:element-pair-geospatial-query(
+            xs:QName("location"),
+            xs:QName("lat"),
+            xs:QName("lon"),
             cts:box(35, -25, 72, 45)
           )
         )

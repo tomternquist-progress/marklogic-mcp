@@ -37,30 +37,37 @@ const TIME_DOCS = [
   { uri: "/timeseries/dec-01.json", content: { importedAt: "2025-12-25T10:00:00Z", title: "December A" } },
 ];
 
-// XQuery to add a dateTime range element index on "importedAt".
-// Does NOT check for existing index first (admin:database-range-element-indexes function
-// name varies by ML version). ML will silently ignore duplicate index definitions.
-const ADD_DATETIME_INDEX_XQUERY = `
-import module namespace admin = "http://marklogic.com/xdmp/admin"
-  at "/MarkLogic/admin.xqy";
-
-let $config := admin:get-configuration()
-let $db-id  := xdmp:database("Documents")
-let $index  := admin:database-range-element-index(
-                "dateTime",
-                "",
-                "importedAt",
-                "http://marklogic.com/collation/",
-                fn:false()
-              )
-return
-  try {
-    let $config2 := admin:database-add-range-element-index($config, $db-id, $index)
-    return (admin:save-configuration($config2), "added")
-  } catch * {
-    "already-exists"
-  }
-`;
+// Index creation via Management REST API (port 8002).
+// The admin XQuery module approach (admin:database-range-element-index) is unreliable
+// in the /v1/eval context because the try/catch silently swallows failures, leaving
+// the index uncreated while returning "already-exists". The Management API is direct.
+async function addDateTimeRangeIndex(base: ReturnType<typeof buildClients>["base"]) {
+  const props = await base.get<Record<string, unknown>>(
+    base.mgmt,
+    "/manage/v2/databases/Documents/properties",
+    { params: { format: "json" } }
+  );
+  const existing = (props["range-element-index"] as Array<Record<string, unknown>>) ?? [];
+  if (existing.some((idx) => idx.localname === "importedAt")) return; // already present
+  await base.put(
+    base.mgmt,
+    "/manage/v2/databases/Documents/properties",
+    {
+      "range-element-index": [
+        ...existing,
+        {
+          "scalar-type": "dateTime",
+          "namespace-uri": "",
+          "localname": "importedAt",
+          "collation": "",
+          "range-value-positions": false,
+          "invalid-values": "ignore",
+        },
+      ],
+    },
+    { params: { format: "json" }, headers: { "Content-Type": "application/json" } }
+  );
+}
 
 // Search options with a values spec pointing to the importedAt range index
 const TIMESERIES_OPTIONS = {
@@ -103,7 +110,7 @@ function bucketDate(dateStr: string, bucket: string): string {
 }
 
 describeIfLive("Timeseries query (live)", () => {
-  const { documents, eval: evalClient, search, fasttrack } = buildClients();
+  const { base, documents, search, fasttrack } = buildClients();
 
   beforeAll(async () => {
     // Seed time docs
@@ -113,8 +120,8 @@ describeIfLive("Timeseries query (live)", () => {
       });
     }
 
-    // Configure dateTime range index
-    await evalClient.evalXQuery(ADD_DATETIME_INDEX_XQUERY);
+    // Configure dateTime range index via Management API (reliable; admin XQuery silently fails)
+    await addDateTimeRangeIndex(base);
 
     // Deploy search options with values spec
     await fasttrack.putSearchOptions(OPTIONS_NAME, TIMESERIES_OPTIONS);
