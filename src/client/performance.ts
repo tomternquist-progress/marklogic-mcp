@@ -60,13 +60,28 @@ export class PerformanceClient {
     }
   }
 
-  /** Per-forest status from Management API. */
+  /** Per-forest status + counts from Management API (merges view=status and view=counts). */
   async getForestStatus(forestName: string): Promise<Record<string, unknown>> {
-    return this.base.get<Record<string, unknown>>(
-      this.base.mgmt,
-      `/manage/v2/forests/${encodeURIComponent(forestName)}`,
-      { params: { view: "status", format: "json" } }
-    );
+    const encoded = encodeURIComponent(forestName);
+    const [statusRaw, countsRaw] = await Promise.all([
+      this.base.get<Record<string, unknown>>(
+        this.base.mgmt,
+        `/manage/v2/forests/${encoded}`,
+        { params: { view: "status", format: "json" } }
+      ).catch(() => ({} as Record<string, unknown>)),
+      this.base.get<Record<string, unknown>>(
+        this.base.mgmt,
+        `/manage/v2/forests/${encoded}`,
+        { params: { view: "counts", format: "json" } }
+      ).catch(() => ({} as Record<string, unknown>)),
+    ]);
+    // Merge: nest counts-properties into the forest-status object for analyzeForestStatus
+    const merged = { ...statusRaw } as Record<string, unknown>;
+    const forestStatus = (merged["forest-status"] as Record<string, unknown> | undefined) ?? {};
+    const countsProps = (countsRaw["forest-counts"] as Record<string, unknown> | undefined) ??
+                       (countsRaw["forest-status"] as Record<string, unknown> | undefined) ?? {};
+    merged["forest-status"] = { ...forestStatus, _counts: countsProps };
+    return merged;
   }
 
   /** Profile XQuery code via xdmp:query-meters + elapsed time. Requires ML_ALLOW_EVAL=true. */

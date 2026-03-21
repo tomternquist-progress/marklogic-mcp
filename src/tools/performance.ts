@@ -385,17 +385,23 @@ function analyzeForestStatus(
   const hints: string[] = [];
 
   // Management API response: forest-status → status-properties (each value is {units, value})
+  // view=counts data is merged in as forest-status._counts by the client.
   const forestStatus = (raw["forest-status"] as Record<string, unknown> | undefined) ?? raw;
   const statusProps = (forestStatus["status-properties"] as Record<string, unknown> | undefined) ?? {};
+  const countsData = (forestStatus["_counts"] as Record<string, unknown> | undefined) ?? {};
 
   const stateRaw = unwrapMgmtValue(statusProps["state"]);
   const state = typeof stateRaw === "string" ? stateRaw : "unknown";
-  const standCount = extractMgmtNumber(statusProps, "stand-count");
-  const fragmentCount = extractMgmtNumber(statusProps, "fragment-count");
-  const deletedFragmentCount = extractMgmtNumber(statusProps, "deleted-fragment-count");
-  const activeFragmentCount = extractMgmtNumber(statusProps, "active-fragment-count");
   const mergeRaw = unwrapMgmtValue(statusProps["merge-in-progress"]);
   const mergeInProgress = mergeRaw === true || mergeRaw === "true";
+
+  // Fragment/stand counts come from view=counts (counts-properties section)
+  const countsProps = (countsData["counts-properties"] as Record<string, unknown> | undefined) ?? countsData;
+  const standCount = extractMgmtNumber(countsProps, "stand-count");
+  const fragmentCount = extractMgmtNumber(countsProps, "fragment-count") ??
+                        extractMgmtNumber(countsProps, "active-fragment-count");
+  const deletedFragmentCount = extractMgmtNumber(countsProps, "deleted-fragment-count");
+  const activeFragmentCount = extractMgmtNumber(countsProps, "active-fragment-count");
 
   // Compute fragmentation percentage
   const totalFragments = fragmentCount !== null ? fragmentCount : 0;
