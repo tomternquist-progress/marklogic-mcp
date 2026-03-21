@@ -19,7 +19,11 @@ export class FastTrackClient {
       "/v1/config/query",
       { params: qp }
     );
-    // MarkLogic returns {"query-options-list": {"options": [{"name":..., "uri":...}, ...]}}
+    // ML 12 returns a plain JSON array: [{name, uri}, ...] or [] when none exist.
+    // Older versions wrapped in {"query-options-list": {"options": [...]}} — handle both.
+    if (Array.isArray(raw)) {
+      return (raw as Array<Record<string, string>>).map((o) => ({ name: o.name ?? "", uri: o.uri ?? "" }));
+    }
     const list = raw?.["query-options-list"] as Record<string, unknown> | undefined;
     const opts = (list?.["options"] ?? raw?.["options"]) as Array<Record<string, string>> | undefined;
     if (Array.isArray(opts)) {

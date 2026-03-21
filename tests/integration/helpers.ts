@@ -28,6 +28,7 @@ import { PerformanceClient } from "../../src/client/performance.js";
 import { GraphsClient } from "../../src/client/graphs.js";
 import { OpticClient } from "../../src/client/optic.js";
 import { ExtensionsClient } from "../../src/client/extensions.js";
+import { FastTrackClient } from "../../src/client/fasttrack.js";
 
 export const ML_HOST = process.env.ML_HOST ?? "";
 export const ML_PORT = parseInt(process.env.ML_PORT ?? "8000", 10);
@@ -69,5 +70,6 @@ export function buildClients() {
     graphs: new GraphsClient(base),
     optic: new OpticClient(base),
     extensions: new ExtensionsClient(base),
+    fasttrack: new FastTrackClient(base, false),
   };
 }

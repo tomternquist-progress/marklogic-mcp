@@ -106,6 +106,7 @@ export class SearchClient {
       direction?: "ascending" | "descending";
       aggregate?: string;
       database?: string;
+      options?: string;
     } = {}
   ): Promise<ValuesResponse> {
     const qp: Record<string, string | number> = {
@@ -116,6 +117,7 @@ export class SearchClient {
     if (params.direction) qp.direction = params.direction;
     if (params.aggregate) qp.aggregate = params.aggregate;
     if (params.database) qp.database = params.database;
+    if (params.options) qp.options = params.options;
 
     const raw = await this.base.get<Record<string, unknown>>(
       this.base.http,
