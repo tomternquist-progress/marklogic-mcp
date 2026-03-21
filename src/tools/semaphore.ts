@@ -1423,11 +1423,15 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         return { content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }], isError: true };
       }
       const langFilter = lang ? `FILTER(LANG(?lv) = "${lang}")` : "";
+      // Restrict ?prefLabel to English (or no language tag) to avoid a cartesian
+      // product that produces one row per language variant of the display label.
+      const escaped = keyword.replace(/"/g, '\\"');
       const query = `
 PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
-SELECT ?concept ?prefLabel ?labelType ?matchedLabel WHERE {
+SELECT DISTINCT ?concept ?prefLabel ?labelType ?matchedLabel WHERE {
   ?concept a skos:Concept .
   ?concept skos:prefLabel ?prefLabel .
+  FILTER(LANG(?prefLabel) = "en" || LANG(?prefLabel) = "")
   { ?concept skos:prefLabel ?lv . BIND("prefLabel" AS ?labelType) }
   UNION
   { ?concept skos:altLabel ?lv . BIND("altLabel" AS ?labelType) }
@@ -1435,7 +1439,7 @@ SELECT ?concept ?prefLabel ?labelType ?matchedLabel WHERE {
   { ?concept skos:hiddenLabel ?lv . BIND("hiddenLabel" AS ?labelType) }
   BIND(STR(?lv) AS ?matchedLabel)
   ${langFilter}
-  FILTER(CONTAINS(LCASE(?matchedLabel), LCASE("${keyword.replace(/"/g, '\\"')}")))
+  FILTER(CONTAINS(LCASE(?matchedLabel), LCASE("${escaped}")))
 }
 ORDER BY ?prefLabel ?labelType
 LIMIT ${limit}`;
