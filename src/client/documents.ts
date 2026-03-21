@@ -37,24 +37,47 @@ export class DocumentsClient {
   ) {}
 
   async get(uri: string, database?: string, includeMetadata = false): Promise<GetDocumentResult> {
-    const qs = new URLSearchParams({ uri });
-    if (database) qs.set("database", database);
-    if (includeMetadata) { qs.append("category", "content"); qs.append("category", "metadata"); }
+    const contentQs = new URLSearchParams({ uri });
+    if (database) contentQs.set("database", database);
 
     let res: AxiosResponse<unknown>;
     try {
-      res = await this.base.http.get(`/v1/documents?${qs.toString()}`, { responseType: "text" });
+      res = await this.base.http.get(`/v1/documents?${contentQs.toString()}`, { responseType: "text" });
     } catch (err: unknown) {
       const e = err as { statusCode?: number; message?: string };
       if (e.statusCode === 404) throw new NotFoundError(uri);
       throw err;
     }
 
-    return {
+    const result: GetDocumentResult = {
       uri,
       content: tryParseJson(res.data as string),
       contentType: (res.headers["content-type"] as string) ?? "application/octet-stream",
     };
+
+    if (includeMetadata) {
+      // Fetch metadata separately — requesting content+metadata in one call triggers a
+      // multipart/mixed response that requires Accept: multipart/mixed and multipart parsing.
+      // Two plain JSON requests are simpler and more robust.
+      try {
+        const metaQs = new URLSearchParams({ uri, category: "metadata", format: "json" });
+        if (database) metaQs.set("database", database);
+        const metaRes = await this.base.http.get<Record<string, unknown>>(
+          `/v1/documents?${metaQs.toString()}`
+        );
+        const metaData = metaRes.data as Record<string, unknown>;
+        result.metadata = {
+          collections: metaData["collections"] as string[] | undefined,
+          permissions: metaData["permissions"] as Array<{ "role-name": string; capabilities: string[] }> | undefined,
+          properties: metaData["properties"] as Record<string, unknown> | undefined,
+          quality: metaData["quality"] as number | undefined,
+        };
+      } catch {
+        // Metadata fetch failed — return content only
+      }
+    }
+
+    return result;
   }
 
   async list(options: {

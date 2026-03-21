@@ -77,7 +77,9 @@ export class SecurityClient {
     const perms = (raw?.["permissions"] as Array<Record<string, unknown>>) ?? [];
     return perms.map((p) => ({
       "role-name": p["role-name"] as string,
-      capabilities: (p["capabilities"] as Array<{ capability: string }> ?? []).map((c) => c.capability),
+      // The REST API returns capabilities as a plain string array (e.g. ["read", "update"]),
+      // not as an array of {capability: string} objects.
+      capabilities: (p["capabilities"] as string[]) ?? [],
     }));
   }
 }

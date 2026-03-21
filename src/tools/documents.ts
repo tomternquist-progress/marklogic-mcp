@@ -15,10 +15,14 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
     async ({ uri, database, include_metadata }) => {
       try {
         const doc = await clients.documents.get(uri, database, include_metadata ?? false);
-        const text = typeof doc.content === "string"
+        const contentText = typeof doc.content === "string"
           ? doc.content
           : JSON.stringify(doc.content, null, 2);
-        return { content: [{ type: "text", text }] };
+        if (include_metadata && doc.metadata) {
+          const out = { content: JSON.parse(contentText) as unknown, metadata: doc.metadata };
+          return { content: [{ type: "text", text: JSON.stringify(out, null, 2) }] };
+        }
+        return { content: [{ type: "text", text: contentText }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }

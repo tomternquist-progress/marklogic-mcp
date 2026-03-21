@@ -87,8 +87,17 @@ export class AdminClient {
   }
 
   async listForests(database?: string, includeDetails = false): Promise<ForestStatus[]> {
+    // The /manage/v2/forests endpoint does not support database-name filtering.
+    // When a database filter is requested, determine the forest names from the
+    // database properties and filter the full list client-side.
+    let allowedForests: Set<string> | undefined;
+    if (database) {
+      const dbProps = await this.getDatabaseProperties(database);
+      const forestNames = (dbProps["forest"] as string[] | undefined) ?? [];
+      allowedForests = new Set(forestNames);
+    }
+
     const params: Record<string, string> = { format: "json" };
-    if (database) params["database-name"] = database;
 
     if (includeDetails) {
       // Use view=status to get host, state, and database info in one call
@@ -100,13 +109,14 @@ export class AdminClient {
       const statusList = (data?.["forest-status-list"] as Record<string, unknown>) ?? {};
       const items = (statusList?.["status-list-items"] as Record<string, unknown>) ?? {};
       const forests = (items?.["status-list-item"] as Array<Record<string, unknown>>) ?? [];
-      return forests.map((f) => ({
+      const result = forests.map((f) => ({
         name: String(f["nameref"] ?? f["name"] ?? ""),
         id: String(f["idref"] ?? f["id"] ?? ""),
         state: String(f["state"] ?? "unknown"),
         host: f["host"] ? String(f["host"]) : undefined,
         database: f["database"] ? String(f["database"]) : undefined,
       }));
+      return allowedForests ? result.filter((f) => allowedForests!.has(f.name)) : result;
     }
 
     const data = await this.base.get<{ "forest-default-list": { "list-items": { "list-item": Array<{ nameref: string; idref: string }> } } }>(
@@ -115,7 +125,8 @@ export class AdminClient {
       { params }
     );
     const items = data?.["forest-default-list"]?.["list-items"]?.["list-item"] ?? [];
-    return items.map((i) => ({ name: i.nameref, id: i.idref, state: "unknown" }));
+    const result = items.map((i) => ({ name: i.nameref, id: i.idref, state: "unknown" as const }));
+    return allowedForests ? result.filter((f) => allowedForests!.has(f.name)) : result;
   }
 
   async setDatabaseForests(database: string, forests: string[]): Promise<void> {
@@ -174,13 +185,28 @@ export class AdminClient {
   async listServers(group?: string): Promise<ServerSummary[]> {
     const params: Record<string, string> = { format: "json" };
     if (group) params["group-id"] = group;
-    const data = await this.base.get<{ "server-default-list": { "list-items": { "list-item": Array<{ nameref: string; idref: string; "server-type"?: string; groupnameref?: string }> } } }>(
+    const data = await this.base.get<{ "server-default-list": { "list-items": { "list-item": Array<{ nameref: string; idref: string; groupnameref?: string }> } } }>(
       this.base.mgmt,
       "/manage/v2/servers",
       { params }
     );
     const items = data?.["server-default-list"]?.["list-items"]?.["list-item"] ?? [];
-    return items.map((i) => ({ name: i.nameref, id: i.idref, type: i["server-type"] ?? "unknown", group: i.groupnameref ?? group ?? "" }));
+
+    // The list endpoint does not include server-type — fetch each server's properties in parallel.
+    const servers = await Promise.all(
+      items.map(async (i) => {
+        const serverGroup = i.groupnameref ?? group ?? "Default";
+        let type = "unknown";
+        try {
+          const props = await this.getServerProperties(i.nameref, serverGroup);
+          type = (props["server-type"] as string | undefined) ?? "unknown";
+        } catch {
+          // Leave type as "unknown" if the properties call fails
+        }
+        return { name: i.nameref, id: i.idref, type, group: serverGroup };
+      })
+    );
+    return servers;
   }
 
   async getServerProperties(serverName: string, group = "Default"): Promise<Record<string, unknown>> {

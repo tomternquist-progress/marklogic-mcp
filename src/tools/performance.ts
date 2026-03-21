@@ -358,6 +358,25 @@ function analyzeSearchDebug(raw: Record<string, unknown>): string[] {
   return hints;
 }
 
+/** Unwrap a MarkLogic Management API {units, value} property envelope or return as-is. */
+function unwrapMgmtValue(v: unknown): unknown {
+  if (v !== null && typeof v === "object" && "value" in (v as object)) {
+    return (v as { value: unknown }).value;
+  }
+  return v;
+}
+
+/** Safely extract a wrapped or plain numeric value from a Management API status-properties object. */
+function extractMgmtNumber(obj: Record<string, unknown>, key: string): number | null {
+  const raw = unwrapMgmtValue(obj[key]);
+  if (typeof raw === "number") return raw;
+  if (typeof raw === "string") {
+    const n = parseInt(raw, 10);
+    return isNaN(n) ? null : n;
+  }
+  return null;
+}
+
 /** Extract key metrics from a forest status Management API response. */
 function analyzeForestStatus(
   forestName: string,
@@ -365,16 +384,18 @@ function analyzeForestStatus(
 ): { summary: string; hints: string[] } {
   const hints: string[] = [];
 
-  // Navigate: forest-status → status
+  // Management API response: forest-status → status-properties (each value is {units, value})
   const forestStatus = (raw["forest-status"] as Record<string, unknown> | undefined) ?? raw;
-  const status = (forestStatus["status"] as Record<string, unknown> | undefined) ?? {};
+  const statusProps = (forestStatus["status-properties"] as Record<string, unknown> | undefined) ?? {};
 
-  const state = (forestStatus["state"] as string | undefined) ?? "unknown";
-  const standCount = extractNumber(status, "stand-count");
-  const fragmentCount = extractNumber(status, "fragment-count");
-  const deletedFragmentCount = extractNumber(status, "deleted-fragment-count");
-  const activeFragmentCount = extractNumber(status, "active-fragment-count");
-  const mergeInProgress = status["merge-in-progress"] === true || status["merge-in-progress"] === "true";
+  const stateRaw = unwrapMgmtValue(statusProps["state"]);
+  const state = typeof stateRaw === "string" ? stateRaw : "unknown";
+  const standCount = extractMgmtNumber(statusProps, "stand-count");
+  const fragmentCount = extractMgmtNumber(statusProps, "fragment-count");
+  const deletedFragmentCount = extractMgmtNumber(statusProps, "deleted-fragment-count");
+  const activeFragmentCount = extractMgmtNumber(statusProps, "active-fragment-count");
+  const mergeRaw = unwrapMgmtValue(statusProps["merge-in-progress"]);
+  const mergeInProgress = mergeRaw === true || mergeRaw === "true";
 
   // Compute fragmentation percentage
   const totalFragments = fragmentCount !== null ? fragmentCount : 0;

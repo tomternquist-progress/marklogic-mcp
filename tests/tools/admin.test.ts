@@ -39,7 +39,7 @@ function createMockClients() {
 // ─── Tool registration ─────────────────────────────────────────────────────
 
 describe("registerAdminTools – tool registration", () => {
-  it("registers all 8 admin tools", () => {
+  it("registers all admin tools", () => {
     const { server, tools } = createMockServer();
     registerAdminTools(server as never, createMockClients() as never);
 
@@ -47,11 +47,14 @@ describe("registerAdminTools – tool registration", () => {
     expect(tools.has("ml_database_properties")).toBe(true);
     expect(tools.has("ml_database_statistics")).toBe(true);
     expect(tools.has("ml_forests_list")).toBe(true);
+    expect(tools.has("ml_database_set_forests")).toBe(true);
     expect(tools.has("ml_servers_list")).toBe(true);
     expect(tools.has("ml_server_properties")).toBe(true);
     expect(tools.has("ml_cluster_status")).toBe(true);
     expect(tools.has("ml_reindex_status")).toBe(true);
-    expect(tools.size).toBe(8);
+    expect(tools.has("ml_logs_list")).toBe(true);
+    expect(tools.has("ml_logs_read")).toBe(true);
+    expect(tools.size).toBe(11);
   });
 });
 
@@ -163,14 +166,14 @@ describe("ml_forests_list handler", () => {
     const result = await tools.get("ml_forests_list")!({});
 
     expect(result.isError).toBeUndefined();
-    expect(clients.admin.listForests).toHaveBeenCalledWith(undefined);
+    expect(clients.admin.listForests).toHaveBeenCalledWith(undefined, false);
   });
 
   it("passes database filter", async () => {
     clients.admin.listForests.mockResolvedValue([]);
     await tools.get("ml_forests_list")!({ database: "Documents" });
 
-    expect(clients.admin.listForests).toHaveBeenCalledWith("Documents");
+    expect(clients.admin.listForests).toHaveBeenCalledWith("Documents", false);
   });
 });
 

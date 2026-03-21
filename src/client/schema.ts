@@ -160,45 +160,42 @@ export class SchemaClient {
   }
 
   async listCollections(database?: string, limit = 50): Promise<Array<{ name: string; count: number }>> {
-    try {
-      const xquery = `
-        for $c in cts:collections()
-        let $count := xdmp:estimate(cts:collection-query($c))
-        order by $count descending
-        return object-node { "name": $c, "count": $count }
-      `;
-      const evalParams: Record<string, string | number> = {};
-      if (database) evalParams.database = database;
-      const evalRes = await this.base.http.post(
-        "/v1/eval",
-        new URLSearchParams({ xquery }).toString(),
-        {
-          params: evalParams,
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            Accept: "multipart/mixed",
-          },
-          responseType: "text",
+    // Use xdmp:to-json(map:new(...)) instead of the object-node {} constructor, which
+    // fails at runtime in MarkLogic when $count is xs:unsignedLong.
+    const xquery = `
+      for $c in cts:collections()
+      let $count := xdmp:estimate(cts:collection-query($c))
+      order by $count descending
+      return xdmp:to-json(map:new((map:entry("name", $c), map:entry("count", $count))))
+    `;
+    const evalParams: Record<string, string | number> = {};
+    if (database) evalParams.database = database;
+    const evalRes = await this.base.http.post(
+      "/v1/eval",
+      new URLSearchParams({ xquery }).toString(),
+      {
+        params: evalParams,
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "multipart/mixed",
+        },
+        responseType: "text",
+      }
+    );
+    const parts = parseMultipartMixed(evalRes.data as string, evalRes.headers["content-type"] as string);
+    return parts
+      .map((p) => {
+        const v = p.value;
+        if (v && typeof v === "object" && "name" in (v as object)) {
+          return v as { name: string; count: number };
         }
-      );
-      const parts = parseMultipartMixed(evalRes.data as string, evalRes.headers["content-type"] as string);
-      return parts
-        .map((p) => {
-          const v = p.value;
-          if (v && typeof v === "object" && "name" in (v as object)) {
-            return v as { name: string; count: number };
-          }
-          // Fallback: try parsing string parts as JSON
-          if (typeof v === "string") {
-            try { return JSON.parse(v) as { name: string; count: number }; } catch { /* skip */ }
-          }
-          return null;
-        })
-        .filter(Boolean)
-        .slice(0, limit) as Array<{ name: string; count: number }>;
-    } catch {
-      return [];
-    }
+        if (typeof v === "string") {
+          try { return JSON.parse(v) as { name: string; count: number }; } catch { /* skip */ }
+        }
+        return null;
+      })
+      .filter(Boolean)
+      .slice(0, limit) as Array<{ name: string; count: number }>;
   }
 
   async listIndexes(database: string): Promise<RangeIndex[]> {
