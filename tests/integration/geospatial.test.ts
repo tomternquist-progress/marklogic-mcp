@@ -94,7 +94,7 @@ function geoCircleXQuery(lat: number, lon: number, radiusKm: number, collection:
         cts:circle(${radiusMiles}, cts:point(${lat}, ${lon}))
       )
     )
-    return fn:document-uri($doc)
+    return xdmp:node-uri($doc)
   `;
 }
 
@@ -199,7 +199,7 @@ describeIfLive("Geospatial search (live)", () => {
             cts:box(38, -80, 45, -70)
           )
         )
-        return fn:document-uri($doc)
+        return xdmp:node-uri($doc)
       `;
       const results = await evalClient.evalXQuery(xquery);
       const uris = results.map((r) => String(r.value));
@@ -221,7 +221,7 @@ describeIfLive("Geospatial search (live)", () => {
             cts:box(35, -25, 72, 45)
           )
         )
-        return fn:document-uri($doc)
+        return xdmp:node-uri($doc)
       `;
       const results = await evalClient.evalXQuery(xquery);
       const uris = results.map((r) => String(r.value));
