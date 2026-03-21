@@ -157,6 +157,18 @@ export class FluxClient {
         });
 
         res.on("end", () => {
+          // If we received no SSE events, the runner may have returned plain JSON
+          // (e.g. for quick-exit commands). Try to parse the remaining buffer as JSON.
+          if (lines.length === 0 && buf.trim().startsWith("{")) {
+            try {
+              const parsed = JSON.parse(buf.trim()) as { exitCode?: number; output?: string };
+              const ec = parsed.exitCode ?? 0;
+              resolve({ exitCode: ec, output: parsed.output ?? "", success: ec === 0 });
+              return;
+            } catch {
+              // Not valid JSON — fall through to empty output
+            }
+          }
           const output = lines.join("\n");
           resolve({ exitCode, output, success: exitCode === 0 });
         });

@@ -38,7 +38,11 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { initLogger } from "../../src/utils/logger.js";
 import { SemaphoreClient } from "../../src/client/semaphore.js";
+
+// Initialize logger required by SemaphoreClient internals
+initLogger({ level: "warn", format: "json" });
 
 const SEMAPHORE_HOST = process.env.SEMAPHORE_HOST ?? "";
 const SEMAPHORE_SCS_PORT = parseInt(process.env.SEMAPHORE_SCS_PORT ?? "5058", 10);

@@ -114,21 +114,24 @@ describeIfLive("Timeseries query (live)", () => {
   const { base, documents, search, fasttrack } = buildClients();
 
   beforeAll(async () => {
-    // Seed time docs
+    // Configure the dateTime range index BEFORE inserting documents.
+    // This avoids a reindexing race condition: if we insert documents first and add
+    // the index second, MarkLogic must reindex existing documents asynchronously.
+    // Configuring the index first means documents are indexed during ingest.
+    await addDateTimeRangeIndex(base);
+
+    // Deploy search options with values spec (requires the range index to already exist)
+    await fasttrack.putSearchOptions(OPTIONS_NAME, TIMESERIES_OPTIONS);
+
+    // Seed time docs (indexed immediately against the already-configured range index)
     for (const { uri, content } of TIME_DOCS) {
       await documents.put(uri, JSON.stringify(content), "application/json", {
         collections: [COLLECTION],
       });
     }
 
-    // Configure dateTime range index via Management API (reliable; admin XQuery silently fails)
-    await addDateTimeRangeIndex(base);
-
-    // Deploy search options with values spec
-    await fasttrack.putSearchOptions(OPTIONS_NAME, TIMESERIES_OPTIONS);
-
-    // Allow time for reindexing
-    await new Promise((r) => setTimeout(r, 3000));
+    // Brief settle time
+    await new Promise((r) => setTimeout(r, 1000));
   }, 30_000);
 
   afterAll(async () => {

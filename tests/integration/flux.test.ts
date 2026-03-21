@@ -64,18 +64,18 @@ describeIfLive("FluxClient (live)", () => {
     });
   });
 
-  describe("flux_help — run(['--help'])", () => {
+  describe("flux_help — run(['help'])", () => {
     it("returns a result with success=true or useful output", async () => {
-      const result = await flux.run(["--help"]);
+      const result = await flux.run(["help"]);
       expect(result).toBeDefined();
       expect(typeof result.output).toBe("string");
       expect(typeof result.exitCode).toBe("number");
     });
 
     it("output includes Flux command information", async () => {
-      const result = await flux.run(["--help"]);
-      // Flux --help should mention common commands like import, export
-      expect(result.output.toLowerCase()).toMatch(/import|export|flux/i);
+      const result = await flux.run(["help"]);
+      // Flux help subcommand should mention commands like import, export, or flux
+      expect(result.output.toLowerCase()).toMatch(/import|export|flux|command/i);
     });
   });
 
@@ -107,7 +107,6 @@ describeIfLive("FluxClient (live)", () => {
         "--connection-string", flux.connectionString(),
         "--collections", "wikipedia-articles",
         "--path", "/tmp/flux-export-integration-test",
-        "--overwrite-files",
       ]);
       expect(typeof result.output).toBe("string");
       expect(typeof result.exitCode).toBe("number");

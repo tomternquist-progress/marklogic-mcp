@@ -111,18 +111,21 @@ describeIfLive("Geospatial search (live)", () => {
   const { base, documents, eval: evalClient, schema } = buildClients();
 
   beforeAll(async () => {
-    // Seed geo documents
+    // Configure the geospatial index BEFORE inserting documents.
+    // Inserting documents after index configuration means ML indexes them immediately
+    // during ingest — no reindexing race condition. If we insert first and configure
+    // the index second, ML must reindex existing documents, which takes variable time.
+    await addGeoElementPairIndex(base);
+
+    // Seed geo documents (indexed immediately against the already-configured geo index)
     for (const { uri, content } of GEO_DOCS) {
       await documents.put(uri, JSON.stringify(content), "application/json", {
         collections: [COLLECTION],
       });
     }
 
-    // Add geospatial element pair index via Management API
-    await addGeoElementPairIndex(base);
-
-    // Allow time for the index to be built
-    await new Promise((r) => setTimeout(r, 3000));
+    // Brief settle time
+    await new Promise((r) => setTimeout(r, 1000));
   }, 30_000);
 
   afterAll(async () => {
