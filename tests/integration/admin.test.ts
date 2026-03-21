@@ -18,8 +18,9 @@ describeIfLive("AdminClient (live)", () => {
     it("returns an array that includes Documents and Security", async () => {
       const dbs = await admin.listDatabases();
       expect(Array.isArray(dbs)).toBe(true);
-      expect(dbs).toContain("Documents");
-      expect(dbs).toContain("Security");
+      const names = dbs.map((d: { name: string }) => d.name);
+      expect(names).toContain("Documents");
+      expect(names).toContain("Security");
     });
   });
 

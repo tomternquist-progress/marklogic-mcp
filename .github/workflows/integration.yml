@@ -13,7 +13,7 @@ jobs:
 
     services:
       marklogic:
-        image: marklogicdb/marklogic-db:12-centos-1.1.2
+        image: progressofficial/marklogic-db:latest-12
         ports:
           - 8000:8000
           - 8002:8002

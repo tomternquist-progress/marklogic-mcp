@@ -7,38 +7,74 @@
  *   ML_HOST=localhost ML_USER=admin ML_PASSWORD=admin node scripts/integration-seed.mjs
  */
 
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+const axios = require("axios");
+
 const HOST = process.env.ML_HOST ?? "localhost";
 const PORT = process.env.ML_PORT ?? "8000";
 const USER = process.env.ML_USER ?? "admin";
 const PASS = process.env.ML_PASSWORD ?? "admin";
 const BASE = `http://${HOST}:${PORT}`;
 
-async function put(uri, body, collection, contentType = "application/json") {
-  const params = new URLSearchParams({ uri });
-  if (collection) params.set("collection", collection);
+// Simple Digest auth using a two-step challenge-response
+async function digestPut(uri, body, collection) {
+  const url = `${BASE}/v1/documents?uri=${encodeURIComponent(uri)}&collection=${encodeURIComponent(collection)}`;
+  const content = JSON.stringify(body);
 
-  const url = `${BASE}/v1/documents?${params}`;
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: {
-      "Content-Type": contentType,
-      Authorization: "Basic " + Buffer.from(`${USER}:${PASS}`).toString("base64"),
-    },
-    body: typeof body === "string" ? body : JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`PUT ${uri} failed ${res.status}: ${text}`);
+  // Step 1: get the challenge
+  let challenge;
+  try {
+    await axios.put(url, content, { headers: { "Content-Type": "application/json" } });
+    console.log(`  ✓ ${uri} (no auth needed)`);
+    return;
+  } catch (err) {
+    if (err.response?.status !== 401) throw new Error(`PUT ${uri}: ${err.message}`);
+    challenge = err.response.headers["www-authenticate"];
   }
-  console.log(`  ✓ ${uri}`);
+
+  // Parse Digest challenge
+  const realm = challenge.match(/realm="([^"]+)"/)?.[1] ?? "";
+  const nonce = challenge.match(/nonce="([^"]+)"/)?.[1] ?? "";
+  const qop   = challenge.match(/qop="([^"]+)"/)?.[1] ?? "";
+  const opaque = challenge.match(/opaque="([^"]+)"/)?.[1];
+
+  const { createHash } = await import("crypto");
+  const md5 = (s) => createHash("md5").update(s).digest("hex");
+
+  const ha1 = md5(`${USER}:${realm}:${PASS}`);
+  const ha2 = md5(`PUT:${new URL(url).pathname + new URL(url).search}`);
+  const nc = "00000001";
+  const cnonce = Math.random().toString(36).slice(2, 10);
+  const response = md5(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`);
+
+  const authHeader = [
+    `Digest username="${USER}"`,
+    `realm="${realm}"`,
+    `nonce="${nonce}"`,
+    `uri="${new URL(url).pathname + new URL(url).search}"`,
+    `qop=${qop}`,
+    `nc=${nc}`,
+    `cnonce="${cnonce}"`,
+    `response="${response}"`,
+    opaque ? `opaque="${opaque}"` : "",
+  ].filter(Boolean).join(", ");
+
+  // Step 2: authenticated request
+  try {
+    await axios.put(url, content, {
+      headers: { "Content-Type": "application/json", Authorization: authHeader },
+    });
+    console.log(`  ✓ ${uri}`);
+  } catch (err) {
+    throw new Error(`PUT ${uri} failed ${err.response?.status}: ${JSON.stringify(err.response?.data)}`);
+  }
 }
 
 async function main() {
   console.log(`Seeding test data on ${BASE} as ${USER}...`);
 
-  // A minimal document to test get/permissions
-  await put(
+  await digestPut(
     "/wikipedia/climate-change.json",
     {
       id: "wiki-001",
@@ -56,7 +92,7 @@ async function main() {
     "wikipedia-articles"
   );
 
-  await put(
+  await digestPut(
     "/wikipedia/artificial-intelligence.json",
     {
       id: "wiki-002",
