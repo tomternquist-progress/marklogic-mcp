@@ -60,28 +60,45 @@ export class PerformanceClient {
     }
   }
 
-  /** Per-forest status + counts from Management API (merges view=status and view=counts). */
+  /** Per-forest status from Management API (view=status). */
   async getForestStatus(forestName: string): Promise<Record<string, unknown>> {
-    const encoded = encodeURIComponent(forestName);
-    const [statusRaw, countsRaw] = await Promise.all([
-      this.base.get<Record<string, unknown>>(
-        this.base.mgmt,
-        `/manage/v2/forests/${encoded}`,
-        { params: { view: "status", format: "json" } }
-      ).catch(() => ({} as Record<string, unknown>)),
-      this.base.get<Record<string, unknown>>(
-        this.base.mgmt,
-        `/manage/v2/forests/${encoded}`,
-        { params: { view: "counts", format: "json" } }
-      ).catch(() => ({} as Record<string, unknown>)),
-    ]);
-    // Merge: nest counts-properties into the forest-status object for analyzeForestStatus
-    const merged = { ...statusRaw } as Record<string, unknown>;
-    const forestStatus = (merged["forest-status"] as Record<string, unknown> | undefined) ?? {};
-    const countsProps = (countsRaw["forest-counts"] as Record<string, unknown> | undefined) ??
-                       (countsRaw["forest-status"] as Record<string, unknown> | undefined) ?? {};
-    merged["forest-status"] = { ...forestStatus, _counts: countsProps };
-    return merged;
+    return this.base.get<Record<string, unknown>>(
+      this.base.mgmt,
+      `/manage/v2/forests/${encodeURIComponent(forestName)}`,
+      { params: { view: "status", format: "json" } }
+    );
+  }
+
+  /** Per-forest fragment/stand counts via xdmp:forest-counts() XQuery. Requires allowEval=true. */
+  async getForestCounts(forestName: string): Promise<{ active: number; deleted: number; standCount: number; docCount: number } | null> {
+    const xq = `
+      declare namespace fs = "http://marklogic.com/xdmp/status/forest";
+      let $id := xdmp:forest("${forestName.replace(/"/g, '\\"')}")
+      let $c := xdmp:forest-counts($id)
+      return xdmp:to-json(map:new((
+        map:entry("active",     fn:sum($c//fs:active-fragment-count/fn:data(.))),
+        map:entry("deleted",    fn:sum($c//fs:deleted-fragment-count/fn:data(.))),
+        map:entry("standCount", fn:count($c//fs:stand-counts)),
+        map:entry("docCount",   fn:data($c/fs:document-count))
+      )))`;
+    const body = new URLSearchParams();
+    body.append("xquery", xq);
+    try {
+      const res = await this.base.http.post("/v1/eval", body.toString(), {
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "multipart/mixed",
+        },
+        responseType: "text",
+      });
+      const { parseMultipartMixed } = await import("../utils/multipart.js");
+      const parts = parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
+      if (parts.length > 0) {
+        const val = typeof parts[0].value === "string" ? JSON.parse(parts[0].value) : parts[0].value;
+        return val as { active: number; deleted: number; standCount: number; docCount: number };
+      }
+    } catch { /* eval not available or failed */ }
+    return null;
   }
 
   /** Profile XQuery code via xdmp:query-meters + elapsed time. Requires ML_ALLOW_EVAL=true. */

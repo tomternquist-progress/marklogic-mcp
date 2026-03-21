@@ -130,7 +130,7 @@ export function registerPerformanceTools(
     "• deletedFragmentPct > 20% → significant fragmentation; background merge will reclaim space\n" +
     "• mergeInProgress = true → normal background activity; heavy I/O is expected\n" +
     "• XDMP-INMMTREEFULL / XDMP-INMMLISTFULL in error log → increase in-memory stand settings\n\n" +
-    "NO EVAL REQUIRED. Uses the Management API (port 8002).",
+    "Uses the Management API (port 8002) for state. Fragment/stand counts require ML_ALLOW_EVAL=true (uses xdmp:forest-counts XQuery).",
     {
       database: z.string().optional().describe(
         "Database name to inspect (uses 'Documents' if omitted). " +
@@ -153,7 +153,12 @@ export function registerPerformanceTools(
 
         for (const forestName of forestNames) {
           try {
-            const status = await clients.performance.getForestStatus(forestName);
+            const [status, counts] = await Promise.all([
+              clients.performance.getForestStatus(forestName),
+              allowEval ? clients.performance.getForestCounts(forestName) : Promise.resolve(null),
+            ]);
+            // Inject counts into the status object for analyzeForestStatus
+            if (counts) (status as Record<string, unknown>)["_counts"] = counts;
             const { summary, hints } = analyzeForestStatus(forestName, status);
             forestResults.push(`--- Forest: ${forestName} ---`);
             forestResults.push(summary);
@@ -385,23 +390,20 @@ function analyzeForestStatus(
   const hints: string[] = [];
 
   // Management API response: forest-status → status-properties (each value is {units, value})
-  // view=counts data is merged in as forest-status._counts by the client.
   const forestStatus = (raw["forest-status"] as Record<string, unknown> | undefined) ?? raw;
   const statusProps = (forestStatus["status-properties"] as Record<string, unknown> | undefined) ?? {};
-  const countsData = (forestStatus["_counts"] as Record<string, unknown> | undefined) ?? {};
 
   const stateRaw = unwrapMgmtValue(statusProps["state"]);
   const state = typeof stateRaw === "string" ? stateRaw : "unknown";
   const mergeRaw = unwrapMgmtValue(statusProps["merge-in-progress"]);
   const mergeInProgress = mergeRaw === true || mergeRaw === "true";
 
-  // Fragment/stand counts come from view=counts (counts-properties section)
-  const countsProps = (countsData["counts-properties"] as Record<string, unknown> | undefined) ?? countsData;
-  const standCount = extractMgmtNumber(countsProps, "stand-count");
-  const fragmentCount = extractMgmtNumber(countsProps, "fragment-count") ??
-                        extractMgmtNumber(countsProps, "active-fragment-count");
-  const deletedFragmentCount = extractMgmtNumber(countsProps, "deleted-fragment-count");
-  const activeFragmentCount = extractMgmtNumber(countsProps, "active-fragment-count");
+  // Fragment/stand counts come from xdmp:forest-counts() (injected as _counts by the tool handler)
+  const injected = (raw["_counts"] as { active?: number; deleted?: number; standCount?: number; docCount?: number } | undefined) ?? {};
+  const standCount = injected.standCount ?? null;
+  const fragmentCount = injected.active ?? null;
+  const deletedFragmentCount = injected.deleted ?? null;
+  const activeFragmentCount = injected.active ?? null;
 
   // Compute fragmentation percentage
   const totalFragments = fragmentCount !== null ? fragmentCount : 0;
