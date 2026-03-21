@@ -149,7 +149,10 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
               "MarkLogic will begin reindexing documents against this template asynchronously.\n\n" +
               "NEXT STEPS:\n" +
               `  1. Validate: ml_tde_validate  tde_uri="${uri}"  collection="<your-collection>"\n` +
-              "  2. Query:    ml_optic_query   schema=\"<schemaName>\"  query=\"op.fromView('<schemaName>','<viewName>').result()\"",
+              "  2. Query:    ml_optic_query   schema=\"<schemaName>\"  view=\"<viewName>\"\n" +
+              "     Or in ml_eval_javascript (note: op must be required):\n" +
+              "       const op = require('/MarkLogic/optic');\n" +
+              "       op.fromView('<schemaName>', '<viewName>').result();",
           }],
         };
       } catch (err) {

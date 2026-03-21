@@ -1116,13 +1116,21 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       publish_set: z.string().optional().describe(
         "Restrict classification to a single publish set (e.g. 'iptcmediatopics'). " +
         "Passed as the 'publish_set' CLS form field. Use publish_sets instead when you want " +
-        "results from several (but not all) taxonomies. Use semaphore_publish_sets to list available names."
+        "results from several (but not all) taxonomies. " +
+        "ALWAYS run semaphore_publish_sets first to discover exact names — names vary by deployment. " +
+        "Common names in the standard Semaphore distribution: 'iptcmediatopics', 'unescothesaurus', " +
+        "'unsdg', 'marklogic', 'biologicaltaxonomy', 'meddraadversereactions', 'awsservices', 'azureservices', " +
+        "'softwareengineering', 'moviesmodel'. Names are typically the lowercase model prefix before the first dash."
       ),
       publish_sets: z.array(z.string()).optional().describe(
         "Restrict classification to a specific list of publish sets (e.g. ['iptcmediatopics', 'unescothesaurus']). " +
         "Passed as the 'publish_set_name_list' CLS form field (pipe-separated). " +
         "Takes precedence over publish_set when both are provided. " +
-        "When omitted (and publish_set is also omitted), all active publish sets are used."
+        "When omitted (and publish_set is also omitted), all active publish sets are used. " +
+        "ALWAYS run semaphore_publish_sets first to discover exact names — names vary by deployment. " +
+        "Common names in the standard Semaphore distribution: 'iptcmediatopics', 'unescothesaurus', " +
+        "'unsdg', 'marklogic', 'biologicaltaxonomy', 'meddraadversereactions', 'awsservices', 'azureservices', " +
+        "'softwareengineering', 'moviesmodel'. Names are typically the lowercase model prefix before the first dash."
       ),
     },
     async ({ content, threshold, publish_set, publish_sets }) => {

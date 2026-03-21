@@ -175,7 +175,16 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
       "Partially update a document using MarkLogic's patch descriptor. Requires ML_READONLY=false.",
       {
         uri: z.string().describe("Document URI to patch"),
-        patch: z.record(z.unknown()).describe("MarkLogic patch descriptor object"),
+        patch: z.record(z.unknown()).describe(
+          "MarkLogic patch descriptor object. Must be a JSON object, NOT a string.\n" +
+          "Example — insert a new field at root:\n" +
+          "  { \"patch\": [{ \"insert\": { \"context\": \"/node()\", \"position\": \"last-child\", \"content\": { \"status\": \"active\" } } }] }\n" +
+          "Example — replace an existing field value:\n" +
+          "  { \"patch\": [{ \"replace\": { \"select\": \"count\", \"content\": 42 } }] }\n" +
+          "Example — delete a field:\n" +
+          "  { \"patch\": [{ \"delete\": { \"select\": \"temporaryField\" } }] }\n" +
+          "NOTE: If you need to add multiple top-level fields or the patch is complex, consider using ml_document_put to replace the whole document instead."
+        ),
         database: z.string().optional().describe("Database name"),
       },
       async ({ uri, patch, database }) => {

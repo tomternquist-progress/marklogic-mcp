@@ -372,21 +372,36 @@ export class SchemaClient {
     body.append("javascript", javascript);
     body.append("vars", JSON.stringify({ collection, sampleSize, viewPairs }));
 
-    const res = await this.base.http.post("/v1/eval", body.toString(), {
-      params: {},
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "multipart/mixed" },
-      responseType: "text",
-    });
-    const parsed = parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
+    const MAX_RETRIES = 3;
+    const RETRY_DELAY_MS = 2500;
 
     type ViewResult = { schema: string; view: string; rowCount?: number; docCount: number; sampleRows?: unknown[]; error?: string };
-    const viewResults: ViewResult[] = [];
-    for (const r of parsed) {
-      if (Array.isArray(r.value)) {
-        viewResults.push(...(r.value as ViewResult[]));
-      } else if (r.value && typeof r.value === "object" && "schema" in (r.value as object)) {
-        viewResults.push(r.value as ViewResult);
+    let viewResults: ViewResult[] = [];
+
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      const res = await this.base.http.post("/v1/eval", body.toString(), {
+        params: {},
+        headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "multipart/mixed" },
+        responseType: "text",
+      });
+      const parsed = parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
+
+      viewResults = [];
+      for (const r of parsed) {
+        if (Array.isArray(r.value)) {
+          viewResults.push(...(r.value as ViewResult[]));
+        } else if (r.value && typeof r.value === "object" && "schema" in (r.value as object)) {
+          viewResults.push(r.value as ViewResult);
+        }
       }
+
+      const err = viewResults[0]?.error ?? "";
+      const isReindexing = err.includes("TABLEREINDEXING") || err.includes("not available until");
+      if (isReindexing && attempt < MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        continue;
+      }
+      break;
     }
 
     const firstResult = viewResults[0];
