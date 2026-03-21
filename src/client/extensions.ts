@@ -17,11 +17,17 @@ export class ExtensionsClient {
       "/v1/config/resources",
       { params: { format: "json" } }
     );
-    // MarkLogic returns { "resources": [...] } or an empty object when none are deployed
-    const resources = (raw?.["resources"] as Array<Record<string, unknown>>) ?? [];
-    return resources.map((r) => ({
+    // ML returns { "resources": { "resource": [...] } } when extensions exist,
+    // or { "resources": "" } (empty string) when none are deployed.
+    const resourcesRaw = raw?.["resources"];
+    const items = Array.isArray(resourcesRaw)
+      ? resourcesRaw
+      : Array.isArray((resourcesRaw as Record<string, unknown>)?.["resource"])
+        ? ((resourcesRaw as Record<string, unknown>)["resource"] as Array<Record<string, unknown>>)
+        : [];
+    return items.map((r) => ({
       name: r.name as string,
-      language: r.language as string,
+      language: (r["source-format"] ?? r.language) as string,
       version: r.version as string | undefined,
       provider: r.provider as string | undefined,
     }));
