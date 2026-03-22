@@ -18,7 +18,20 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
         "- order-by (MULTIPLE keys): wrap in an array — args=[[{\"ns\":\"op\",\"fn\":\"asc\",\"args\":[\"col1\"]},{\"ns\":\"op\",\"fn\":\"desc\",\"args\":[\"col2\"]}]]\n" +
         "- group-by: args=[groupCols, [aggregates]]\n" +
         "- limit: args=[N]\n" +
-        "- join-inner: args=[rightView, {\"ns\":\"op\",\"fn\":\"on\",\"args\":[leftCol,rightCol]}]"
+        "- join-inner: args=[rightView, {\"ns\":\"op\",\"fn\":\"on\",\"args\":[leftCol,rightCol]}]\n" +
+        "- sum: args=[\"outputCol\", inputCol]  ← ONLY meaningful on numeric MEASURE fields (e.g. price,\n" +
+        "  count, amount). Using sum() on an ID column (e.g. inspection_id, unique_key) produces a large\n" +
+        "  meaningless number. Use count() to count rows instead.\n\n" +
+        "NULL FILTERING — op.isNull / op.isDefined DO NOT EXIST as Optic plan functions in MarkLogic 12.\n" +
+        "To exclude null rows from a group-by, use one of these workarounds:\n" +
+        "  1. Post-process results: filter rows where col === null after receiving the response.\n" +
+        "  2. Use a where() with an explicit value constraint (e.g. op.gt, op.eq) — this implicitly\n" +
+        "     excludes nulls since null never satisfies a comparison.\n" +
+        "  3. Use ml_eval_javascript with the SJS Optic API: require('/MarkLogic/optic') and filter\n" +
+        "     with Array.from(q.result()).filter(r => r['schema.view.col'] !== null).\n\n" +
+        "OPTIC IN EVAL: The 'op' module is NOT a global in ml_eval_javascript. You must require it:\n" +
+        "  var op = require('/MarkLogic/optic');\n" +
+        "  However, prefer ml_optic_query for analytics — it handles the require and serialization."
       ),
       database: z.string().optional().describe("Target database (uses server default if omitted)"),
       strip_schema_prefix: z.boolean().optional().describe("Strip the 'schema.view.' prefix from result column names. Useful when querying a single view and the fully-qualified names are too verbose. Default: false."),

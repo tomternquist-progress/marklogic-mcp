@@ -28,6 +28,11 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients,
     "  SELECT and ASK return SPARQL results JSON: { head: { vars }, results: { bindings } }.\n" +
     "  CONSTRUCT and DESCRIBE return raw Turtle text (the RDF graph as a Turtle string).\n\n" +
     "DISCOVERY: Use ml_graphs_list to find named graph URIs before writing your query.\n\n" +
+    "OUTPUT SIZE — ALWAYS add LIMIT to SELECT queries:\n" +
+    "  Omitting LIMIT on queries with FILTER or broad patterns can return thousands of rows.\n" +
+    "  Cross-graph joins (querying 2+ GRAPH <uri> clauses) are especially prone to cartesian\n" +
+    "  explosions when predicate patterns overlap. Add LIMIT 100 to all exploratory queries.\n" +
+    "  Example: SELECT ... WHERE { GRAPH <g1> { ... } GRAPH <g2> { ... } } LIMIT 100\n\n" +
     "COMBINING WITH DOCUMENTS (multi-model): Join op.fromSPARQL() with op.fromView() in ml_eval_javascript.\n" +
     "Use p.on(leftCol, rightCol) for equi-joins — both args must be direct column refs, not expressions.\n" +
     "Key column-naming rules after a fromView+fromSPARQL join:\n" +

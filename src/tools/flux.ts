@@ -163,9 +163,14 @@ export function registerFluxTools(
         "--classifier-prop publish_set_name_list=iptcmediatopics|unescothesaurus so the CLS only " +
         "returns results from those sets. Without this, all active publish sets are combined.\n\n" +
         "CLASSIFICATION OUTPUT STRUCTURE: Semaphore adds a nested object to each document:\n" +
-        "  classification.STRUCTUREDDOCUMENT.META[]  — array of {name, value, id, score}\n" +
+        "  classification.STRUCTUREDDOCUMENT.META  — {name, value, id, score} per concept\n" +
         "  name = taxonomy class (e.g. 'IPTCMediaTopics-http://cv.iptc.org/newscodes/mediatopic/')\n" +
         "  value = matched concept label, id = concept UUID, score = float 0–1\n\n" +
+        "⚠ META ARRAY vs OBJECT: When a document yields 2+ classification results, META is a JSON\n" +
+        "  array []. When it yields exactly 1 result (or just the Type metadata), META is a plain\n" +
+        "  object {}. Always normalise in code: const meta = Array.isArray(META) ? META : [META];\n" +
+        "  Short records (< ~50 words) often produce only the Type metadata entry with no taxonomy\n" +
+        "  concepts — concatenate all text fields before classifying for best results.\n\n" +
         "TDE FOR CLASSIFIED DOCUMENTS: To create a view with one row per (document × category):\n" +
         "  context: 'classification/STRUCTUREDDOCUMENT/META'  (iterates over each tag)\n" +
         "  To reference the parent document's fields from within a META element, navigate UP:\n" +
@@ -443,7 +448,10 @@ export function registerFluxTools(
             skippedNote +
             skippedInvalidNote +
             htmlWarning +
-            `\n  Run ml_tde_validate with tde_uri="${generated.uri}" and collection="${targetCollection}" to verify.`;
+            `\n  Run ml_tde_validate with tde_uri="${generated.uri}" and collection="${targetCollection}" to verify.` +
+            `\n  ⚠ TYPE CHECK: Numeric-looking string IDs (e.g. Socrata unique_key "59484184") may be inferred` +
+            `\n    as 'float' instead of 'string'. Verify with ml_document_sample and fix via ml_document_put` +
+            `\n    if the TDE column type is wrong (it affects sort order and join correctness).`;
         } catch (tdeErr) {
           tdeGenNote = `\n\nWARNING: Could not auto-generate TDE: ${tdeErr instanceof Error ? tdeErr.message : String(tdeErr)}`;
         }
@@ -475,11 +483,14 @@ export function registerFluxTools(
       if (classify_with_semaphore && result.success) {
         classifyNote =
           "\n\nCLASSIFICATION COMPLETE. Each document now has:\n" +
-          "  classification.STRUCTUREDDOCUMENT.META[]  — array of {name, value, id, score}\n" +
+          "  classification.STRUCTUREDDOCUMENT.META  — {name, value, id, score} per concept\n" +
           "  'name'  = taxonomy class string (e.g. 'IPTCMediaTopics-...' or 'UNESCOThesaurus-...')\n" +
           "  'value' = matched concept label\n" +
           "  'id'    = stable concept UUID\n" +
           "  'score' = confidence float (0–1); threshold 0.48+ is production-quality\n\n" +
+          "⚠ META ARRAY vs OBJECT: When only 1 result is returned, META is a plain object {}, NOT an\n" +
+          "  array []. Normalise in all code: const meta = Array.isArray(META) ? META : [META];\n" +
+          "  Records with < ~50 words of text typically produce only Type metadata, no taxonomy hits.\n\n" +
           "TO QUERY CLASSIFICATIONS WITH OPTIC — create a TDE with:\n" +
           "  context: 'classification/STRUCTUREDDOCUMENT/META'\n" +
           "  META fields: name → 'name', label → 'value', concept_id → 'id', score → 'score' (float)\n" +

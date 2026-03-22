@@ -241,6 +241,21 @@ export function registerPerformanceTools(
 
           const hints = metrics ? interpretQueryMetrics(metrics, language) : [];
 
+          // Truncate large arrays that flood context (documents, fragments, hosts)
+          // These per-URI lists are useful for deep debugging but overwhelming at scale.
+          if (metrics) {
+            const MAX_ENTRIES = 5;
+            for (const key of ["documents", "fragments", "hosts"] as const) {
+              const arr = metrics[key];
+              if (Array.isArray(arr) && arr.length > MAX_ENTRIES) {
+                (metrics as Record<string, unknown>)[key] = [
+                  ...arr.slice(0, MAX_ENTRIES),
+                  `... (${arr.length - MAX_ENTRIES} more — truncated for readability)`,
+                ];
+              }
+            }
+          }
+
           const output = [
             `=== QUERY PROFILE (${language}) ===`,
             metrics ? JSON.stringify(metrics, null, 2) : String(rawValue),

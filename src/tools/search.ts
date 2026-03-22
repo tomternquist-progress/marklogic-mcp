@@ -6,7 +6,14 @@ import { toToolError } from "../utils/errors.js";
 export function registerSearchTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
     "ml_search",
-    "Full-text and structured search across MarkLogic documents. Supports string queries and JSON structured queries.",
+    "Full-text and structured search across MarkLogic documents. Supports string queries and JSON structured queries.\n\n" +
+    "RESULT FORMAT: Returns URIs, relevance scores, confidence, and fitness for each match — NOT document content.\n" +
+    "To inspect content of matching documents: call ml_document_get on specific URIs, or use ml_document_sample\n" +
+    "to preview a collection without a search query. To add field extracts (snippets) to results, create search\n" +
+    "options with extract-document-data via ml_search_options_put and pass the options name here.\n\n" +
+    "SNIPPET PATTERN (inline content preview via search options):\n" +
+    "  ml_search_options_put name='my-opts' options={'options':{'extract-document-data':{'extract-path':'/*'}}}\n" +
+    "  then ml_search q='...' options='my-opts'  ← results will include extracted fields",
     {
       q: z.string().optional().describe("Full-text query string (Google-style syntax supported)"),
       structured_query: z.record(z.unknown()).optional().describe("MarkLogic structured query JSON object"),
