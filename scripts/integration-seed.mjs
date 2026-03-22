@@ -3,26 +3,64 @@
  * Seeds the bare minimum test data needed for integration tests on a fresh
  * MarkLogic instance (e.g. the Docker container spun up by the CI workflow).
  *
+ * Also pre-configures the range and geospatial indexes that the timeseries
+ * and geospatial integration tests require. Doing this here (before tests run)
+ * gives MarkLogic time to apply the configuration before any test worker
+ * touches the database, eliminating the async-propagation race condition.
+ *
  * Run manually:
  *   ML_HOST=localhost ML_USER=admin ML_PASSWORD=admin node scripts/integration-seed.mjs
  */
 
 import { createRequire } from "module";
+import { createHash } from "crypto";
+
 const require = createRequire(import.meta.url);
 const axios = require("axios");
 
 const HOST = process.env.ML_HOST ?? "localhost";
 const PORT = process.env.ML_PORT ?? "8000";
+const MGMT_PORT = process.env.ML_MGMT_PORT ?? "8002";
 const USER = process.env.ML_USER ?? "admin";
 const PASS = process.env.ML_PASSWORD ?? "admin";
 const BASE = `http://${HOST}:${PORT}`;
+const MGMT = `http://${HOST}:${MGMT_PORT}`;
 
-// Simple Digest auth using a two-step challenge-response
+const md5 = (s) => createHash("md5").update(s).digest("hex");
+
+/** Build a Digest Authorization header from a WWW-Authenticate challenge. */
+function buildDigestAuth(method, urlStr, wwwAuthenticate) {
+  const realm  = wwwAuthenticate.match(/realm="([^"]+)"/)?.[1] ?? "";
+  const nonce  = wwwAuthenticate.match(/nonce="([^"]+)"/)?.[1] ?? "";
+  const qop    = wwwAuthenticate.match(/qop="([^"]+)"/)?.[1] ?? "";
+  const opaque = wwwAuthenticate.match(/opaque="([^"]+)"/)?.[1];
+
+  const u = new URL(urlStr);
+  const uri = u.pathname + u.search;
+  const ha1 = md5(`${USER}:${realm}:${PASS}`);
+  const ha2 = md5(`${method}:${uri}`);
+  const nc = "00000001";
+  const cnonce = Math.random().toString(36).slice(2, 10);
+  const response = md5(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`);
+
+  return [
+    `Digest username="${USER}"`,
+    `realm="${realm}"`,
+    `nonce="${nonce}"`,
+    `uri="${uri}"`,
+    `qop=${qop}`,
+    `nc=${nc}`,
+    `cnonce="${cnonce}"`,
+    `response="${response}"`,
+    opaque ? `opaque="${opaque}"` : "",
+  ].filter(Boolean).join(", ");
+}
+
+/** Perform a Digest-authenticated PUT to the REST API (port 8000). */
 async function digestPut(uri, body, collection) {
   const url = `${BASE}/v1/documents?uri=${encodeURIComponent(uri)}&collection=${encodeURIComponent(collection)}`;
   const content = JSON.stringify(body);
 
-  // Step 1: get the challenge
   let challenge;
   try {
     await axios.put(url, content, { headers: { "Content-Type": "application/json" } });
@@ -33,34 +71,7 @@ async function digestPut(uri, body, collection) {
     challenge = err.response.headers["www-authenticate"];
   }
 
-  // Parse Digest challenge
-  const realm = challenge.match(/realm="([^"]+)"/)?.[1] ?? "";
-  const nonce = challenge.match(/nonce="([^"]+)"/)?.[1] ?? "";
-  const qop   = challenge.match(/qop="([^"]+)"/)?.[1] ?? "";
-  const opaque = challenge.match(/opaque="([^"]+)"/)?.[1];
-
-  const { createHash } = await import("crypto");
-  const md5 = (s) => createHash("md5").update(s).digest("hex");
-
-  const ha1 = md5(`${USER}:${realm}:${PASS}`);
-  const ha2 = md5(`PUT:${new URL(url).pathname + new URL(url).search}`);
-  const nc = "00000001";
-  const cnonce = Math.random().toString(36).slice(2, 10);
-  const response = md5(`${ha1}:${nonce}:${nc}:${cnonce}:${qop}:${ha2}`);
-
-  const authHeader = [
-    `Digest username="${USER}"`,
-    `realm="${realm}"`,
-    `nonce="${nonce}"`,
-    `uri="${new URL(url).pathname + new URL(url).search}"`,
-    `qop=${qop}`,
-    `nc=${nc}`,
-    `cnonce="${cnonce}"`,
-    `response="${response}"`,
-    opaque ? `opaque="${opaque}"` : "",
-  ].filter(Boolean).join(", ");
-
-  // Step 2: authenticated request
+  const authHeader = buildDigestAuth("PUT", url, challenge);
   try {
     await axios.put(url, content, {
       headers: { "Content-Type": "application/json", Authorization: authHeader },
@@ -69,6 +80,133 @@ async function digestPut(uri, body, collection) {
   } catch (err) {
     throw new Error(`PUT ${uri} failed ${err.response?.status}: ${JSON.stringify(err.response?.data)}`);
   }
+}
+
+/** GET database properties from the Management API. */
+async function mgmtGet(path) {
+  const url = `${MGMT}${path}?format=json`;
+  let challenge;
+  try {
+    const res = await axios.get(url, { headers: { Accept: "application/json" } });
+    return res.data;
+  } catch (err) {
+    if (err.response?.status !== 401) throw new Error(`GET ${path}: ${err.message}`);
+    challenge = err.response.headers["www-authenticate"];
+  }
+  const auth = buildDigestAuth("GET", url, challenge);
+  const res = await axios.get(url, { headers: { Accept: "application/json", Authorization: auth } });
+  return res.data;
+}
+
+/** PUT to the Management API with Digest auth. */
+async function mgmtPut(path, body) {
+  const url = `${MGMT}${path}?format=json`;
+  const content = JSON.stringify(body);
+
+  let challenge;
+  try {
+    await axios.put(url, content, { headers: { "Content-Type": "application/json" } });
+    return;
+  } catch (err) {
+    if (err.response?.status !== 401) {
+      throw new Error(`PUT ${path} failed ${err.response?.status}: ${JSON.stringify(err.response?.data)}`);
+    }
+    challenge = err.response.headers["www-authenticate"];
+  }
+
+  const auth = buildDigestAuth("PUT", url, challenge);
+  try {
+    await axios.put(url, content, {
+      headers: { "Content-Type": "application/json", Authorization: auth },
+    });
+  } catch (err) {
+    throw new Error(`PUT ${path} failed ${err.response?.status}: ${JSON.stringify(err.response?.data)}`);
+  }
+}
+
+/** Wait until fn() returns true, polling every intervalMs up to maxMs. */
+async function pollUntil(fn, maxMs = 30_000, intervalMs = 1_000) {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    try {
+      if (await fn()) return;
+    } catch { /* DB may be briefly restarting */ }
+  }
+  throw new Error("pollUntil timed out");
+}
+
+async function configureIndexes() {
+  const DB_PATH = "/manage/v2/databases/Documents/properties";
+
+  const props = await mgmtGet(DB_PATH);
+  const rangeIdxs = props["range-element-index"] ?? [];
+  const geoIdxs = props["geospatial-element-pair-index"] ?? [];
+
+  const hasImportedAt = Array.isArray(rangeIdxs) &&
+    rangeIdxs.some((i) => i.localname === "importedAt" && i["scalar-type"] === "dateTime");
+  const hasGeoLocation = Array.isArray(geoIdxs) &&
+    geoIdxs.some((i) => i["parent-localname"] === "location" && i["latitude-localname"] === "lat");
+
+  if (hasImportedAt && hasGeoLocation) {
+    console.log("  ✓ Indexes already configured");
+    return;
+  }
+
+  if (!hasImportedAt) {
+    const existing = Array.isArray(rangeIdxs) ? rangeIdxs : [];
+    await mgmtPut(DB_PATH, {
+      "range-element-index": [
+        ...existing,
+        {
+          "scalar-type": "dateTime",
+          "namespace-uri": "",
+          "localname": "importedAt",
+          "collation": "",
+          "range-value-positions": false,
+          "invalid-values": "ignore",
+        },
+      ],
+    });
+    console.log("  ✓ Added range-element-index for importedAt");
+  }
+
+  if (!hasGeoLocation) {
+    const existing = Array.isArray(geoIdxs) ? geoIdxs : [];
+    await mgmtPut(DB_PATH, {
+      "geospatial-element-pair-index": [
+        ...existing,
+        {
+          "parent-namespace-uri": "",
+          "parent-localname": "location",
+          "latitude-namespace-uri": "",
+          "latitude-localname": "lat",
+          "longitude-namespace-uri": "",
+          "longitude-localname": "lon",
+          "coordinate-system": "wgs84",
+          "range-value-positions": false,
+          "invalid-values": "ignore",
+        },
+      ],
+    });
+    console.log("  ✓ Added geospatial-element-pair-index for location");
+  }
+
+  // Wait until both indexes appear in a fresh GET (ML applies config asynchronously)
+  console.log("  Waiting for index configuration to take effect...");
+  await pollUntil(async () => {
+    const updated = await mgmtGet(DB_PATH);
+    const ri = updated["range-element-index"] ?? [];
+    const gi = updated["geospatial-element-pair-index"] ?? [];
+    const okRange = !hasImportedAt
+      ? Array.isArray(ri) && ri.some((i) => i.localname === "importedAt")
+      : true;
+    const okGeo = !hasGeoLocation
+      ? Array.isArray(gi) && gi.some((i) => i["parent-localname"] === "location")
+      : true;
+    return okRange && okGeo;
+  });
+  console.log("  ✓ Indexes confirmed active");
 }
 
 async function main() {
@@ -109,6 +247,9 @@ async function main() {
     },
     "wikipedia-articles"
   );
+
+  console.log("Configuring indexes...");
+  await configureIndexes();
 
   console.log("Seed complete.");
 }
