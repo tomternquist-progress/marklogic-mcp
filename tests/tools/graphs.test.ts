@@ -27,6 +27,7 @@ function createMockClients() {
       sparqlQuery: vi.fn(),
       listGraphs: vi.fn(),
       putGraph: vi.fn(),
+      deleteGraph: vi.fn(),
     },
   };
 }
@@ -34,14 +35,26 @@ function createMockClients() {
 // ─── Tool registration ─────────────────────────────────────────────────────
 
 describe("registerGraphTools – tool registration", () => {
-  it("registers all 3 graph tools", () => {
+  it("registers 3 tools in readonly mode (no ml_graph_delete)", () => {
     const { server, tools } = createMockServer();
-    registerGraphTools(server as never, createMockClients() as never);
+    registerGraphTools(server as never, createMockClients() as never, true);
 
     expect(tools.has("ml_sparql_query")).toBe(true);
     expect(tools.has("ml_graphs_list")).toBe(true);
     expect(tools.has("ml_graph_put")).toBe(true);
+    expect(tools.has("ml_graph_delete")).toBe(false);
     expect(tools.size).toBe(3);
+  });
+
+  it("registers all 4 tools in read-write mode", () => {
+    const { server, tools } = createMockServer();
+    registerGraphTools(server as never, createMockClients() as never, false);
+
+    expect(tools.has("ml_sparql_query")).toBe(true);
+    expect(tools.has("ml_graphs_list")).toBe(true);
+    expect(tools.has("ml_graph_put")).toBe(true);
+    expect(tools.has("ml_graph_delete")).toBe(true);
+    expect(tools.size).toBe(4);
   });
 });
 
