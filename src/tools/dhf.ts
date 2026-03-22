@@ -182,9 +182,10 @@ export function registerDhfTools(
             content: [{
               type: "text" as const,
               text: toToolError(err) +
-                "\n\nNOTE: dhf_flow_run uses DHF's internal FlowRunner module (/data-hub/5/flow/flow-runner.sjs). " +
-                "If this module is not found, verify DHF 5.x modules are installed in the modules database " +
-                "and run dhf_status to confirm installation.",
+                "\n\nNOTE: dhf_flow_run requires DHF 5.8.x modules in the Modules database " +
+                "(/data-hub/5/impl/flow.sjs, /data-hub/5/flow/job.sjs, and dependencies). " +
+                "If modules are missing, deploy via: gradle hubDeploy " +
+                "or load them manually using ml_document_put (database=Modules).",
             }],
             isError: true,
           };

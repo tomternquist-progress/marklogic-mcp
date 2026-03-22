@@ -201,27 +201,46 @@ export class DhfClient {
     stepNumbers?: string[],
     options?: Record<string, unknown>
   ): Promise<string> {
-    // DHF 5.x FlowRunner.run(flowName, jobId, content, runtimeOptions, stepNumbers)
-    //   flowName      — name of the flow
-    //   jobId         — null = auto-generate
-    //   content       — null = flow uses its own source query / collection
-    //   runtimeOptions — overrides applied at runtime
-    //   stepNumbers   — array of strings or null = all steps
+    // DHF 5.8.x flow execution via impl/flow.sjs.
+    //
+    // The DHF 5.8 API:
+    //   • Flow class (impl/flow.sjs) provides findMatchingContent() + runFlow()
+    //   • Job class (flow/job.sjs) handles job lifecycle
+    //   • Steps are run sequentially; each step queries its own sourceQuery
+    //
+    // This eval runs synchronously (suitable for moderate document counts).
+    // For very large batches, prefer running via Gradle hubRunFlow.
     const code = `
 'use strict';
 declareUpdate();
 var flowName = external.flowName;
 var stepNumbers = external.stepNumbers;
-var runtimeOptions = external.runtimeOptions;
-const FlowRunner = require('/data-hub/5/flow/flow-runner.sjs');
-const result = FlowRunner.run(
-  flowName,
-  null,
-  null,
-  runtimeOptions || {},
-  (stepNumbers && stepNumbers.length > 0) ? stepNumbers : null
-);
-xdmp.toJsonString(result);
+var runtimeOptions = external.runtimeOptions || {};
+
+const Flow = require('/data-hub/5/impl/flow.sjs');
+const Job  = require('/data-hub/5/flow/job.sjs');
+
+// Create and persist the job
+var jobObj = Job.newJob(flowName, null);
+jobObj.create();
+var jobId = jobObj.jobId;
+
+var flowInst = new Flow();
+var flowDef  = flowInst.getFlow(flowName);
+if (!flowDef) { throw new Error('Flow not found: ' + flowName); }
+
+var allSteps = Object.keys(flowDef.steps || {}).sort();
+var stepsToRun = (stepNumbers && stepNumbers.length > 0) ? stepNumbers : allSteps;
+
+for (var si = 0; si < stepsToRun.length; si++) {
+  var stepNum = stepsToRun[si];
+  var content = flowInst.findMatchingContent(flowName, stepNum, runtimeOptions);
+  flowInst.runFlow(flowName, jobId, content, runtimeOptions, stepNum);
+}
+
+// Finish the job
+jobObj.finishJob('finished', new Date().toISOString(), []);
+xdmp.toJsonString({jobId: jobId, flow: flowName, steps: stepsToRun});
 `.trim();
 
     const vars: Record<string, unknown> = {
