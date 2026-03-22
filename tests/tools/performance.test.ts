@@ -450,4 +450,64 @@ describe("ml_profile_query handler (allowEval=true)", () => {
     const result = await tools.get("ml_profile_query")!({ language: "xquery", code: "bad" });
     expect(result.isError).toBe(true);
   });
+
+  it("truncates documents[] to 5 entries when more than 5 URIs are present", async () => {
+    const manyDocs = Array.from({ length: 20 }, (_, i) => ({
+      uri: `/doc/${i}.json`,
+      expandedTreeCacheMisses: 1,
+    }));
+    clients.performance.profileXQuery.mockResolvedValue([{
+      value: {
+        elapsedMs: 50,
+        resultCount: 20,
+        filterMisses: 0,
+        filterHits: 20,
+        documents: manyDocs,
+      },
+    }]);
+    const result = await tools.get("ml_profile_query")!({ language: "xquery", code: "test" });
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    // Should include only 5 URIs and a truncation notice
+    expect(text).toContain("/doc/0.json");
+    expect(text).toContain("/doc/4.json");
+    expect(text).not.toContain("/doc/5.json");
+    expect(text).toContain("truncated for readability");
+    expect(text).toContain("15 more");
+  });
+
+  it("does not truncate documents[] when 5 or fewer entries are present", async () => {
+    const fewDocs = Array.from({ length: 3 }, (_, i) => ({
+      uri: `/doc/${i}.json`,
+      expandedTreeCacheMisses: 1,
+    }));
+    clients.performance.profileXQuery.mockResolvedValue([{
+      value: { elapsedMs: 5, resultCount: 3, filterMisses: 0, filterHits: 3, documents: fewDocs },
+    }]);
+    const result = await tools.get("ml_profile_query")!({ language: "xquery", code: "test" });
+    const text = result.content[0].text;
+    expect(text).toContain("/doc/0.json");
+    expect(text).toContain("/doc/2.json");
+    expect(text).not.toContain("truncated");
+  });
+
+  it("truncates fragments[] array alongside documents[]", async () => {
+    const manyFragments = Array.from({ length: 10 }, (_, i) => ({ uri: `/frag/${i}` }));
+    clients.performance.profileXQuery.mockResolvedValue([{
+      value: {
+        elapsedMs: 10,
+        resultCount: 10,
+        filterMisses: 0,
+        filterHits: 10,
+        fragments: manyFragments,
+        documents: [],
+      },
+    }]);
+    const result = await tools.get("ml_profile_query")!({ language: "xquery", code: "test" });
+    const text = result.content[0].text;
+    expect(text).toContain("/frag/0");
+    expect(text).toContain("/frag/4");
+    expect(text).not.toContain("/frag/5");
+    expect(text).toContain("5 more");
+  });
 });
