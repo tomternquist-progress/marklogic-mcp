@@ -116,7 +116,7 @@ const TURTLE_TRIPLES = `
 `.trim();
 
 describeIfLive("Knowledge Graph Workflow (live)", () => {
-  const { documents, graphs, eval: evalClient } = buildClients();
+  const { documents, graphs } = buildClients();
 
   // ── Setup ─────────────────────────────────────────────────────────────────
 
@@ -141,13 +141,7 @@ describeIfLive("Knowledge Graph Workflow (live)", () => {
     for (const entity of ENTITY_DOCS) {
       try { await documents.del(entity.uri); } catch { /* ignore */ }
     }
-    // Delete the named graph
-    try {
-      await evalClient.evalXQuery(
-        `xdmp:graph-delete(<${GRAPH_URI}>)`,
-        {}
-      );
-    } catch { /* ignore */ }
+    try { await graphs.deleteGraph(GRAPH_URI); } catch { /* ignore */ }
   });
 
   // ── Step 1: Entity documents ──────────────────────────────────────────────
@@ -358,14 +352,9 @@ describeIfLive("Knowledge Graph Workflow (live)", () => {
     it("GRAPH-scoped query only returns triples from that graph", async () => {
       // Insert a triple in a different graph and confirm it doesn't appear in ours
       const OTHER_GRAPH = "http://example.org/test/other-graph";
+      const otherTurtle = `<http://example.org/other/entity> <http://www.w3.org/2000/01/rdf-schema#label> "Other Entity" .`;
       try {
-        await evalClient.evalXQuery(
-          `sem:graph-insert(sem:iri("${OTHER_GRAPH}"),
-             sem:triple(sem:iri("http://example.org/other/entity"),
-                        sem:iri("http://www.w3.org/2000/01/rdf-schema#label"),
-                        "Other Entity"))`,
-          {}
-        );
+        await graphs.putGraph(OTHER_GRAPH, otherTurtle, "application/n-triples");
 
         const result = await graphs.sparqlQuery(
           `SELECT ?s WHERE {
@@ -375,12 +364,7 @@ describeIfLive("Knowledge Graph Workflow (live)", () => {
         const rows = (result.results?.bindings ?? []) as Array<Record<string, { value: string }>>;
         expect(rows.length).toBe(0); // "Other Entity" is NOT in GRAPH_URI
       } finally {
-        // Clean up the other graph
-        try {
-          await evalClient.evalXQuery(
-            `xdmp:graph-delete(<${OTHER_GRAPH}>)`, {}
-          );
-        } catch { /* ignore */ }
+        try { await graphs.deleteGraph(OTHER_GRAPH); } catch { /* ignore */ }
       }
     });
   });

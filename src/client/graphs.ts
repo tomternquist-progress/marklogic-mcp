@@ -81,6 +81,15 @@ export class GraphsClient {
     return { graph: graphUri, created: res.status === 201 };
   }
 
+  async deleteGraph(
+    graphUri: string,
+    options: { database?: string } = {}
+  ): Promise<void> {
+    const params: Record<string, string> = { graph: graphUri };
+    if (options.database) params.database = options.database;
+    await this.base.http.delete("/v1/graphs", { params });
+  }
+
   async listGraphs(
     options: {
       start?: number;
