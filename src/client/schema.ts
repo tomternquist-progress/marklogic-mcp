@@ -415,7 +415,10 @@ export class SchemaClient {
     if (viewError) {
       summary = `View query failed: ${viewError}`;
     } else if (rowCount === 0 && docCount > 0) {
-      summary = `View returned 0 rows despite ${docCount} documents in collection "${collection}". The TDE context path or collection scope may not match the document structure.`;
+      summary = `View returned 0 rows despite ${docCount} documents in collection "${collection}". ` +
+        `Likely causes: (1) columns missing nullable:true — if documents are sparse or were imported with ` +
+        `--ignore-null-fields, any document missing a non-nullable column produces no row; ` +
+        `(2) TDE context path or collection scope does not match document structure.`;
     } else if (rowCount > 0) {
       summary = `View is healthy: returned ${rowCount} of up to ${sampleSize} rows (collection has ~${docCount} documents).`;
     } else {
@@ -534,7 +537,12 @@ export class SchemaClient {
         const sanitizedPath = f.path.replace(/[ \t]/g, "_").replace(/[^a-zA-Z0-9_.:-]/g, "_");
         if (sanitizedPath !== f.path) sanitizedColumns.push(f.path);
         const col: TdeColumn = { name: sanitizedPath, scalarType, val: sanitizedPath };
-        if (f.nullable || f.type === "null" || f.type === "mixed") col.nullable = true;
+        // Always mark nullable:true. When documents are imported with --ignore-null-fields
+        // (e.g. GDELT, most open-data CSV imports), absent fields are simply omitted rather
+        // than stored as null — so sampling never sees a null value and f.nullable stays false.
+        // A column with nullable:false will silently produce no row for any document missing
+        // that field, which can result in 0 rows for a sparse collection.
+        col.nullable = true;
         return col;
       });
 
@@ -571,7 +579,10 @@ function inferTdeScalarType(field: FieldDescriptor): string {
       // infer float rather than string. This catches Semaphore classifier score fields and
       // any other numeric-string columns where string type would silently break comparisons.
       const examples = field.exampleValues.filter((v) => v !== null && v !== undefined && v !== "");
-      if (examples.length > 0 && examples.every((v) => /^-?[0-9]*\.?[0-9]+$/.test(String(v)))) return "float";
+      // Only infer float when the string contains a decimal point (e.g. "0.84", "3.14").
+      // Integer-like strings ("20955", "42") are almost always IDs/codes — keep them as string
+      // to avoid silent sort-order and join-correctness bugs (e.g. GDELT ADM2 geo codes).
+      if (examples.length > 0 && examples.every((v) => /^-?[0-9]+\.[0-9]+$/.test(String(v)))) return "float";
       return "string";
     }
     default:        return "string";
