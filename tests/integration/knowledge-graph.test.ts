@@ -80,38 +80,39 @@ const ENTITY_DOCS = [
 ];
 
 // RDF triples in Turtle format expressing relationships
+// Note: subjects/objects use full <URI> refs because Turtle 1.0 (used by MarkLogic)
+// does not allow '/' in prefixed-name local parts.
 const TURTLE_TRIPLES = `
 @prefix org: <http://www.w3.org/ns/org#> .
 @prefix schema: <http://schema.org/> .
-@prefix ex: <http://example.org/> .
 @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
 @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
 
 # Company types
-ex:company/acme-corp a schema:Organization ;
+<http://example.org/company/acme-corp> a schema:Organization ;
     rdfs:label "ACME Corporation" ;
     schema:industry "Technology" ;
     schema:foundingDate "2001" .
 
-ex:company/beta-systems a schema:Organization ;
+<http://example.org/company/beta-systems> a schema:Organization ;
     rdfs:label "Beta Systems" ;
     schema:industry "Software" ;
     schema:foundingDate "2010" .
 
 # Person types and affiliations
-ex:person/alice-smith a schema:Person ;
+<http://example.org/person/alice-smith> a schema:Person ;
     rdfs:label "Alice Smith" ;
     schema:jobTitle "CEO" ;
-    org:memberOf ex:company/acme-corp .
+    org:memberOf <http://example.org/company/acme-corp> .
 
-ex:person/bob-jones a schema:Person ;
+<http://example.org/person/bob-jones> a schema:Person ;
     rdfs:label "Bob Jones" ;
     schema:jobTitle "CTO" ;
-    org:memberOf ex:company/beta-systems .
+    org:memberOf <http://example.org/company/beta-systems> .
 
 # Partnership relationship between companies
-ex:company/acme-corp schema:partner ex:company/beta-systems .
-ex:company/beta-systems schema:partner ex:company/acme-corp .
+<http://example.org/company/acme-corp> schema:partner <http://example.org/company/beta-systems> .
+<http://example.org/company/beta-systems> schema:partner <http://example.org/company/acme-corp> .
 `.trim();
 
 describeIfLive("Knowledge Graph Workflow (live)", () => {
