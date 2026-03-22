@@ -679,6 +679,8 @@ Available tools (use only these):
               semaphore_publish_diagnose, semaphore_concept_search,
               semaphore_concept_get, semaphore_concept_labels_update,
               semaphore_taxonomy_validate, semaphore_taxonomy_scaffold
+  DHF:        dhf_status, dhf_flows_list, dhf_job_status,
+              dhf_flow_run (allowEval + write-enabled; async — returns job ID)
   Security:   ml_users_list, ml_roles_list, ml_document_permissions
   Performance: ml_explain_optic, ml_search_query_plan, ml_forest_metrics,
               ml_profile_query (eval-gated)

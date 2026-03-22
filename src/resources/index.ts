@@ -194,6 +194,13 @@ Code generation      Prompt templates           xquery_function_generator —
                                                 tde_schema_generator
                                                 rest_extension_generator
 
+DHF flow execution   Data Hub Framework         dhf_status                dhf_flows_list
+(entity pipelines:   flows/steps API            dhf_flows_list
+ ingest → map →      Requires DHF 5.x +         dhf_flow_run              (check flow exists)
+ match → master)     allowEval + !readonly       dhf_job_status
+                     Flow runs async — poll
+                     dhf_job_status for result
+
 Data integration     Envelope pattern           envelope_pattern_advisor  ml_document_sample
 design / diagnosis   (source → headers →        ml_schema_discover        ml_collections_list
 (multi-source,       instance → triples)
@@ -656,6 +663,10 @@ Semaphore (20): semaphore_status, semaphore_studio_status,
                 semaphore_publish_diagnose, semaphore_concept_search,
                 semaphore_concept_get, semaphore_concept_labels_update,
                 semaphore_taxonomy_validate, semaphore_taxonomy_scaffold
+
+DHF (3–4, DHF-install-dependent):
+               dhf_status, dhf_flows_list, dhf_job_status
+               [allowEval + write-enabled] dhf_flow_run
 
 Performance (3–4, eval-dependent):
                ml_explain_optic, ml_search_query_plan, ml_forest_metrics

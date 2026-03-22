@@ -13,6 +13,7 @@ import { SemaphoreClient } from "./semaphore.js";
 import { ExtensionsClient } from "./extensions.js";
 import { SecurityClient } from "./security.js";
 import { PerformanceClient } from "./performance.js";
+import { DhfClient } from "./dhf.js";
 
 export interface MarkLogicClients {
   admin: AdminClient;
@@ -28,6 +29,7 @@ export interface MarkLogicClients {
   extensions: ExtensionsClient;
   security: SecurityClient;
   performance: PerformanceClient;
+  dhf: DhfClient;
 }
 
 export function createClients(config: AppConfig, oauthToken?: string): MarkLogicClients {
@@ -53,8 +55,9 @@ export function createClients(config: AppConfig, oauthToken?: string): MarkLogic
   const extensions = new ExtensionsClient(base);
   const security = new SecurityClient(base);
   const performance = new PerformanceClient(base);
+  const dhf = new DhfClient(base, admin, evalClient, documents, search);
 
-  return { admin, documents, search, eval: evalClient, schema, graphs, optic, flux, fasttrack, semaphore, extensions, security, performance };
+  return { admin, documents, search, eval: evalClient, schema, graphs, optic, flux, fasttrack, semaphore, extensions, security, performance, dhf };
 }
 
 export {
@@ -72,4 +75,5 @@ export {
   ExtensionsClient,
   SecurityClient,
   PerformanceClient,
+  DhfClient,
 };
