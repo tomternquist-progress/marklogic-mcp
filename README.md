@@ -4,7 +4,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for Mar
 
 ## Features
 
-- **49 MCP tools** across 11 domains: admin, documents, search, schema, eval, SPARQL, Optic (incl. vector search), QuickSight, Flux, Semaphore (taxonomy + classification), and approach advisory
+- **80+ MCP tools** across 15 domains: admin (incl. logs), documents, security, search, search options, schema, eval, SPARQL/graphs, Optic (incl. vector search), performance, QuickSight, Flux, REST extensions, Semaphore (taxonomy + classification), and approach advisory
 - **5 MCP resources** including a machine-readable problem→solution decision guide
 - **13 MCP prompts** for query planning, code generation, import design, and BI integration
 - **Two transports**: stdio (Claude Desktop / local agents) and HTTP+SSE (remote agents, QuickSight)
@@ -202,7 +202,7 @@ docker compose up
 |---|---|
 | `ml_suggest_approach` | Analyse a natural-language task and return ranked tool recommendations with ready-to-use recipe parameters. Call this before starting any non-trivial task. |
 
-### Admin (8 tools)
+### Admin (11 tools)
 
 | Tool | Description |
 |---|---|
@@ -210,10 +210,13 @@ docker compose up
 | `ml_databases_list` | List all databases |
 | `ml_database_properties` | Full database configuration |
 | `ml_database_statistics` | Document counts, forest sizes |
+| `ml_database_set_forests` *(write)* | Attach a specific list of forests to a database — primary fix for the forest-hang pattern when cluster nodes are offline |
 | `ml_forests_list` | Forest status |
 | `ml_servers_list` | App server list |
 | `ml_server_properties` | App server configuration |
 | `ml_reindex_status` | Check whether a database has finished reindexing after TDE installation or index config changes. Returns `ready=true` when safe to run `ml_optic_query` or `ml_tde_validate`. Use after `flux_import` with `generate_tde=true` to avoid SQL-TABLEREINDEXING errors. |
+| `ml_logs_list` | List available MarkLogic log files (ErrorLog.txt, AccessLog.txt, port-specific logs). Use before `ml_logs_read`. |
+| `ml_logs_read` | Read a MarkLogic server log file with optional time-range and regex filtering. Key files: `ErrorLog.txt`, `8002_AccessLog.txt`, `8000_AccessLog.txt`. |
 
 ### Documents (6 tools)
 
@@ -225,6 +228,14 @@ docker compose up
 | `ml_document_put` *(write)* | Create/replace document |
 | `ml_document_delete` *(write)* | Delete document |
 | `ml_document_patch` *(write)* | Partial update |
+
+### Security (3 tools)
+
+| Tool | Description |
+|---|---|
+| `ml_users_list` | List all MarkLogic users (requires manage-user privilege) |
+| `ml_roles_list` | List all roles, or retrieve full properties for a named role |
+| `ml_document_permissions` | Return the read/update/insert/execute permissions on a document URI |
 
 ### Search (5 tools)
 
@@ -240,13 +251,25 @@ Uses MarkLogic's universal index — no TDE or range index required for word que
 
 > Range queries within `ml_search` require a pre-existing range index. Verify with `ml_indexes_list` first.
 
-### Schema Discovery (6 tools)
+### Search Options / FastTrack (4 tools)
+
+Manage named search-options configurations stored in the FastTrack endpoint (`/v1/config/query`).
+
+| Tool | Description |
+|---|---|
+| `ml_search_options_list` | List all named search-options configurations |
+| `ml_search_options_get` | Retrieve a named search-options configuration |
+| `ml_search_options_put` *(write)* | Create or replace a search-options configuration |
+| `ml_search_options_delete` *(write)* | Delete a search-options configuration |
+
+### Schema Discovery (7 tools)
 
 | Tool | Description |
 |---|---|
 | `ml_schema_discover` | Infer field shapes by sampling documents in a collection |
 | `ml_schema_get_tde` | Retrieve TDE templates from the Schemas database |
 | `ml_tde_validate` | Validate a TDE template against sampled documents |
+| `ml_tde_install` *(write)* | Install a TDE template into the Schemas database with the correct collection — convenience wrapper around `ml_document_put` that sets `database=Schemas` and the required `http://marklogic.com/xdmp/tde` collection automatically |
 | `ml_indexes_list` | All configured range, element, and field indexes |
 | `ml_collections_list` | Collections with document counts |
 | `ml_namespaces_list` | XML namespace registry |
@@ -270,8 +293,9 @@ Use as a last resort — ~10 KB script payload limit, no parallel batching.
 | `ml_eval_xquery` | Execute XQuery on the server |
 | `ml_eval_javascript` | Execute Server-Side JavaScript |
 | `ml_invoke_module` | Call a stored SJS/XQuery module |
+| `ml_sparql` | Execute SPARQL via `sem:sparql()` XQuery — handles boilerplate automatically. Use instead of `ml_eval_xquery` when running SPARQL with `sem:` API features not available via `ml_sparql_query`. |
 
-### Graphs / SPARQL (3 tools)
+### Graphs / SPARQL (4 tools)
 
 Queries MarkLogic's triple store. Supports three storage patterns: embedded triples (co-located inside the source document as a `sem:triples` array), named graphs (standalone RDF documents), and hybrid (entity document + named graph for cross-entity relationships).
 
@@ -280,6 +304,9 @@ Queries MarkLogic's triple store. Supports three storage patterns: embedded trip
 | `ml_sparql_query` | SPARQL 1.1 SELECT/CONSTRUCT/ASK/DESCRIBE. SELECT and ASK return `{ head, results }` JSON. CONSTRUCT and DESCRIBE return raw Turtle text. Supports embedded, named-graph, and hybrid triple patterns. |
 | `ml_graphs_list` | List named graphs. Identifies managed-triple graphs that may be candidates for reprocessing into entity-oriented documents via `flux_reprocess`. |
 | `ml_graph_put` *(write)* | Load Turtle, N-Triples, JSON-LD, or RDF/XML into a named graph via PUT/PATCH `/v1/graphs`. |
+| `ml_graph_delete` *(write)* | Permanently delete a named graph and all its triples. |
+
+> **Turtle prefix syntax**: Prefixed local names cannot contain `/` in Turtle 1.0 (MarkLogic's parser). Use `<http://full/uri>` for subjects/objects whose IRI paths contain slashes, or define one prefix per entity type so local names are slash-free.
 
 ### QuickSight Integration (4 tools)
 
@@ -289,6 +316,25 @@ Queries MarkLogic's triple store. Supports three storage patterns: embedded trip
 | `ml_timeseries_query` | Date-bucketed aggregation (day/week/month/year) |
 | `ml_export_tabular` | Export collection as CSV or JSON rows |
 | `ml_facets_query` | Facet breakdowns for filter controls |
+
+### Performance (3 tools + 1 eval-gated)
+
+| Tool | Description |
+|---|---|
+| `ml_explain_optic` | Get the execution plan for an Optic query without running it — shows join strategy and index usage |
+| `ml_search_query_plan` | Run a search in debug mode to see the resolved CTS query structure and candidate estimate |
+| `ml_forest_metrics` | Per-forest fragment counts, stand counts, deleted-fragment ratio, and merge status |
+| `ml_profile_query` *(requires `ML_ALLOW_EVAL=true`)* | Profile XQuery, SJS, or SPARQL execution time and cache/filter metrics |
+
+### REST Extensions (5 tools)
+
+| Tool | Description |
+|---|---|
+| `ml_extension_list` | List installed REST API extensions |
+| `ml_extension_get` | Retrieve the source of an extension module |
+| `ml_extension_call` | Call an extension endpoint with arbitrary method, params, and body |
+| `ml_extension_put` *(write)* | Install or replace a REST extension module |
+| `ml_extension_delete` *(write)* | Remove a REST extension module |
 
 ### Flux (7 tools)
 
@@ -307,7 +353,7 @@ Flux is the preferred path for all bulk data operations. It runs as a subprocess
 > `flux_import` supports `generate_tde: true` to auto-create an Optic view from the imported collection in one call.
 > `flux_import` also supports inline Semaphore classification at ingest via `classify_with_semaphore: true` — attaches taxonomy categories to every imported document.
 
-### Semaphore (15 tools)
+### Semaphore (20 tools)
 
 Semaphore is the Progress Data Platform taxonomy and classification engine. These tools manage the full lifecycle: load a SKOS vocabulary into KMM, configure the publisher, publish rules to the Classification Server (CLS), and classify content.
 
@@ -319,6 +365,7 @@ Semaphore is the Progress Data Platform taxonomy and classification engine. Thes
 | `semaphore_publish_sets` | List active taxonomy rule sets loaded in the CLS |
 | `semaphore_classes` | List classification class names in the active rulenet |
 | `semaphore_classify` | Classify text against the loaded rulenet (exploratory / small-scale) |
+| `semaphore_cls_languages` | List available language packs in the CLS (uses indexed codes like `en1`, not ISO codes) |
 
 **KMM / Studio (taxonomy authoring) — port 5080**
 
@@ -334,6 +381,16 @@ Semaphore is the Progress Data Platform taxonomy and classification engine. Thes
 | `semaphore_publish` | Trigger an async KMM publish — compiles the taxonomy into CLS rules |
 | `semaphore_publish_config_fix_plain_skos` | Patch the publisher config for plain-SKOS vocabularies (skos:prefLabel, no SKOS-XL) — adds GRAPH clause, switches to AllConcepts, bootstraps workspace automatically |
 | `semaphore_publish_diagnose` | Diagnose publish failures — compares KMM concept count vs CLS rule count and identifies the root cause |
+
+**Concept / Taxonomy Editing**
+
+| Tool | Description |
+|---|---|
+| `semaphore_concept_search` | Search for concepts across a KMM model by keyword (matches prefLabel, altLabel, hiddenLabel) |
+| `semaphore_concept_get` | Retrieve full concept profile: all labels, broader/narrower hierarchy, related links, scopeNote |
+| `semaphore_concept_labels_update` | Add or remove a single label on a concept — primary tool for classification quality tuning |
+| `semaphore_taxonomy_validate` | Run SPARQL-based structural quality checks on a KMM model (hierarchy health, orphan detection, anti-patterns) |
+| `semaphore_taxonomy_scaffold` | Generate a properly structured SKOS Turtle skeleton for a new taxonomy — output is ready to pass to `semaphore_kmm_skos_load` |
 
 > **Plain-SKOS vocabularies** (UNESCO, EuroVoc, AGROVOC, IPTC): run `semaphore_publish_config_fix_plain_skos` before `semaphore_publish`. Without it, the publisher generates only 1 CLS rule (for the ConceptScheme root) instead of one per concept. The root cause is that the publisher's SPARQL endpoint is a global store — each model's data lives in the named graph `urn:x-evn-master:{ModelName}` and is invisible without an explicit `GRAPH` clause. This tool adds the clause automatically.
 >
@@ -445,8 +502,8 @@ QuickSight agents connect via the HTTP transport. Recommended pattern:
 
 ## Security Notes
 
-- `ML_READONLY=true` (default) — write tools (`ml_document_put`, `ml_document_delete`, `ml_document_patch`) are not registered at all
-- `ML_ALLOW_EVAL=false` (default) — eval tools (`ml_eval_javascript`, `ml_eval_xquery`, `ml_invoke_module`) are not registered
+- `ML_READONLY=true` (default) — write tools are not registered at all: `ml_document_put/delete/patch`, `ml_tde_install`, `ml_graph_put/delete`, `ml_search_options_put/delete`, `ml_extension_put/delete`
+- `ML_ALLOW_EVAL=false` (default) — eval tools are not registered: `ml_eval_javascript`, `ml_eval_xquery`, `ml_invoke_module`, `ml_sparql`, `ml_profile_query`
 - `MCP_API_KEY` — set to require Bearer token auth on the HTTP transport
 - `ML_AUTH_TYPE=oauth` — Bearer tokens from MCP clients are forwarded directly to MarkLogic; the MCP server never sees credentials, only opaque tokens; MarkLogic enforces per-user RBAC via its own JWT validation
 - Credentials are read from environment variables only — never hardcoded
