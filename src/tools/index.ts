@@ -24,7 +24,7 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerSearchTools(server, clients);
   registerSchemaTools(server, clients);
   registerEvalTools(server, clients, config.safety.allowEval);
-  registerGraphTools(server, clients);
+  registerGraphTools(server, clients, config.safety.readonly);
   registerQuickSightTools(server, clients);
   registerOpticTools(server, clients);
   registerFluxTools(server, clients, config.connection.authType);

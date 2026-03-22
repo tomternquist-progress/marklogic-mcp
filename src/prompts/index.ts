@@ -661,7 +661,7 @@ Available tools (use only these):
   Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_tde_install,
               ml_indexes_list, ml_collections_list, ml_namespaces_list
   Eval:       ml_eval_javascript, ml_eval_xquery, ml_sparql, ml_invoke_module
-  Graph:      ml_sparql_query, ml_graphs_list, ml_graph_put
+  Graph:      ml_sparql_query, ml_graphs_list, ml_graph_put, ml_graph_delete
   QuickSight: ml_aggregate_query, ml_timeseries_query, ml_export_tabular, ml_facets_query
   Optic:      ml_optic_query, ml_views_list, ml_vector_search
   Flux:       flux_import, flux_export, flux_copy, flux_reprocess, flux_preview, flux_help,

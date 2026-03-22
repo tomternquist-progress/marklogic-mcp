@@ -627,7 +627,7 @@ Schema (7):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
 
 Eval (4, gated): ml_eval_javascript, ml_eval_xquery, ml_sparql, ml_invoke_module
 
-Graph (3):     ml_sparql_query, ml_graphs_list, ml_graph_put
+Graph (4):     ml_sparql_query, ml_graphs_list, ml_graph_put, ml_graph_delete
 
 QuickSight (4): ml_aggregate_query, ml_timeseries_query, ml_export_tabular,
                 ml_facets_query

@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 import { toToolError } from "../utils/errors.js";
 
-export function registerGraphTools(server: McpServer, clients: MarkLogicClients): void {
+export function registerGraphTools(server: McpServer, clients: MarkLogicClients, readonly = false): void {
   server.tool(
     "ml_sparql_query",
     "Execute a SPARQL 1.1 SELECT, CONSTRUCT, ASK, or DESCRIBE query against the MarkLogic triple store.\n\n" +
@@ -133,4 +133,31 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients)
       }
     }
   );
+
+  if (!readonly) {
+    server.tool(
+      "ml_graph_delete",
+      "Delete a named graph and all its triples from the MarkLogic triple store (DELETE /v1/graphs).\n\n" +
+      "This permanently removes every triple stored in the graph. The operation is not reversible.\n" +
+      "Use ml_graphs_list to confirm the graph URI before deleting.\n\n" +
+      "NOTE: This tool is disabled in readonly mode.",
+      {
+        graph_uri: z.string().describe("URI of the named graph to delete, e.g. 'http://example.org/mygraph'"),
+        database: z.string().optional().describe("Database name (uses server default if omitted)"),
+      },
+      async ({ graph_uri, database }) => {
+        try {
+          await clients.graphs.deleteGraph(graph_uri, { database });
+          return {
+            content: [{
+              type: "text",
+              text: `Graph deleted: ${graph_uri}\nAll triples in the graph have been removed.`,
+            }],
+          };
+        } catch (err) {
+          return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        }
+      }
+    );
+  }
 }
