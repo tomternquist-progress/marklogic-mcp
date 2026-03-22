@@ -57,14 +57,25 @@ const GEO_DOCS = [
 // cts:json-property-pair-geospatial-query works against geospatial-element-pair-index:
 // MarkLogic maps JSON properties to XML elements in its internal index model, so the
 // element-pair index serves both XML element pair queries and JSON property pair queries.
+//
+// After the PUT, we poll until a subsequent GET confirms the index is present.
+// ML applies database property changes asynchronously (sometimes with a brief
+// database restart), so we must not proceed until the change is visible.
 async function addGeoElementPairIndex(base: ReturnType<typeof buildClients>["base"]) {
-  const props = await base.get<Record<string, unknown>>(
+  const getProps = () => base.get<Record<string, unknown>>(
     base.mgmt,
     "/manage/v2/databases/Documents/properties",
     { params: { format: "json" } }
   );
+  const hasIndex = (props: Record<string, unknown>) => {
+    const existing = (props["geospatial-element-pair-index"] as Array<Record<string, unknown>>) ?? [];
+    return existing.some((idx) => idx["parent-localname"] === "location" && idx["latitude-localname"] === "lat");
+  };
+
+  const props = await getProps();
+  if (hasIndex(props)) return; // already configured
+
   const existing = (props["geospatial-element-pair-index"] as Array<Record<string, unknown>>) ?? [];
-  if (existing.some((idx) => idx["parent-localname"] === "location" && idx["latitude-localname"] === "lat")) return;
   await base.put(
     base.mgmt,
     "/manage/v2/databases/Documents/properties",
@@ -86,6 +97,16 @@ async function addGeoElementPairIndex(base: ReturnType<typeof buildClients>["bas
     },
     { params: { format: "json" }, headers: { "Content-Type": "application/json" } }
   );
+
+  // Poll until the GET confirms the index is present (ML applies config asynchronously)
+  for (let i = 0; i < 15; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const updated = await getProps();
+      if (hasIndex(updated)) return;
+    } catch { /* DB may be briefly restarting; keep polling */ }
+  }
+  throw new Error("Timed out waiting for geospatial-element-pair-index on location to appear in database properties");
 }
 
 // XQuery using cts:json-property-pair-geospatial-query (string property names).

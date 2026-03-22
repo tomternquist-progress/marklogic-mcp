@@ -40,16 +40,26 @@ const TIME_DOCS = [
 // Index creation via Management REST API (port 8002).
 // cts:json-property-reference("importedAt", "type=dateTime") in the search options
 // requires a range-element-index with a matching localname — MarkLogic maps JSON
-// property names to XML element names in its index model. The admin XQuery approach
-// silently swallows failures via try/catch; the Management API throws on error.
+// property names to XML element names in its index model.
+//
+// After the PUT, we poll until a subsequent GET confirms the index is present.
+// ML applies database property changes asynchronously (sometimes with a brief
+// database restart), so we must not proceed until the change is visible.
 async function addDateTimeRangeIndex(base: ReturnType<typeof buildClients>["base"]) {
-  const props = await base.get<Record<string, unknown>>(
+  const getProps = () => base.get<Record<string, unknown>>(
     base.mgmt,
     "/manage/v2/databases/Documents/properties",
     { params: { format: "json" } }
   );
+  const hasIndex = (props: Record<string, unknown>) => {
+    const existing = (props["range-element-index"] as Array<Record<string, unknown>>) ?? [];
+    return existing.some((idx) => idx.localname === "importedAt" && idx["scalar-type"] === "dateTime");
+  };
+
+  const props = await getProps();
+  if (hasIndex(props)) return; // already configured
+
   const existing = (props["range-element-index"] as Array<Record<string, unknown>>) ?? [];
-  if (existing.some((idx) => idx.localname === "importedAt" && idx["scalar-type"] === "dateTime")) return;
   await base.put(
     base.mgmt,
     "/manage/v2/databases/Documents/properties",
@@ -68,6 +78,16 @@ async function addDateTimeRangeIndex(base: ReturnType<typeof buildClients>["base
     },
     { params: { format: "json" }, headers: { "Content-Type": "application/json" } }
   );
+
+  // Poll until the GET confirms the index is present (ML applies config asynchronously)
+  for (let i = 0; i < 15; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const updated = await getProps();
+      if (hasIndex(updated)) return;
+    } catch { /* DB may be briefly restarting; keep polling */ }
+  }
+  throw new Error("Timed out waiting for range-element-index on importedAt to appear in database properties");
 }
 
 // Search options with a values spec pointing to the importedAt range index
