@@ -231,7 +231,7 @@ function classify(task: string): ToolRecipe[] {
   // ── Schema / TDE discovery ──────────────────────────────────────────────────
   const isSchemaDiscovery =
     /schema|tde|view|template|what.*fields|what.*columns|structure|discover|indexes?/.test(t) &&
-    !/generate|create|build/.test(t);
+    !/generate|create|build|install|write|store/.test(t);
 
   if (isSchemaDiscovery) {
     results.push({
@@ -250,7 +250,7 @@ function classify(task: string): ToolRecipe[] {
 
   // ── Single document write / TDE install / module install ───────────────────
   const isSingleWrite =
-    /write|insert|create|update|put|store/.test(t) &&
+    /write|insert|create|update|put|store|install/.test(t) &&
     /document|tde|template|module|schema|config/.test(t) &&
     !isBulkImport;
 
