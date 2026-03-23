@@ -6,15 +6,20 @@ services:
     image: progressofficial/marklogic-db:latest
     container_name: marklogic
     ports:
-      - "8000:8000"   # REST API
+      - "8000:8000"   # REST API / default App Server
       - "8001:8001"   # Admin UI
       - "8002:8002"   # Management API
+      - "8020:8020"   # DHF STAGING app server (mlStagingPort)
+      - "8021:8021"   # DHF FINAL app server (mlFinalPort)
+      - "8022:8022"   # DHF JOBS app server (mlJobsPort)
     environment:
       - MARKLOGIC_INIT=true
       - MARKLOGIC_ADMIN_USERNAME=admin
       - MARKLOGIC_ADMIN_PASSWORD=admin
     volumes:
       - ml-data:/var/opt/MarkLogic
+      # Mount sandbox data dir at same path so DHF ingestion steps can read input files
+      - /home/tom/marklogic-sandbox/data:/home/tom/marklogic-sandbox/data:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "-u", "admin:admin", "http://localhost:8002/manage/v2"]
       interval: 15s

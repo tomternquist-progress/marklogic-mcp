@@ -105,6 +105,32 @@ export const SemaphoreConfigSchema = z.object({
 
 export type SemaphoreConfig = z.infer<typeof SemaphoreConfigSchema>;
 
+export const DhfConfigSchema = z.object({
+  /**
+   * Absolute path to the DHF client JAR (ML_DHF_CLIENT_JAR).
+   * When set, enables the dhf_flow_run_jar tool for large-scale flow execution
+   * without using MarkLogic eval. The Docker image pre-bundles the JAR at
+   * /app/marklogic-data-hub-client.jar and sets this env var automatically.
+   */
+  clientJarPath: z.preprocess(val => (val === "" ? undefined : val), z.string().optional()),
+  /**
+   * DHF staging app server port (ML_DHF_PORT).
+   * Defaults to ML_PORT. Set this explicitly when your DHF staging server runs
+   * on a different port from the main MarkLogic REST endpoint (e.g. 8010).
+   */
+  port: z.coerce.number().int().min(1).max(65535).optional(),
+  /**
+   * DHF jobs app server port (ML_DHF_JOBS_PORT).
+   * Used by dhf_flow_run_jar to pass -PmlJobPort to the client JAR.
+   * When omitted, defaults to the staging port + 2 (the standard DHF on-premise
+   * offset, e.g. staging=8020 → jobs=8022). Set explicitly for DHS or
+   * non-standard port layouts.
+   */
+  jobsPort: z.coerce.number().int().min(1).max(65535).optional(),
+});
+
+export type DhfConfig = z.infer<typeof DhfConfigSchema>;
+
 export const AppConfigSchema = z.object({
   transport: z.enum(["stdio", "http"]).default("stdio"),
   connection: ConnectionConfigSchema,
@@ -117,6 +143,7 @@ export const AppConfigSchema = z.object({
   }),
   flux: FluxConfigSchema,
   semaphore: SemaphoreConfigSchema,
+  dhf: DhfConfigSchema,
 }).superRefine((data, ctx) => {
   if (data.connection.authType === "oauth" && data.transport === "stdio" && !data.connection.staticOauthToken) {
     ctx.addIssue({

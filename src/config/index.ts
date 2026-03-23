@@ -38,6 +38,11 @@ export function loadConfig(): AppConfig {
     flux: {
       runnerUrl: process.env.FLUX_RUNNER_URL,
     },
+    dhf: {
+      clientJarPath: process.env.ML_DHF_CLIENT_JAR,
+      port: process.env.ML_DHF_PORT,
+      jobsPort: process.env.ML_DHF_JOBS_PORT,
+    },
     semaphore: {
       host: process.env.SEMAPHORE_HOST,
       scsPort: process.env.SEMAPHORE_SCS_PORT,

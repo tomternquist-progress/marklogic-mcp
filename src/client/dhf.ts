@@ -32,6 +32,7 @@ export const DHF_STAGING_DB = "data-hub-STAGING";
 export const DHF_FINAL_DB = "data-hub-FINAL";
 export const DHF_JOBS_DB = "data-hub-JOBS";
 export const DHF_FLOW_COLLECTION = "http://marklogic.com/data-hub/flow";
+export const DHF_MODULES_DB = "data-hub-MODULES";
 
 export interface FlowStepDef {
   stepId: string;
@@ -68,6 +69,23 @@ export interface StepResult {
   [key: string]: unknown;
 }
 
+/**
+ * Batch-level error record stored in data-hub-JOBS at /jobs/batches/<batchId>.json.
+ * Each batch processes a subset of URIs for one step; failed batches contain
+ * per-URI error details that the top-level job stepResults do not expose.
+ */
+export interface BatchDoc {
+  batchId?: string;
+  jobId?: string;
+  stepName?: string;
+  stepDefinitionType?: string;
+  batchStatus?: string;
+  urisLoadedSuccessfully?: string[];
+  urisFailed?: string[];
+  errorMessages?: string[];
+  [key: string]: unknown;
+}
+
 export interface JobDoc {
   jobId: string;
   flow: string;
@@ -78,6 +96,8 @@ export interface JobDoc {
   stepResults?: Record<string, StepResult>;
   lastAttemptedStep?: string;
   lastCompletedStep?: string;
+  /** Populated by getJobStatus() when there are failures — batch-level error details. */
+  batchErrors?: BatchDoc[];
 }
 
 export interface DhfDetectResult {
@@ -85,6 +105,8 @@ export interface DhfDetectResult {
   foundDatabases: string[];
   missingDatabases: string[];
   version?: string;
+  /** Whether the data-hub-MODULES database exists (indicates DHF modules are deployed). */
+  modulesDbFound?: boolean;
 }
 
 export class DhfClient {
@@ -106,9 +128,10 @@ export class DhfClient {
     const expectedDbs = [DHF_STAGING_DB, DHF_FINAL_DB, DHF_JOBS_DB];
     const foundDatabases = expectedDbs.filter((db) => dbNames.includes(db));
     const missingDatabases = expectedDbs.filter((db) => !dbNames.includes(db));
+    const modulesDbFound = dbNames.includes(DHF_MODULES_DB);
 
     if (foundDatabases.length === 0) {
-      return { installed: false, foundDatabases: [], missingDatabases: expectedDbs };
+      return { installed: false, foundDatabases: [], missingDatabases: expectedDbs, modulesDbFound };
     }
 
     // Try to read the DHF version from the hub-properties config document.
@@ -137,6 +160,7 @@ export class DhfClient {
       foundDatabases,
       missingDatabases,
       version,
+      modulesDbFound,
     };
   }
 
@@ -203,13 +227,15 @@ export class DhfClient {
   ): Promise<string> {
     // DHF 5.8.x flow execution via impl/flow.sjs.
     //
-    // The DHF 5.8 API:
-    //   • Flow class (impl/flow.sjs) provides findMatchingContent() + runFlow()
-    //   • Job class (flow/job.sjs) handles job lifecycle
-    //   • Steps are run sequentially; each step queries its own sourceQuery
+    // Execution model:
+    //   1. Validate the flow exists (fail fast)
+    //   2. Create a job record synchronously (caller gets jobId immediately)
+    //   3. Spawn step execution as a background task via xdmp.spawnFunction()
+    //      — this avoids eval timeouts on large datasets
+    //   4. The spawned task updates the job status when all steps finish
     //
-    // This eval runs synchronously (suitable for moderate document counts).
-    // For very large batches, prefer running via Gradle hubRunFlow.
+    // For very large batches (thousands of docs per step), prefer running via
+    // the DHF client JAR or Gradle hubRunFlow which supports parallel batching.
     const code = `
 'use strict';
 declareUpdate();
@@ -220,27 +246,55 @@ var runtimeOptions = external.runtimeOptions || {};
 const Flow = require('/data-hub/5/impl/flow.sjs');
 const Job  = require('/data-hub/5/flow/job.sjs');
 
-// Create and persist the job
+// Validate flow exists before spawning (fail fast, avoids orphaned job records)
+var checkFlow = new Flow();
+var flowDef = checkFlow.getFlow(flowName);
+if (!flowDef) { throw new Error('Flow not found: ' + flowName); }
+var allSteps = Object.keys(flowDef.steps || {}).sort();
+var stepsToRun = (stepNumbers && stepNumbers.length > 0) ? stepNumbers : allSteps;
+
+// Create job record synchronously so the caller gets a valid jobId immediately
 var jobObj = Job.newJob(flowName, null);
 jobObj.create();
 var jobId = jobObj.jobId;
 
-var flowInst = new Flow();
-var flowDef  = flowInst.getFlow(flowName);
-if (!flowDef) { throw new Error('Flow not found: ' + flowName); }
+// Spawn step execution as a background task — avoids eval timeouts on large datasets
+xdmp.spawnFunction(function() {
+  'use strict';
+  declareUpdate();
+  var Flow = require('/data-hub/5/impl/flow.sjs');
+  var runner = new Flow();
+  var finalStatus = 'finished';
+  for (var i = 0; i < stepsToRun.length; i++) {
+    try {
+      var content = runner.findMatchingContent(flowName, stepsToRun[i], runtimeOptions);
+      runner.runFlow(flowName, jobId, content, runtimeOptions, stepsToRun[i]);
+    } catch (e) {
+      finalStatus = 'finished_with_errors';
+    }
+  }
+  // Update top-level job status in the JOBS database once all steps finish.
+  // Uses invokeFunction so the write targets data-hub-JOBS, not STAGING.
+  var capturedJobId = jobId;
+  var capturedStatus = finalStatus;
+  xdmp.invokeFunction(function() {
+    'use strict';
+    declareUpdate();
+    var uri = '/jobs/' + capturedJobId + '.json';
+    var raw = cts.doc(uri);
+    if (raw) {
+      var n = raw.toObject();
+      var j = (n.job !== undefined) ? n.job : n;
+      j.jobStatus = capturedStatus;
+      j.timeEnded = new Date().toISOString();
+      xdmp.documentInsert(uri, n,
+        xdmp.documentGetPermissions(uri),
+        xdmp.documentGetCollections(uri));
+    }
+  }, { database: xdmp.database('data-hub-JOBS') });
+}, { database: xdmp.database(), modules: xdmp.modulesDatabase() });
 
-var allSteps = Object.keys(flowDef.steps || {}).sort();
-var stepsToRun = (stepNumbers && stepNumbers.length > 0) ? stepNumbers : allSteps;
-
-for (var si = 0; si < stepsToRun.length; si++) {
-  var stepNum = stepsToRun[si];
-  var content = flowInst.findMatchingContent(flowName, stepNum, runtimeOptions);
-  flowInst.runFlow(flowName, jobId, content, runtimeOptions, stepNum);
-}
-
-// Finish the job
-jobObj.finishJob('finished', new Date().toISOString(), []);
-xdmp.toJsonString({jobId: jobId, flow: flowName, steps: stepsToRun});
+xdmp.toJsonString({ jobId: jobId, flow: flowName, steps: stepsToRun });
 `.trim();
 
     const vars: Record<string, unknown> = {
@@ -276,6 +330,10 @@ xdmp.toJsonString({jobId: jobId, flow: flowName, steps: stepsToRun});
   /**
    * Get the status of a specific job from the data-hub-JOBS database.
    * Job documents are stored at /jobs/<jobId>.json.
+   *
+   * For failed/errored jobs, also fetches batch-level error documents from
+   * /jobs/batches/<batchId>.json which contain per-URI failure details that
+   * the top-level stepResults do not expose.
    */
   async getJobStatus(jobId: string): Promise<JobDoc> {
     // Try the standard URI pattern first, then an alternate pattern.
@@ -285,13 +343,71 @@ xdmp.toJsonString({jobId: jobId, flow: flowName, steps: stepsToRun});
         const doc = await this.documents.get(uri, DHF_JOBS_DB);
         const content = doc.content as Record<string, unknown>;
         // In some DHF versions the job is nested under a "job" property
-        return (content?.job as JobDoc | undefined) ?? (content as unknown as JobDoc);
+        const job = (content?.job as JobDoc | undefined) ?? (content as unknown as JobDoc);
+
+        // Augment with batch-level error details when the job had failures
+        if (job.jobStatus && job.jobStatus !== "finished") {
+          const batchErrors = await this.getBatchErrors(jobId);
+          if (batchErrors.length > 0) {
+            job.batchErrors = batchErrors;
+          }
+        }
+
+        return job;
       } catch (err) {
         if (err instanceof NotFoundError) continue;
         throw err;
       }
     }
     throw new NotFoundError(`/jobs/${jobId}.json`);
+  }
+
+  /**
+   * Fetch batch-level error documents for a job from data-hub-JOBS.
+   *
+   * DHF stores batch records at /jobs/batches/<batchId>.json with a jobId
+   * property linking them to the parent job. Failed batches contain per-URI
+   * error details (urisFailed, errorMessages) that are not surfaced in the
+   * top-level job stepResults.
+   *
+   * Returns only failed batches (batchStatus="failed" or urisFailed non-empty).
+   */
+  private async getBatchErrors(jobId: string): Promise<BatchDoc[]> {
+    try {
+      const response = await this.search.search({
+        database: DHF_JOBS_DB,
+        structuredQuery: {
+          query: {
+            "value-query": {
+              "json-property": "jobId",
+              text: [jobId],
+            },
+          },
+        },
+        pageLength: 100,
+        format: "json",
+      });
+
+      const batches: BatchDoc[] = [];
+      for (const result of response.results) {
+        // Only process batch documents, not the job doc itself
+        if (!result.uri.includes("/batches/")) continue;
+        try {
+          const doc = await this.documents.get(result.uri, DHF_JOBS_DB);
+          const content = doc.content as BatchDoc;
+          // Only include batches that actually failed
+          if (content.batchStatus === "failed" || (content.urisFailed && content.urisFailed.length > 0)) {
+            batches.push(content);
+          }
+        } catch {
+          // Skip unreadable batch docs
+        }
+      }
+      return batches;
+    } catch {
+      // Best-effort: don't fail getJobStatus if batch query fails
+      return [];
+    }
   }
 
   /**

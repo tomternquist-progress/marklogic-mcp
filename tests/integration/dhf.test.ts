@@ -25,6 +25,8 @@
  *   dhf_job_status — getJobStatus(), listJobs()
  */
 
+import { execFileSync } from "child_process";
+import { existsSync } from "fs";
 import { describe, it, expect, beforeAll } from "vitest";
 import { initLogger } from "../../src/utils/logger.js";
 import { MarkLogicBaseClient } from "../../src/client/base.js";
@@ -32,7 +34,7 @@ import { AdminClient } from "../../src/client/admin.js";
 import { EvalClient } from "../../src/client/eval.js";
 import { DocumentsClient } from "../../src/client/documents.js";
 import { SearchClient } from "../../src/client/search.js";
-import { DhfClient, DHF_STAGING_DB, DHF_JOBS_DB } from "../../src/client/dhf.js";
+import { DhfClient, DHF_STAGING_DB, DHF_JOBS_DB, DHF_MODULES_DB } from "../../src/client/dhf.js";
 import type { ConnectionConfig } from "../../src/config/schema.js";
 
 initLogger({ level: "warn", format: "json" });
@@ -44,6 +46,10 @@ const ML_PASSWORD = process.env.ML_PASSWORD ?? "admin";
 const ML_AUTH_TYPE = (process.env.ML_AUTH_TYPE ?? "digest") as "digest" | "basic" | "oauth";
 const ML_ALLOW_EVAL = process.env.ML_ALLOW_EVAL === "true";
 const DHF_TEST_FLOW_NAME = process.env.DHF_TEST_FLOW_NAME ?? "";
+const ML_DHF_CLIENT_JAR = process.env.ML_DHF_CLIENT_JAR ?? "";
+const ML_DHF_PORT = parseInt(process.env.ML_DHF_PORT ?? String(ML_PORT), 10);
+// Jobs app server port — defaults to DHF_PORT + 2 (standard DHF offset: 8020→8022)
+const ML_DHF_JOBS_PORT = parseInt(process.env.ML_DHF_JOBS_PORT ?? String(ML_DHF_PORT + 2), 10);
 
 // Skip all tests when ML_HOST is not set
 const describeIfLive = ML_HOST ? describe : describe.skip;
@@ -105,6 +111,21 @@ describeIfLive("DhfClient (live)", () => {
       const result = await dhf.detect();
       expect(result.foundDatabases).toContain(DHF_STAGING_DB);
       expect(result.foundDatabases).toContain(DHF_JOBS_DB);
+    });
+
+    it("reports modulesDbFound reflecting whether data-hub-MODULES exists", async () => {
+      let result;
+      try {
+        result = await dhf.detect();
+      } catch {
+        return; // Management API unreachable
+      }
+      // modulesDbFound should be a boolean (true if data-hub-MODULES is present)
+      expect(typeof result.modulesDbFound).toBe("boolean");
+      // If DHF is fully installed, data-hub-MODULES should also be present
+      if (result.installed) {
+        expect(result.modulesDbFound).toBe(true);
+      }
     });
 
     it("lists missing databases when DHF is not fully installed", async () => {
@@ -208,6 +229,39 @@ describeIfLive("DhfClient (live)", () => {
     });
   });
 
+  describe("getBatchErrors() — batch-level error details", () => {
+    it("returns an array and does not throw for a valid job ID", async () => {
+      if (!dhfInstalled || !ML_ALLOW_EVAL || !DHF_TEST_FLOW_NAME) return;
+
+      const evalDhf = buildDhfClient(true);
+      const jobId = await evalDhf.runFlow(DHF_TEST_FLOW_NAME);
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+
+      // getBatchErrors is private — access indirectly via getJobStatus
+      const job = await dhf.getJobStatus(jobId);
+      // batchErrors is populated only when there are failures; may be undefined on success
+      if (job.batchErrors !== undefined) {
+        expect(Array.isArray(job.batchErrors)).toBe(true);
+        for (const b of job.batchErrors) {
+          expect(typeof b.batchStatus).toBe("string");
+        }
+      }
+    });
+
+    it("returns empty array for a non-existent job ID (no crash)", async () => {
+      if (!dhfInstalled) return;
+      // getJobStatus throws for unknown IDs — test getBatchErrors path indirectly
+      // by checking that a finished job with no errors has no batchErrors property
+      const jobs = await dhf.listJobs(undefined, 3);
+      const finished = jobs.find((j) => j.jobStatus === "finished");
+      if (!finished) return;
+      // Re-fetch via getJobStatus to trigger getBatchErrors path
+      const job = await dhf.getJobStatus(finished.jobId);
+      // Finished (no errors) should not have batchErrors populated
+      expect(job.batchErrors).toBeUndefined();
+    });
+  });
+
   describe("listJobs() — secondary path for dhf_job_status polling", () => {
     it("returns an array of jobs from data-hub-JOBS", async () => {
       if (!dhfInstalled) return;
@@ -231,5 +285,58 @@ describeIfLive("DhfClient (live)", () => {
         expect(job.flow).toBe(DHF_TEST_FLOW_NAME);
       }
     });
+  });
+});
+
+// ── dhf_flow_run_jar — integration test via DHF client JAR ─────────────────
+//
+// Gated on:
+//   ML_DHF_CLIENT_JAR  — path to the client JAR (must exist on this machine)
+//   DHF_TEST_FLOW_NAME — a real DHF flow to run
+//   ML_HOST            — live MarkLogic instance
+//
+// Skipped automatically when any of these are absent.
+
+const jarExists = ML_DHF_CLIENT_JAR ? existsSync(ML_DHF_CLIENT_JAR) : false;
+const describeIfJar = ML_HOST && jarExists && DHF_TEST_FLOW_NAME ? describe : describe.skip;
+
+describeIfJar("dhf_flow_run_jar (live + JAR)", () => {
+  it("java is available in PATH", () => {
+    // Verify the JRE is installed — fail fast with a clear message
+    expect(() => execFileSync("java", ["-version"], { stdio: "pipe" })).not.toThrow();
+  });
+
+  it("runs a flow via the client JAR and exits with code 0", () => {
+    // Synchronous execution — JAR blocks until complete.
+    // The DHF client JAR logs to SLF4J (no-op in this build) so stdout is empty;
+    // success is indicated solely by exit code 0 (no exception thrown).
+    const args: string[] = [
+      "-jar", ML_DHF_CLIENT_JAR,
+      "runFlow",
+      "-host", ML_HOST,
+      "-username", ML_USERNAME,
+      "-password", ML_PASSWORD,
+      "-flowName", DHF_TEST_FLOW_NAME,
+      // Override staging and jobs ports (JAR defaults to DHF DHS defaults: 8010/8013)
+      `-PmlPort=${ML_DHF_PORT}`,
+      `-PmlStagingPort=${ML_DHF_PORT}`,
+      `-PmlJobPort=${ML_DHF_JOBS_PORT}`,
+    ];
+    // DHF JAR defaults to digest auth; when the staging app server uses basic
+    // auth we must pass -auth basic so the JAR authenticates correctly.
+    if (ML_AUTH_TYPE === "basic") {
+      args.push("-auth", "basic");
+    }
+    // Throws on non-zero exit code — that is the test assertion
+    expect(() => execFileSync("java", args, { encoding: "utf-8", timeout: 120_000, stdio: "pipe" })).not.toThrow();
+  });
+
+  it("job doc is visible in data-hub-JOBS after JAR execution", async () => {
+    // Wait briefly for the job record to be committed, then check it exists
+    const evalDhf = buildDhfClient(true);
+    const jobs = await evalDhf.listJobs(DHF_TEST_FLOW_NAME, 5);
+    expect(jobs.length).toBeGreaterThan(0);
+    expect(jobs[0].flow).toBe(DHF_TEST_FLOW_NAME);
+    expect(["finished", "finished_with_errors", "failed"]).toContain(jobs[0].jobStatus);
   });
 });

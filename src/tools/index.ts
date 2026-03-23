@@ -34,5 +34,5 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerExtensionTools(server, clients, config.safety.readonly);
   registerSecurityTools(server, clients);
   registerPerformanceTools(server, clients, config.safety.allowEval);
-  registerDhfTools(server, clients, config.safety.allowEval, config.safety.readonly);
+  registerDhfTools(server, clients, config.safety.allowEval, config.safety.readonly, config.dhf, config.connection);
 }

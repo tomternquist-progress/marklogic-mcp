@@ -1,4 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { EventEmitter } from "events";
+
+// Mock child_process before any module that imports it is loaded.
+// vi.mock is hoisted by vitest so this runs before all imports.
+vi.mock("child_process", () => ({ spawn: vi.fn() }));
+
+import { spawn } from "child_process";
 import { registerDhfTools } from "../../src/tools/dhf.js";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
@@ -33,6 +40,47 @@ function createMockDhfClient() {
   };
 }
 
+/**
+ * Create a fake ChildProcess that emits stdout data, then closes.
+ * Pass exitCode != 0 to simulate failure; pass errorEvent to simulate spawn failure (e.g. ENOENT).
+ */
+function makeFakeChild(exitCode: number, stdout: string, stderr = "", errorEvent?: NodeJS.ErrnoException) {
+  const child = new EventEmitter() as NodeJS.EventEmitter & {
+    stdout: EventEmitter;
+    stderr: EventEmitter;
+    kill: ReturnType<typeof vi.fn>;
+  };
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.kill = vi.fn();
+
+  setImmediate(() => {
+    if (errorEvent) {
+      child.emit("error", errorEvent);
+      return;
+    }
+    if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+    if (stderr) child.stderr.emit("data", Buffer.from(stderr));
+    child.emit("close", exitCode);
+  });
+
+  return child;
+}
+
+const FAKE_JAR_PATH = "/app/marklogic-data-hub-client.jar";
+const FAKE_CONNECTION = {
+  host: "localhost",
+  port: 8010,
+  managementPort: 8002,
+  username: "admin",
+  password: "admin",
+  database: "Documents",
+  ssl: false,
+  rejectUnauthorized: true,
+  authType: "digest" as const,
+  timeoutMs: 30_000,
+};
+
 // ─── Tool registration ──────────────────────────────────────────────────────
 
 describe("registerDhfTools – tool registration", () => {
@@ -44,6 +92,7 @@ describe("registerDhfTools – tool registration", () => {
     expect(tools.has("dhf_flows_list")).toBe(true);
     expect(tools.has("dhf_job_status")).toBe(true);
     expect(tools.has("dhf_flow_run")).toBe(false);
+    expect(tools.has("dhf_flow_run_jar")).toBe(false);
     expect(tools.size).toBe(3);
   });
 
@@ -52,10 +101,11 @@ describe("registerDhfTools – tool registration", () => {
     registerDhfTools(server as never, createMockDhfClient() as never, true, true);
 
     expect(tools.has("dhf_flow_run")).toBe(false);
+    expect(tools.has("dhf_flow_run_jar")).toBe(false);
     expect(tools.size).toBe(3);
   });
 
-  it("registers all 4 tools when allowEval=true and readonly=false", () => {
+  it("registers all 4 tools when allowEval=true and readonly=false (no JAR configured)", () => {
     const { server, tools } = createMockServer();
     registerDhfTools(server as never, createMockDhfClient() as never, true, false);
 
@@ -63,7 +113,43 @@ describe("registerDhfTools – tool registration", () => {
     expect(tools.has("dhf_flows_list")).toBe(true);
     expect(tools.has("dhf_flow_run")).toBe(true);
     expect(tools.has("dhf_job_status")).toBe(true);
+    expect(tools.has("dhf_flow_run_jar")).toBe(false);
     expect(tools.size).toBe(4);
+  });
+
+  it("registers dhf_flow_run_jar when clientJarPath is set and readonly=false", () => {
+    const { server, tools } = createMockServer();
+    registerDhfTools(
+      server as never, createMockDhfClient() as never,
+      false, false,
+      { clientJarPath: FAKE_JAR_PATH }, FAKE_CONNECTION as never
+    );
+    expect(tools.has("dhf_flow_run_jar")).toBe(true);
+  });
+
+  it("does not register dhf_flow_run_jar when readonly=true even if clientJarPath is set", () => {
+    const { server, tools } = createMockServer();
+    registerDhfTools(
+      server as never, createMockDhfClient() as never,
+      true, true,
+      { clientJarPath: FAKE_JAR_PATH }, FAKE_CONNECTION as never
+    );
+    expect(tools.has("dhf_flow_run_jar")).toBe(false);
+  });
+
+  it("registers 5 tools when allowEval=true, readonly=false, and clientJarPath is set", () => {
+    const { server, tools } = createMockServer();
+    registerDhfTools(
+      server as never, createMockDhfClient() as never,
+      true, false,
+      { clientJarPath: FAKE_JAR_PATH }, FAKE_CONNECTION as never
+    );
+    expect(tools.has("dhf_status")).toBe(true);
+    expect(tools.has("dhf_flows_list")).toBe(true);
+    expect(tools.has("dhf_flow_run")).toBe(true);
+    expect(tools.has("dhf_job_status")).toBe(true);
+    expect(tools.has("dhf_flow_run_jar")).toBe(true);
+    expect(tools.size).toBe(5);
   });
 });
 
@@ -92,6 +178,29 @@ describe("dhf_status handler", () => {
     expect(result.content[0].text).toContain("DHF 5.x is installed");
     expect(result.content[0].text).toContain("5.8.1");
     expect(result.content[0].text).toContain("data-hub-STAGING");
+  });
+
+  it("shows data-hub-MODULES found when modulesDbFound=true", async () => {
+    clients.dhf.detect.mockResolvedValue({
+      installed: true,
+      foundDatabases: ["data-hub-STAGING", "data-hub-FINAL", "data-hub-JOBS"],
+      missingDatabases: [],
+      modulesDbFound: true,
+    });
+    const result = await tools.get("dhf_status")!({});
+    expect(result.content[0].text).toContain("data-hub-MODULES: found");
+  });
+
+  it("shows data-hub-MODULES NOT FOUND when modulesDbFound=false", async () => {
+    clients.dhf.detect.mockResolvedValue({
+      installed: true,
+      foundDatabases: ["data-hub-STAGING", "data-hub-FINAL", "data-hub-JOBS"],
+      missingDatabases: [],
+      modulesDbFound: false,
+    });
+    const result = await tools.get("dhf_status")!({});
+    expect(result.content[0].text).toContain("NOT FOUND");
+    expect(result.content[0].text).toContain("gradle hubDeploy");
   });
 
   it("returns error with missing databases when DHF is not installed", async () => {
@@ -409,5 +518,142 @@ describe("dhf_job_status handler", () => {
     const result = await tools.get("dhf_job_status")!({ job_id: "unknown-job" });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("not found");
+  });
+
+  it("displays Failed Batches section when batchErrors are present", async () => {
+    const jobWithBatchErrors = {
+      ...sampleJob,
+      jobStatus: "finished_with_errors",
+      batchErrors: [
+        {
+          batchId: "batch-001",
+          stepName: "CustomerMap",
+          batchStatus: "failed",
+          urisFailed: ["/raw/customer-42.json", "/raw/customer-99.json"],
+          errorMessages: ["XSLT transform failed: missing required field 'id'"],
+        },
+      ],
+    };
+    clients.dhf.getJobStatus.mockResolvedValue(jobWithBatchErrors);
+    const result = await tools.get("dhf_job_status")!({ job_id: "job-abc-123" });
+    const text = result.content[0].text;
+    expect(text).toContain("Failed Batches");
+    expect(text).toContain("batch-001");
+    expect(text).toContain("CustomerMap");
+    expect(text).toContain("/raw/customer-42.json");
+    expect(text).toContain("XSLT transform failed");
+  });
+
+  it("truncates failed URIs beyond 5 in a batch", async () => {
+    const manyUris = Array.from({ length: 8 }, (_, i) => `/raw/doc-${i}.json`);
+    const jobWithManyUris = {
+      ...sampleJob,
+      jobStatus: "finished_with_errors",
+      batchErrors: [{
+        batchId: "batch-002",
+        batchStatus: "failed",
+        urisFailed: manyUris,
+      }],
+    };
+    clients.dhf.getJobStatus.mockResolvedValue(jobWithManyUris);
+    const result = await tools.get("dhf_job_status")!({ job_id: "job-abc-123" });
+    const text = result.content[0].text;
+    expect(text).toContain("/raw/doc-4.json");
+    expect(text).toContain("3 more");
+    expect(text).not.toContain("/raw/doc-5.json");
+  });
+
+  it("does not show Failed Batches section when batchErrors is empty", async () => {
+    clients.dhf.getJobStatus.mockResolvedValue(sampleJob);
+    const result = await tools.get("dhf_job_status")!({ job_id: "job-abc-123" });
+    expect(result.content[0].text).not.toContain("Failed Batches");
+  });
+});
+
+// ─── dhf_flow_run_jar ──────────────────────────────────────────────────────
+
+describe("dhf_flow_run_jar handler", () => {
+  let tools: Map<string, ToolHandler>;
+  const mockSpawn = vi.mocked(spawn);
+
+  beforeEach(() => {
+    mockSpawn.mockReset();
+    const mock = createMockServer();
+    registerDhfTools(
+      mock.server as never,
+      createMockDhfClient() as never,
+      false, false,
+      { clientJarPath: FAKE_JAR_PATH },
+      FAKE_CONNECTION as never
+    );
+    tools = mock.tools;
+  });
+
+  it("spawns java with correct base args", async () => {
+    mockSpawn.mockReturnValue(makeFakeChild(0, "Flow completed. Job ID: abc-123") as never);
+    await tools.get("dhf_flow_run_jar")!({ flow_name: "CustomerFlow" });
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "java",
+      expect.arrayContaining([
+        "-jar", FAKE_JAR_PATH,
+        "runFlow",
+        "-host", "localhost",
+        "-username", "admin",
+        "-password", "admin",
+        "-flowName", "CustomerFlow",
+      ]),
+      expect.anything()
+    );
+  });
+
+  it("includes -steps arg when step_numbers are provided", async () => {
+    mockSpawn.mockReturnValue(makeFakeChild(0, "Done") as never);
+    await tools.get("dhf_flow_run_jar")!({ flow_name: "CustomerFlow", step_numbers: ["2", "3"] });
+
+    expect(mockSpawn).toHaveBeenCalledWith(
+      "java",
+      expect.arrayContaining(["-steps", "2,3"]),
+      expect.anything()
+    );
+  });
+
+  it("returns success output from stdout", async () => {
+    mockSpawn.mockReturnValue(
+      makeFakeChild(0, "Running flow: CustomerFlow\nStatus: finished\nDocuments processed: 500") as never
+    );
+    const result = await tools.get("dhf_flow_run_jar")!({ flow_name: "CustomerFlow" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("CustomerFlow");
+    expect(result.content[0].text).toContain("Documents processed: 500");
+  });
+
+  it("returns isError when JAR exits with non-zero code", async () => {
+    mockSpawn.mockReturnValue(
+      makeFakeChild(1, "", "Error: Flow not found: BadFlow") as never
+    );
+    const result = await tools.get("dhf_flow_run_jar")!({ flow_name: "BadFlow" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("exited with code 1");
+    expect(result.content[0].text).toContain("Flow not found");
+  });
+
+  it("returns isError with java-not-found hint when spawn emits ENOENT", async () => {
+    const enoent = Object.assign(new Error("spawn java ENOENT"), { code: "ENOENT" }) as NodeJS.ErrnoException;
+    mockSpawn.mockReturnValue(makeFakeChild(0, "", "", enoent) as never);
+    const result = await tools.get("dhf_flow_run_jar")!({ flow_name: "CustomerFlow" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("java executable not found");
+    expect(result.content[0].text).toContain(FAKE_JAR_PATH);
+  });
+
+  it("includes port override args including mlJobPort defaulting to staging+2", async () => {
+    mockSpawn.mockReturnValue(makeFakeChild(0, "Done") as never);
+    await tools.get("dhf_flow_run_jar")!({ flow_name: "CustomerFlow" });
+    const args = mockSpawn.mock.calls[0][1] as string[];
+    expect(args.some((a) => a.includes("mlStagingPort=8010"))).toBe(true);
+    expect(args.some((a) => a.includes("mlPort=8010"))).toBe(true);
+    // Jobs port defaults to staging+2 (8010+2 = 8012) when dhfJobsPort not set
+    expect(args.some((a) => a.includes("mlJobPort=8012"))).toBe(true);
   });
 });

@@ -292,6 +292,7 @@ describe("AppConfigSchema", () => {
     aws: {},
     flux: {},
     semaphore: {},
+    dhf: {},
   };
 
   it("accepts a complete valid config", () => {

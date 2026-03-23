@@ -17,17 +17,21 @@
  *   for completion. Typical poll interval: 5–30 seconds for small flows.
  */
 
+import { spawn } from "child_process";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 import { toToolError } from "../utils/errors.js";
 import type { FlowDoc, FlowStepDef, JobDoc, StepResult } from "../client/dhf.js";
+import type { ConnectionConfig, DhfConfig } from "../config/schema.js";
 
 export function registerDhfTools(
   server: McpServer,
   clients: MarkLogicClients,
   allowEval: boolean,
-  readonly: boolean
+  readonly: boolean,
+  dhfConfig: DhfConfig = {},
+  connection: ConnectionConfig = {} as ConnectionConfig
 ): void {
   const { dhf } = clients;
 
@@ -64,13 +68,17 @@ export function registerDhfTools(
           };
         }
         const versionStr = result.version ? `DHF version: ${result.version}` : "DHF version: unknown (config document not found)";
+        const modulesNote = result.modulesDbFound
+          ? `data-hub-MODULES: found\n`
+          : `data-hub-MODULES: NOT FOUND — DHF modules may not be deployed; run 'gradle hubDeploy'\n`;
         return {
           content: [{
             type: "text" as const,
             text:
               `DHF 5.x is installed.\n\n` +
               `${versionStr}\n` +
-              `Databases found: ${result.foundDatabases.join(", ")}\n\n` +
+              `Databases found: ${result.foundDatabases.join(", ")}\n` +
+              `${modulesNote}\n` +
               `dhf_flow_run available: ${allowEval && !readonly ? "yes" : "no (requires ML_ALLOW_EVAL=true and ML_READONLY=false)"}`,
           }],
         };
@@ -133,17 +141,25 @@ export function registerDhfTools(
     server.tool(
       "dhf_flow_run",
       "Run a Data Hub Framework (DHF) 5.x flow (or specific steps of a flow).\n\n" +
-      "IMPORTANT — ASYNC EXECUTION:\n" +
-      "  This tool returns a job ID immediately. The actual step processing runs " +
-      "asynchronously in MarkLogic background tasks. Use dhf_job_status with the " +
-      "returned job ID to monitor progress and check for errors.\n\n" +
-      "  Typical poll strategy: wait 5–10 seconds, then call dhf_job_status repeatedly " +
-      "until jobStatus is 'finished', 'failed', or 'finished_with_errors'.\n\n" +
-      "PREREQUISITES:\n" +
-      "  • DHF 5.x must be installed (run dhf_status to confirm)\n" +
+      "EXECUTION MODEL:\n" +
+      "  Returns a job ID immediately. Steps run as a background task via\n" +
+      "  xdmp.spawnFunction() — avoids eval timeouts on large datasets.\n" +
+      "  Poll dhf_job_status every 5–30 seconds until jobStatus is\n" +
+      "  'finished', 'finished_with_errors', or 'failed'.\n\n" +
+      "  For very large datasets (thousands of docs per step), prefer the\n" +
+      "  DHF client JAR or Gradle hubRunFlow which support parallel batching.\n\n" +
+      "PREREQUISITES (run dhf_status first to check databases):\n" +
+      "  • DHF 5.x installed: data-hub-STAGING, data-hub-FINAL, data-hub-JOBS, data-hub-MODULES\n" +
       "  • Flow must exist in data-hub-STAGING (run dhf_flows_list to confirm)\n" +
-      "  • For ingestion steps: inputFilePath must be accessible by MarkLogic\n" +
-      "  • For mapping/mastering: source documents must already be in staging\n\n" +
+      "  • Steps must be in data-hub-STAGING with collection http://marklogic.com/data-hub/steps\n" +
+      "    (not http://marklogic.com/data-hub/STEP_DEFINITION — deploy via gradle hubDeployArtifacts)\n" +
+      "  • For ingestion: inputFilePath must be accessible by the MarkLogic server process\n" +
+      "  • For mapping: compiled XSLT must be in Modules DB at\n" +
+      "    /mappings/<Name>/<Name>-<v>.mapping.xml.xslt (generated from mapping artifact)\n" +
+      "  • For mastering: entity model must be in data-hub-FINAL with collection\n" +
+      "    http://marklogic.com/entity-services/models and triple indexing enabled\n" +
+      "  • ~17 DHF security roles required (data-hub-common, data-hub-operator,\n" +
+      "    data-hub-developer, data-hub-ingestion-reader/writer, etc.)\n\n" +
       "Requires: ML_ALLOW_EVAL=true, ML_READONLY=false",
       {
         flow_name: z.string().describe(
@@ -182,10 +198,93 @@ export function registerDhfTools(
             content: [{
               type: "text" as const,
               text: toToolError(err) +
-                "\n\nNOTE: dhf_flow_run requires DHF 5.8.x modules in the Modules database " +
-                "(/data-hub/5/impl/flow.sjs, /data-hub/5/flow/job.sjs, and dependencies). " +
-                "If modules are missing, deploy via: gradle hubDeploy " +
-                "or load them manually using ml_document_put (database=Modules).",
+                "\n\nNOTE: dhf_flow_run requires all of the following:\n" +
+                "  • DHF 5.8.x modules in Modules DB (/data-hub/5/impl/flow.sjs, /data-hub/5/flow/job.sjs)\n" +
+                "    → deploy via: gradle hubDeploy\n" +
+                "  • Step documents in data-hub-STAGING with collection http://marklogic.com/data-hub/steps\n" +
+                "    (NOT http://marklogic.com/data-hub/STEP_DEFINITION)\n" +
+                "    → deploy via: gradle hubDeployArtifacts\n" +
+                "  • For mapping steps: compiled XSLT in Modules DB at\n" +
+                "    /mappings/<Name>/<Name>-<v>.mapping.xml.xslt\n" +
+                "    → generate using buildMappingXML() + mapping-compile.xsl from STAGING eval context\n" +
+                "  • For mastering steps: entity model in data-hub-FINAL with collection\n" +
+                "    http://marklogic.com/entity-services/models and triple indexing enabled\n" +
+                "  • ~17 DHF security roles (data-hub-common, data-hub-operator, data-hub-developer,\n" +
+                "    data-hub-ingestion-reader/writer, data-hub-mapping-reader/writer,\n" +
+                "    data-hub-match-merge-reader/writer, and others)\n" +
+                "    → create via sec:create-role() in Security DB, one role per transaction",
+            }],
+            isError: true,
+          };
+        }
+      }
+    );
+  }
+
+  // ── dhf_flow_run_jar ────────────────────────────────────────────────────────
+  if (!readonly && dhfConfig.clientJarPath) {
+    server.tool(
+      "dhf_flow_run_jar",
+      "Run a Data Hub Framework (DHF) 5.x flow using the DHF client JAR.\n\n" +
+      "USE THIS INSTEAD OF dhf_flow_run when:\n" +
+      "  • The dataset is large (hundreds or thousands of documents per step)\n" +
+      "  • You hit eval timeouts with dhf_flow_run\n" +
+      "  • You want parallel batch processing (the JAR uses DHF's native Java client)\n\n" +
+      "EXECUTION MODEL:\n" +
+      "  Runs the JAR synchronously as a child process — blocks until the flow\n" +
+      "  completes and returns the full output. No polling required.\n" +
+      "  Default timeout: 10 minutes. Increase via timeout_minutes for very large flows.\n\n" +
+      "ADVANTAGES OVER dhf_flow_run:\n" +
+      "  • No ML_ALLOW_EVAL required (JAR uses Java Client API directly)\n" +
+      "  • No MarkLogic-side eval timeout\n" +
+      "  • Built-in parallel batch processing for large document sets\n\n" +
+      "PREREQUISITES (same as dhf_flow_run):\n" +
+      "  • DHF 5.x installed with all databases and modules\n" +
+      "  • Flow and steps deployed in data-hub-STAGING\n" +
+      "  • For mapping/mastering steps: compiled XSLT and entity model in place\n" +
+      "  • ML_DHF_PORT set if your DHF staging server uses a port other than ML_PORT\n\n" +
+      "Requires: ML_READONLY=false",
+      {
+        flow_name: z.string().describe(
+          "Name of the DHF flow to run. Must match a flow in dhf_flows_list exactly."
+        ),
+        step_numbers: z.array(z.string()).optional().describe(
+          "Specific step numbers to run, e.g. ['1', '2']. Omit to run all steps."
+        ),
+        timeout_minutes: z.number().int().min(1).max(120).optional().describe(
+          "Maximum time to wait for the flow to complete in minutes. Default: 10."
+        ),
+      },
+      async ({ flow_name, step_numbers, timeout_minutes }) => {
+        try {
+          const output = await runFlowViaJar({
+            jarPath: dhfConfig.clientJarPath!,
+            connection,
+            dhfPort: dhfConfig.port,
+            dhfJobsPort: dhfConfig.jobsPort,
+            flowName: flow_name,
+            stepNumbers: step_numbers,
+            timeoutMs: (timeout_minutes ?? 10) * 60 * 1000,
+          });
+          return {
+            content: [{
+              type: "text" as const,
+              text:
+                `Flow '${flow_name}' completed via DHF client JAR.\n\n` +
+                `Steps: ${step_numbers && step_numbers.length > 0 ? step_numbers.join(", ") : "all"}\n\n` +
+                `Output:\n${output}`,
+            }],
+          };
+        } catch (err) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: toToolError(err) +
+                "\n\nHints:\n" +
+                "  • Verify ML_DHF_PORT matches your DHF staging app server port (often 8010)\n" +
+                "  • Ensure the user has the flow-operator and data-hub-operator roles\n" +
+                "  • Check ML_HOST, ML_USERNAME, ML_PASSWORD are correct\n" +
+                "  • For SSL deployments set ML_SSL=true",
             }],
             isError: true,
           };
@@ -199,15 +298,16 @@ export function registerDhfTools(
     "dhf_job_status",
     "Get the status and results of a Data Hub Framework (DHF) 5.x flow run.\n\n" +
     "Returns: job status, start/end times, per-step results including success/failure counts " +
-    "and error messages.\n\n" +
+    "and error messages. For failed jobs, also returns batch-level error details from " +
+    "/jobs/batches/ documents — these contain per-URI failure lists not visible in top-level step results.\n\n" +
     "Job statuses:\n" +
-    "  running             — steps are still processing\n" +
+    "  started             — job created, background task not yet complete (keep polling)\n" +
     "  finished            — all steps completed successfully\n" +
-    "  finished_with_errors — some steps had failures (check stepResults for details)\n" +
+    "  finished_with_errors — some steps had failures (check stepResults and batchErrors)\n" +
     "  failed              — the job itself failed (not just individual documents)\n" +
     "  canceled            — job was stopped before completion\n\n" +
     "Prerequisite: DHF 5.x must be installed. Job ID is returned by dhf_flow_run.\n\n" +
-    "POLLING: Call this repeatedly (every 5–30 seconds) until status is not 'running'.",
+    "POLLING: Call this repeatedly (every 5–30 seconds) until status is not 'started'.",
     {
       job_id: z.string().describe(
         "The job ID returned by dhf_flow_run. Jobs are stored in data-hub-JOBS at /jobs/<jobId>.json."
@@ -227,6 +327,105 @@ export function registerDhfTools(
       }
     }
   );
+}
+
+// ── DHF client JAR runner ───────────────────────────────────────────────────
+
+interface JarRunParams {
+  jarPath: string;
+  connection: ConnectionConfig;
+  dhfPort?: number;
+  /** DHF jobs app server port. Defaults to dhfPort + 2 (standard on-premise offset). */
+  dhfJobsPort?: number;
+  flowName: string;
+  stepNumbers?: string[];
+  timeoutMs: number;
+}
+
+/**
+ * Run a DHF flow via the standalone DHF client JAR.
+ *
+ * The JAR uses the MarkLogic Java Client API directly — no eval, no Gradle.
+ * It connects to the DHF staging app server (defaulting to ML_PORT unless
+ * ML_DHF_PORT overrides it) and runs the flow synchronously.
+ *
+ * Password is passed as a command-line argument. In a containerised environment
+ * this is acceptable; for higher-security deployments consider a vault integration.
+ */
+async function runFlowViaJar(params: JarRunParams): Promise<string> {
+  const { jarPath, connection, dhfPort, dhfJobsPort, flowName, stepNumbers, timeoutMs } = params;
+  const port = dhfPort ?? connection.port;
+  // Jobs port defaults to staging port + 2 (standard DHF on-premise offset: e.g. 8020→8022)
+  const jobsPort = dhfJobsPort ?? (port + 2);
+
+  const args: string[] = [
+    "-jar", jarPath,
+    "runFlow",
+    "-host", connection.host,
+    "-username", connection.username,
+    "-password", connection.password,
+    "-flowName", flowName,
+    // Override ports — the JAR defaults to DHS ports (8010/8013); override for on-premise
+    `-PmlStagingPort=${port}`,
+    `-PmlPort=${port}`,
+    `-PmlJobPort=${jobsPort}`,
+  ];
+
+  if (stepNumbers && stepNumbers.length > 0) {
+    args.push("-steps", stepNumbers.join(","));
+  }
+
+  if (connection.authType === "basic") {
+    args.push("-auth", "basic");
+  }
+
+  if (connection.ssl) {
+    args.push("-ssl");
+    if (!connection.rejectUnauthorized) {
+      // Self-signed certs — tell the JAR not to verify the server certificate
+      args.push("-PmlSslHostnameVerifier=ANY");
+    }
+  }
+
+  return new Promise<string>((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+
+    const child = spawn("java", args, { stdio: "pipe" });
+
+    child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+    child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString(); });
+
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(
+        `DHF client JAR timed out after ${timeoutMs / 1000}s.\n` +
+        `Partial output:\n${stdout || "(none)"}\n${stderr || ""}`
+      ));
+    }, timeoutMs);
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const combined = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n\nSTDERR:\n");
+      if (code !== 0) {
+        reject(new Error(`DHF client JAR exited with code ${code}.\n${combined}`));
+      } else {
+        resolve(combined || "(no output)");
+      }
+    });
+
+    child.on("error", (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      if (err.code === "ENOENT") {
+        reject(new Error(
+          "java executable not found. Ensure Java (JRE 11+) is installed and on PATH.\n" +
+          `JAR path: ${jarPath}`
+        ));
+      } else {
+        reject(err);
+      }
+    });
+  });
 }
 
 // ── Formatters ─────────────────────────────────────────────────────────────
@@ -279,6 +478,37 @@ function formatJob(job: JobDoc): string {
       lines.push(formatStepResult(key, stepResults[key]));
     }
   }
+
+  // Batch-level errors — per-URI failure details not visible in stepResults
+  if (job.batchErrors && job.batchErrors.length > 0) {
+    lines.push(`\nFailed Batches (${job.batchErrors.length}):`);
+    for (const batch of job.batchErrors.slice(0, 10)) {
+      lines.push(`  Batch: ${batch.batchId ?? "(unknown)"} [${batch.batchStatus ?? "failed"}]`);
+      if (batch.stepName) lines.push(`    Step: ${batch.stepName}`);
+      if (batch.urisFailed && batch.urisFailed.length > 0) {
+        lines.push(`    Failed URIs (${batch.urisFailed.length}):`);
+        for (const uri of batch.urisFailed.slice(0, 5)) {
+          lines.push(`      - ${uri}`);
+        }
+        if (batch.urisFailed.length > 5) {
+          lines.push(`      ... and ${batch.urisFailed.length - 5} more`);
+        }
+      }
+      if (batch.errorMessages && batch.errorMessages.length > 0) {
+        lines.push(`    Errors:`);
+        for (const msg of batch.errorMessages.slice(0, 3)) {
+          lines.push(`      - ${msg}`);
+        }
+        if (batch.errorMessages.length > 3) {
+          lines.push(`      ... and ${batch.errorMessages.length - 3} more`);
+        }
+      }
+    }
+    if (job.batchErrors.length > 10) {
+      lines.push(`  ... and ${job.batchErrors.length - 10} more failed batches`);
+    }
+  }
+
   return lines.join("\n");
 }
 
