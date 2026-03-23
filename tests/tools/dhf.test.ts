@@ -647,13 +647,31 @@ describe("dhf_flow_run_jar handler", () => {
     expect(result.content[0].text).toContain(FAKE_JAR_PATH);
   });
 
-  it("includes port override args including mlJobPort defaulting to staging+2", async () => {
+  it("includes port override args; mlJobPort matches staging port when dhfPort not set", async () => {
     mockSpawn.mockReturnValue(makeFakeChild(0, "Done") as never);
     await tools.get("dhf_flow_run_jar")!({ flow_name: "CustomerFlow" });
     const args = mockSpawn.mock.calls[0][1] as string[];
     expect(args.some((a) => a.includes("mlStagingPort=8010"))).toBe(true);
     expect(args.some((a) => a.includes("mlPort=8010"))).toBe(true);
-    // Jobs port defaults to staging+2 (8010+2 = 8012) when dhfJobsPort not set
-    expect(args.some((a) => a.includes("mlJobPort=8012"))).toBe(true);
+    // When ML_DHF_PORT is not set, jobsPort mirrors staging port (no +2 offset).
+    // The +2 only applies to on-premise DHF where dhfPort is explicitly set (e.g. 8020→8022).
+    expect(args.some((a) => a.includes("mlJobPort=8010"))).toBe(true);
+  });
+
+  it("applies +2 offset for mlJobPort when dhfPort is explicitly set (on-premise DHF pattern)", async () => {
+    const { server, tools: localTools } = createMockServer();
+    registerDhfTools(
+      server as never,
+      createMockDhfClient() as never,
+      false, false,
+      { clientJarPath: FAKE_JAR_PATH, port: 8020 },
+      FAKE_CONNECTION as never
+    );
+    mockSpawn.mockReturnValue(makeFakeChild(0, "Done") as never);
+    await localTools.get("dhf_flow_run_jar")!({ flow_name: "CustomerFlow" });
+    const args = mockSpawn.mock.calls[0][1] as string[];
+    expect(args.some((a) => a.includes("mlStagingPort=8020"))).toBe(true);
+    // dhfPort=8020 is explicitly set → jobsPort = 8020+2 = 8022
+    expect(args.some((a) => a.includes("mlJobPort=8022"))).toBe(true);
   });
 });
