@@ -78,6 +78,8 @@ Always use `flux_import` for more than ~10 documents. It handles HTTP URL fetch,
 
 ## Quick Start
 
+> **New to marklogic-mcp?** See the [Getting Started Guide](docs/getting-started.md) for a complete walkthrough.
+
 ### Claude Desktop (stdio)
 
 1. Install and build:
@@ -161,6 +163,23 @@ docker compose up
 # MarkLogic at http://localhost:8001 (Admin UI)
 # MCP server at http://localhost:3000
 ```
+
+### Docker Compose — connect to existing MarkLogic / Semaphore containers
+
+If MarkLogic and/or Semaphore are already running in Docker on the same host, use
+the external-network compose file:
+
+```bash
+docker network create shared                      # one-time
+docker network connect shared <marklogic-container>  # attach existing containers
+docker network connect shared <semaphore-container>
+
+ML_HOST=marklogic SEMAPHORE_HOST=semaphore ML_PASSWORD=admin \
+  docker compose -f docker-compose.external.yml up -d
+```
+
+See [docs/docker-networking.md](docs/docker-networking.md) for the full guide and
+alternative approaches (host network mode, host IP).
 
 ---
 
