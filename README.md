@@ -191,6 +191,47 @@ docker compose up
 | `SEMAPHORE_PASSWORD` | _(none)_ | KMM password |
 | `SEMAPHORE_URL` | _(none)_ | Explicit CLS URL override (takes precedence over host:port) |
 | `FLUX_RUNNER_URL` | _(none)_ | Flux runner HTTP URL (e.g. `http://localhost:8082`) |
+| `FLUX_DATA_DIR` | `./flux-data` | Local directory mounted as `/data` in the Flux Docker container |
+| `FLUX_TIMEOUT_MINUTES` | `30` | Flux operation timeout in minutes |
+| `ML_TIMEOUT_MS` | `30000` | HTTP request timeout for MarkLogic calls (milliseconds) |
+| `ML_SSL_REJECT_UNAUTHORIZED` | `true` | Reject self-signed SSL certificates (`false` for dev environments) |
+| `MCP_HTTP_HOST` | `0.0.0.0` | Bind address for HTTP transport |
+| `MCP_CORS_ORIGIN` | _(all)_ | Restrict CORS to a single origin (default: allow all) |
+| `ML_OAUTH_TOKEN` | _(none)_ | Static Bearer token; required in `stdio` mode when `ML_AUTH_TYPE=oauth` |
+| `ML_DHF_CLIENT_JAR` | _(none)_ | Absolute path to `marklogic-data-hub-<version>-client.jar` |
+| `ML_DHF_PORT` | _(ML_PORT)_ | DHF staging app server port |
+| `ML_DHF_JOBS_PORT` | _(ML_DHF_PORT+2)_ | DHF jobs app server port |
+| `AWS_REGION` | _(none)_ | AWS region for QuickSight integration |
+| `AWS_QUICKSIGHT_ACCOUNT_ID` | _(none)_ | QuickSight account ID |
+
+### AI Client API Keys
+
+This MCP server does **not** use AI provider API keys itself — it is a tool server that AI agents connect to. The API keys for your AI provider are configured in your **client application**, not in this server.
+
+| AI Client | Environment Variable | Where to configure |
+|---|---|---|
+| **Claude Desktop** | `ANTHROPIC_API_KEY` | Built into the app (uses your Anthropic account) |
+| **Claude Code** | `ANTHROPIC_API_KEY` | Shell environment or `~/.bashrc` / `~/.zshrc` |
+| **OpenAI-compatible agents** | `OPENAI_API_KEY` | Agent's own environment or config file |
+| **Amazon Bedrock agents** | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS credentials chain |
+| **Google Vertex AI agents** | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account JSON path |
+
+**Example: Claude Code with this MCP server**
+
+```bash
+# 1. Set your Anthropic API key (client-side — not in the MCP server)
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# 2. Start the MCP server (server-side — no AI keys needed)
+ML_HOST=my-marklogic MCP_API_KEY=my-secret \
+  docker compose -f docker-compose.mcp-only.yml up -d
+
+# 3. Register the MCP server with Claude Code
+claude mcp add --transport http marklogic http://localhost:3000/mcp \
+  --header "Authorization: Bearer my-secret"
+```
+
+> **Tip:** `MCP_API_KEY` secures the MCP server's HTTP endpoint — it is unrelated to any AI provider key. Think of it as a password for the MCP server itself.
 
 ---
 
