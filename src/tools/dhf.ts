@@ -355,8 +355,9 @@ interface JarRunParams {
 async function runFlowViaJar(params: JarRunParams): Promise<string> {
   const { jarPath, connection, dhfPort, dhfJobsPort, flowName, stepNumbers, timeoutMs } = params;
   const port = dhfPort ?? connection.port;
-  // Jobs port defaults to staging port + 2 (standard DHF on-premise offset: e.g. 8020→8022)
-  const jobsPort = dhfJobsPort ?? (port + 2);
+  // Jobs port: +2 offset only applies when dhfPort is explicitly set (on-premise DHF, e.g. 8020→8022).
+  // When ML_DHF_PORT is unset we are routing everything through ML_PORT — keep jobsPort on the same port.
+  const jobsPort = dhfJobsPort ?? (dhfPort !== undefined ? port + 2 : port);
 
   const args: string[] = [
     "-jar", jarPath,
