@@ -52,20 +52,38 @@ services:
     image: ghcr.io/tternquist/marklogic-mcp:master
     container_name: marklogic-mcp
     environment:
+      # --- Transport ---
       - MCP_TRANSPORT=http
       - MCP_HTTP_PORT=3000
+      # - MCP_HTTP_HOST=0.0.0.0        # Bind address (default: 0.0.0.0)
+      # - MCP_API_KEY=                  # Bearer token for HTTP transport auth — set this to secure the endpoint
+      # - MCP_CORS_ORIGIN=             # Restrict CORS to a single origin (default: allow all)
+
+      # --- MarkLogic connection ---
       - ML_HOST=marklogic
       - ML_PORT=8000
       - ML_MANAGEMENT_PORT=8002
       - ML_USERNAME=admin
       - ML_PASSWORD=admin
       - ML_AUTH_TYPE=basic
+      # - ML_DATABASE=Documents        # Default content database
+      # - ML_SSL=false                 # Enable HTTPS to MarkLogic
+      # - ML_SSL_REJECT_UNAUTHORIZED=true  # Set false for self-signed certs
+      # - ML_OAUTH_TOKEN=             # Required in stdio mode when ML_AUTH_TYPE=oauth
+      # - ML_TIMEOUT_MS=30000         # HTTP request timeout (ms)
+
+      # --- Safety ---
       - ML_READONLY=true
       - ML_ALLOW_EVAL=false
+
+      # --- Logging ---
       - LOG_LEVEL=info
       - LOG_FORMAT=pretty
+
+      # --- Flux sidecar ---
       - FLUX_RUNNER_URL=http://flux-runner:8080
-      # Semaphore (Progress Data Platform — optional)
+
+      # --- Semaphore (Progress Data Platform — optional) ---
       # - SEMAPHORE_HOST=semaphore.example.com
       # - SEMAPHORE_SCS_PORT=5058
       # - SEMAPHORE_KMM_PORT=5080
@@ -73,6 +91,22 @@ services:
       # - SEMAPHORE_PASSWORD=
       # - SEMAPHORE_SSL=false
       # - SEMAPHORE_TIMEOUT_MS=30000
+
+      # --- AWS QuickSight (optional) ---
+      # - AWS_REGION=us-east-1
+      # - AWS_QUICKSIGHT_ACCOUNT_ID=
+
+      # --- Data Hub Framework (optional) ---
+      # - ML_DHF_CLIENT_JAR=          # Path to marklogic-data-hub-<ver>-client.jar (bundled in Docker image)
+      # - ML_DHF_PORT=                # DHF staging app server port (defaults to ML_PORT)
+      # - ML_DHF_JOBS_PORT=           # DHF jobs app server port (defaults to ML_DHF_PORT+2)
+
+      # -----------------------------------------------------------------------
+      # NOTE: AI provider API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.)
+      # are NOT used by this MCP server. They are configured in your AI client
+      # (Claude Desktop, Claude Code, OpenAI-compatible agents, etc.).
+      # See the README "AI Client API Keys" section for details.
+      # -----------------------------------------------------------------------
     ports:
       - "3000:3000"
     depends_on:
