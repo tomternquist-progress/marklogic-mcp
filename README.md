@@ -7,7 +7,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for Mar
 - **80+ MCP tools** across 15 domains: admin (incl. logs), documents, security, search, search options, schema, eval, SPARQL/graphs, Optic (incl. vector search), performance, QuickSight, Flux, REST extensions, Semaphore (taxonomy + classification), and approach advisory
 - **5 MCP resources** including a machine-readable problem→solution decision guide
 - **13 MCP prompts** for query planning, code generation, import design, and BI integration
-- **Two transports**: stdio (Claude Desktop / local agents) and HTTP+SSE (remote agents, QuickSight)
+- **Two transports**: stdio (Claude Desktop, GitHub Copilot, local agents) and HTTP+SSE (Claude Code, GitHub Copilot, remote agents, QuickSight)
 - **Read-only by default** — writes gated behind `ML_READONLY=false`, eval gated behind `ML_ALLOW_EVAL=true`
 - **Basic and Digest auth** for MarkLogic REST API
 
@@ -127,6 +127,35 @@ claude mcp add --transport http marklogic http://localhost:3000/mcp \
 ```
 
 See [docs/claude-code-remote-mcp.md](docs/claude-code-remote-mcp.md) for the full guide.
+
+### GitHub Copilot in VS Code
+
+Add to VS Code user settings or `.vscode/mcp.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "marklogic": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["/path/to/marklogic-mcp/dist/index.js"],
+        "env": {
+          "ML_HOST": "localhost",
+          "ML_PORT": "8000",
+          "ML_USERNAME": "admin",
+          "ML_PASSWORD": "your-password",
+          "ML_AUTH_TYPE": "digest",
+          "ML_READONLY": "true"
+        }
+      }
+    }
+  }
+}
+```
+
+Or connect to a running HTTP server: set `"type": "http"` and `"url": "http://localhost:3000/mcp"`.
+See [docs/getting-started.md](docs/getting-started.md#github-copilot-cli--vs-code-stdio-or-http) for the full guide including per-project config with input variables for secrets.
 
 ### HTTP/SSE Transport (AWS QuickSight / remote agents)
 

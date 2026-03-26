@@ -11,8 +11,9 @@ connecting it to your MarkLogic instance, and using it with an AI agent.
 - **Node.js 22+** — for building from source (not needed for Docker-only setup)
 - **Docker** — if using the container-based setup
 - An MCP-compatible client — [Claude Desktop](https://claude.ai/download),
-  [Claude Code](https://docs.anthropic.com/en/docs/claude-code), or any
-  MCP-capable agent framework
+  [Claude Code](https://docs.anthropic.com/en/docs/claude-code),
+  [GitHub Copilot in VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers),
+  or any MCP-capable agent framework
 
 ---
 
@@ -181,6 +182,105 @@ claude mcp add --transport http marklogic http://localhost:3000/mcp \
 ```
 
 See [claude-code-remote-mcp.md](claude-code-remote-mcp.md) for the full guide.
+
+### GitHub Copilot CLI / VS Code (stdio or HTTP)
+
+GitHub Copilot in VS Code supports MCP servers in agent mode. You can connect
+via stdio (local) or HTTP (remote).
+
+#### Option 1: stdio (local, from source)
+
+Build the project first (see [Option B](#option-b-from-source-stdio-transport) above),
+then add an entry to your VS Code settings. Open **Settings (JSON)** (`Ctrl+Shift+P` →
+"Preferences: Open User Settings (JSON)") and add:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "marklogic": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["/path/to/marklogic-mcp/dist/index.js"],
+        "env": {
+          "ML_HOST": "localhost",
+          "ML_PORT": "8000",
+          "ML_MANAGEMENT_PORT": "8002",
+          "ML_USERNAME": "admin",
+          "ML_PASSWORD": "your-password",
+          "ML_AUTH_TYPE": "digest",
+          "ML_READONLY": "true"
+        }
+      }
+    }
+  }
+}
+```
+
+Alternatively, create a `.vscode/mcp.json` file in your project root to share
+the configuration with your team (use `"inputs"` for secrets so credentials
+stay out of source control):
+
+```json
+{
+  "inputs": [
+    {
+      "id": "ml-password",
+      "type": "promptString",
+      "description": "MarkLogic password",
+      "password": true
+    }
+  ],
+  "servers": {
+    "marklogic": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${workspaceFolder}/dist/index.js"],
+      "env": {
+        "ML_HOST": "localhost",
+        "ML_PORT": "8000",
+        "ML_MANAGEMENT_PORT": "8002",
+        "ML_USERNAME": "admin",
+        "ML_PASSWORD": "${input:ml-password}",
+        "ML_AUTH_TYPE": "digest",
+        "ML_READONLY": "true"
+      }
+    }
+  }
+}
+```
+
+#### Option 2: HTTP (remote, Docker)
+
+With the MCP server already running on HTTP transport (see
+[Option A](#option-a-docker-recommended)), add to your VS Code settings or
+`.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "marklogic": {
+      "type": "http",
+      "url": "http://localhost:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer your-api-key"
+      }
+    }
+  }
+}
+```
+
+Omit the `"headers"` block if you haven't set `MCP_API_KEY`.
+
+#### Using with Copilot
+
+1. Open the **Copilot Chat** panel in VS Code (`Ctrl+Shift+I` or `Cmd+Shift+I`).
+2. Switch to **Agent mode** (click the mode picker at the top of the chat panel).
+3. The MarkLogic MCP tools will appear in the tool list (click the tools icon to
+   verify). You can now ask Copilot questions like:
+   - *"What databases exist on my MarkLogic server?"*
+   - *"Search for documents about revenue in the invoices collection"*
+   - *"Discover the schema for the customers collection"*
 
 ---
 
