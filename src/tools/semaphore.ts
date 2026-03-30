@@ -1657,10 +1657,15 @@ LIMIT 500`;
 
         const altLabels = groups["skos:altLabel"] ?? [];
         const hiddenLabels = groups["skos:hiddenLabel"] ?? [];
+        const singleWordAlts = altLabels.filter(l => !l.includes(" "));
         lines.push("TUNING GUIDANCE:");
         if (altLabels.length > 10) {
           lines.push(`  • This concept has ${altLabels.length} altLabels — a large label set increases false-positive risk.`);
-          lines.push("    Consider removing labels that are common words with multiple meanings.");
+        }
+        if (singleWordAlts.length > 0) {
+          lines.push(`  • ${singleWordAlts.length} single-word altLabel(s): ${singleWordAlts.slice(0, 8).map(l => `"${l}"`).join(", ")}${singleWordAlts.length > 8 ? ", ..." : ""}`);
+          lines.push("    Single-word labels are the #1 source of false positives (e.g. 'index' matches 'for loop index').");
+          lines.push("    Replace with qualified multi-word phrases: 'index' → 'database index', 'clone' → 'git clone'.");
         }
         if (hiddenLabels.length > 0) {
           lines.push(`  • ${hiddenLabels.length} hiddenLabel(s) are invisible in the UI but still drive classification.`);
@@ -1691,10 +1696,23 @@ LIMIT 500`;
     "  1. Use semaphore_concept_search to find the concept responsible.\n" +
     "  2. Use semaphore_concept_get to see all its labels.\n" +
     "  3. Use this tool with action='remove' to remove the overly-broad label.\n" +
-    "  4. Run semaphore_publish to rebuild the CLS rule set.\n" +
-    "  5. Run semaphore_classify to verify the false positive is resolved.\n\n" +
+    "  4. Replace the removed label with a QUALIFIED MULTI-WORD phrase (see strategy below).\n" +
+    "  5. Run semaphore_publish to rebuild the CLS rule set.\n" +
+    "  6. Run semaphore_classify to verify the false positive is resolved.\n\n" +
+    "SINGLE-WORD → MULTI-WORD REPLACEMENT STRATEGY:\n" +
+    "  Single-word altLabels like 'index', 'clone', 'push' are the #1 source of false positives.\n" +
+    "  They match in any context (e.g. 'for loop index' → Databases, 'deep clone object' → VCS).\n" +
+    "  Fix: remove the bare word and add a qualified two-word phrase that only fires in context:\n" +
+    "    'index'      → 'database index'        (won't fire on 'loop index' or 'array index')\n" +
+    "    'clone'      → 'git clone'              (won't fire on 'deep clone' or 'clone object')\n" +
+    "    'constraint' → 'database constraint'    (won't fire on 'iOS constraint' or 'type constraint')\n" +
+    "    'push'       → 'git push'               (won't fire on 'push notification')\n" +
+    "  Multi-word labels also score HIGHER (phraselist + nearlist both fire → 1.0 vs 0.6 for single-word).\n" +
+    "  KID weight tuning (nearlist/phraselist) CANNOT fix single-word false positives — nearlist\n" +
+    "  requires multi-word labels to fire, so single-word matches always score at the phraselist weight.\n\n" +
     "IMPROVING RECALL (too few correct matches):\n" +
-    "  Add altLabels for common synonyms, abbreviations, or domain-specific phrasings.\n\n" +
+    "  Add altLabels for common synonyms, abbreviations, or domain-specific phrasings.\n" +
+    "  Prefer multi-word phrases over single words to avoid introducing new false positives.\n\n" +
     "PRECLUSION / NEGATIVE EVIDENCE:\n" +
     "  Semaphore does not have a native score-subtraction operator in standard KID template rules.\n" +
     "  The CLS 'not' attribute (not=\"1\" on phraselist/nearlist) means ABSENCE-FIRING, not score-reduction:\n" +
