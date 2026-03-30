@@ -1694,7 +1694,7 @@ LIMIT 500`;
         await semaphore.kmmSparqlUpdate(model_uri, sparql);
 
         const lines = [
-          `CONCEPT LABEL ${action.toUpperCase()}ED`,
+          `CONCEPT LABEL ${action === "add" ? "ADDED" : "REMOVED"}`,
           "─".repeat(50),
           "",
           `  Model:      ${model_uri}`,
@@ -2170,43 +2170,56 @@ LIMIT 500`;
   server.tool(
     "semaphore_kid_template_set",
     "Upload a custom Semaphore publisher rule template (.kid file) for a model.\n\n" +
-    "The .kid template controls how the Semaphore publisher generates CLS classification rules from " +
-    "taxonomy concepts. Customizing scoring weights changes how evidence is combined:\n\n" +
-    "WEIGHT PARAMETERS (generates a ContextualCitation-style template with custom weights):\n" +
-    "  phraselist_weight       — weight for exact phrase matches (default: 20)\n" +
+    "The .kid template (a Velocity template) controls how the Semaphore publisher generates CLS\n" +
+    "classification rules from taxonomy concepts.\n\n" +
+    "WHEN TO USE THIS TOOL vs. OTHER APPROACHES:\n" +
+    "  Use label editing (semaphore_concept_labels_update) FIRST:\n" +
+    "    → A specific concept fires on wrong text (remove the offending altLabel)\n" +
+    "    → A concept misses correct text (add altLabels / hiddenLabels for synonyms)\n" +
+    "    → The fix is isolated to one or a few concepts\n" +
+    "  Use threshold tuning (semaphore_classify threshold param) SECOND:\n" +
+    "    → You want to explore the precision/recall trade-off without changing the model\n" +
+    "    → Quick iteration before committing to model or template changes\n" +
+    "  Use this tool (template weight tuning) when:\n" +
+    "    → A SYSTEMIC issue affects ALL concepts globally (e.g. nearlist fires too broadly on all topics)\n" +
+    "    → You need to change the relative importance of phrase vs near-word vs hierarchy evidence\n" +
+    "    → You need zone-biasing (title matches should outweigh body matches)\n" +
+    "    → You need absence-firing rules (boost true-positives by detecting disqualifying context)\n" +
+    "  Use raw content (content param) when:\n" +
+    "    → You need KID elements not covered by the weight presets (e.g. labeltypes filtering,\n" +
+    "      custom combine structures, pos-specific phraselist rules)\n\n" +
+    "PRESETS (recommended starting points — override individual weights as needed):\n" +
+    "  balanced         — phrase=20, near=50, hierarchy=60, assoc=50/cap30  (Semaphore default)\n" +
+    "  short_text       — phrase=60, near=20, hierarchy=40, assoc=0          (headlines, metadata, short snippets)\n" +
+    "  exact_only       — phrase=100, near=0, hierarchy=0,  assoc=0          (max precision, no inference)\n" +
+    "  precision        — phrase=70, near=20, hierarchy=0,  assoc=0          (high-precision, no hierarchy)\n" +
+    "  hierarchy_heavy  — phrase=20, near=30, hierarchy=90, assoc=40/cap20   (coarse topics, deep taxonomies)\n" +
+    "  entity           — phrase=70, near=30, hierarchy=0,  assoc=0          (named-entity style taxonomies)\n\n" +
+    "ZONE-BIASING (title_weight / body_weight):\n" +
+    "  When provided, the template applies SEPARATE evidence combines for title and body zones.\n" +
+    "  CLS zones are defined in the document structure — title zone = pos=1, body zone = pos=0.\n" +
+    "  Example: title_weight=80, body_weight=20 means a phrase in the title counts 4× more than body.\n" +
+    "  Use when: document structure is reliable (news articles, academic papers, product descriptions).\n" +
+    "  Do NOT use for: plain-text blobs, RSS descriptions, short snippets without distinct zones.\n\n" +
+    "INDIVIDUAL WEIGHT PARAMETERS (override preset values):\n" +
+    "  phraselist_weight       — weight for exact phrase matches (preset value used if omitted)\n" +
     "                            Higher = exact phrase mentions drive classification more strongly.\n" +
-    "  nearlist_weight         — weight for near-word matches (default: 50)\n" +
+    "  nearlist_weight         — weight for near-word matches (preset value used if omitted)\n" +
     "                            Higher = constituent words appearing near each other score more.\n" +
-    "  lower_hierarchy_weight  — weight for lower-in-hierarchy linklist (default: 60)\n" +
+    "                            NOTE: nearlist requires multi-word labels — single-word concepts\n" +
+    "                            score entirely via phraselist regardless of nearlist weight.\n" +
+    "  lower_hierarchy_weight  — weight for lower-in-hierarchy linklist (preset value used if omitted)\n" +
     "                            Higher = child concept firing gives more credit to the parent.\n" +
-    "  associative_weight      — raw weight for associative linklist (default: 50)\n" +
-    "                            Higher = related concepts contribute more strongly.\n" +
-    "  associative_cap         — combine weight capping total associative contribution (default: 30)\n" +
-    "                            Acts as a ceiling on how much associative evidence can contribute.\n\n" +
-    "TUNING STRATEGY:\n" +
-    "  • If too many false positives from near-word matches → reduce nearlist_weight (e.g. 30)\n" +
-    "  • If near-word evidence should be the primary signal → increase nearlist_weight (e.g. 70)\n" +
-    "  • To rely only on exact phrase matches → set nearlist_weight=0\n" +
-    "  • To disable hierarchy propagation → set lower_hierarchy_weight=0\n" +
-    "  • To disable associative evidence → set associative_cap=0\n" +
-    "  NOTE: swapping phraselist/nearlist weights (e.g. phrase=50, near=20) does NOT help single-word\n" +
-    "  concept labels — nearlist requires multi-word labels to fire, so single-word concepts score\n" +
-    "  entirely via phraselist regardless of the nearlist weight. All matched concepts end up at\n" +
-    "  the same score (phraselist weight), making threshold-based separation impossible.\n\n" +
+    "  associative_weight      — raw weight for associative linklist (preset value used if omitted)\n" +
+    "  associative_cap         — combine weight capping total associative contribution (preset value)\n\n" +
     "NEGATIVE EVIDENCE VIA hiddenLabel + not=\"1\" (advanced):\n" +
-    "  The CLS 'not' attribute on phraselist/nearlist means ABSENCE-FIRING, not score-reduction:\n" +
+    "  The CLS 'not' attribute means ABSENCE-FIRING, not score-reduction:\n" +
     "    not=\"1\" fires when the pattern is NOT found → boosts true-positive articles\n" +
-    "    not=\"1\" contributes 0 when the pattern IS found → no effect on false-positive articles\n" +
-    "  To use this technique:\n" +
-    "    1. Add skos:hiddenLabel disqualifying-context words to problem concepts via semaphore_kmm_sparql_update\n" +
-    "       (e.g. 'streaming','revenue' for a 'music' art-form concept to penalise business-context matches)\n" +
-    "    2. Add to the EVIDENCE combine in the custom content:\n" +
-    "       <phraselist pos=\"0\" stem=\"1\" weight=\"N\" not=\"1\" foreach=\"1\" labeltypes=\"hiddenLabel\" />\n" +
-    "    3. Publish and test: true-positive articles (no disqualifying words) score higher;\n" +
-    "       false-positive articles score the same as before — raise threshold to exploit the gap.\n" +
-    "  Limitation: does not reduce false-positive scores; only widens the gap IF true positives\n" +
-    "  reliably lack the disqualifying vocabulary. Ineffective when true and false positives share\n" +
-    "  the same vocabulary (e.g. short RSS snippets with low token counts).\n\n" +
+    "    not=\"1\" contributes 0 when the pattern IS found → no effect on false-positive scores\n" +
+    "  To use: add skos:hiddenLabel disqualifying-context words to the concept via\n" +
+    "  semaphore_kmm_sparql_update, then provide custom content with:\n" +
+    "    <phraselist pos=\"0\" stem=\"1\" weight=\"N\" not=\"1\" foreach=\"1\" labeltypes=\"hiddenLabel\" />\n" +
+    "  Then publish + classify to verify the true/false-positive gap widens.\n\n" +
     "RAW CONTENT:\n" +
     "  Provide 'content' with the full .kid XML to upload an entirely custom template.\n" +
     "  Retrieve the current template with semaphore_kid_template_get to use as a starting point.\n\n" +
@@ -2222,40 +2235,58 @@ LIMIT 500`;
         "Default: 'ContextualCitation.kid'. If a non-default name is provided, " +
         "the publisher XML config is also patched to reference it."
       ),
+      preset: z.enum(["balanced", "short_text", "exact_only", "precision", "hierarchy_heavy", "entity"]).optional().describe(
+        "Named starting-point preset. Sets all five weights to well-known values for a specific use case.\n" +
+        "  balanced        — Semaphore defaults; good general starting point\n" +
+        "  short_text      — for headlines, metadata, short snippets; high phrase weight, low near\n" +
+        "  exact_only      — maximum precision; phrase matches only, no near/hierarchy/associative\n" +
+        "  precision       — high phrase + modest near; no hierarchy/associative propagation\n" +
+        "  hierarchy_heavy — strong hierarchy propagation; good for coarse topics with deep taxonomies\n" +
+        "  entity          — named-entity style; phrase + near evidence only, no hierarchy\n" +
+        "Individual weight params (phraselist_weight etc.) override preset values when both are provided."
+      ),
       content: z.string().optional().describe(
-        "Raw .kid XML content to upload. Mutually exclusive with weight parameters. " +
+        "Raw .kid XML content to upload. Mutually exclusive with preset and weight parameters. " +
         "Use semaphore_kid_template_get to retrieve the current template as a starting point."
       ),
+      title_weight: z.number().int().min(0).max(100).optional().describe(
+        "Zone-biasing: relative weight for evidence found in the document TITLE zone (pos=1). " +
+        "When provided together with body_weight, generates a zone-biased template where title and body " +
+        "contribute evidence in proportion to these weights. Typical value: 70–80 to boost title matches. " +
+        "Do not use for documents without reliable title/body structure."
+      ),
+      body_weight: z.number().int().min(0).max(100).optional().describe(
+        "Zone-biasing: relative weight for evidence found in the document BODY zone (pos=0). " +
+        "Must be provided together with title_weight. Typical value: 20–30."
+      ),
       phraselist_weight: z.number().int().min(0).max(100).optional().describe(
-        "Weight for exact phrase matches (0–100, default: 20). " +
-        "Applied when ignored when content is provided."
+        "Weight for exact phrase matches (0–100). Overrides preset value. Default (no preset): 20."
       ),
       nearlist_weight: z.number().int().min(0).max(100).optional().describe(
-        "Weight for near-word matches (0–100, default: 50). " +
-        "Applied when ignored when content is provided."
+        "Weight for near-word matches (0–100). Overrides preset value. Default (no preset): 50."
       ),
       lower_hierarchy_weight: z.number().int().min(0).max(100).optional().describe(
-        "Weight for lower-in-hierarchy linklist (0–100, default: 60). " +
-        "Applied when ignored when content is provided."
+        "Weight for lower-in-hierarchy linklist (0–100). Overrides preset value. Default (no preset): 60."
       ),
       associative_weight: z.number().int().min(0).max(100).optional().describe(
-        "Raw associative linklist weight (0–100, default: 50). " +
-        "Applied when ignored when content is provided."
+        "Raw associative linklist weight (0–100). Overrides preset value. Default (no preset): 50."
       ),
       associative_cap: z.number().int().min(0).max(100).optional().describe(
-        "Max total associative contribution as a combine weight (0–100, default: 30). " +
-        "Applied when ignored when content is provided."
+        "Max total associative contribution as a combine weight (0–100). Overrides preset value. Default (no preset): 30."
       ),
     },
     async ({
       model_uri,
       template_name = "ContextualCitation.kid",
+      preset,
       content,
-      phraselist_weight = 20,
-      nearlist_weight = 50,
-      lower_hierarchy_weight = 60,
-      associative_weight = 50,
-      associative_cap = 30,
+      title_weight,
+      body_weight,
+      phraselist_weight,
+      nearlist_weight,
+      lower_hierarchy_weight,
+      associative_weight,
+      associative_cap,
     }) => {
       if (!semaphore.kmmBaseUrl) {
         return { content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }], isError: true };
@@ -2270,17 +2301,58 @@ LIMIT 500`;
         // Raw content provided — use as-is
         templateContent = content;
       } else {
-        // Generate a template from the weight parameters
+        // Resolve preset defaults, then apply any explicit overrides
+        const PRESETS: Record<string, { phrase: number; near: number; hierarchy: number; assoc: number; assocCap: number }> = {
+          balanced:        { phrase: 20,  near: 50, hierarchy: 60, assoc: 50, assocCap: 30 },
+          short_text:      { phrase: 60,  near: 20, hierarchy: 40, assoc: 0,  assocCap: 0  },
+          exact_only:      { phrase: 100, near: 0,  hierarchy: 0,  assoc: 0,  assocCap: 0  },
+          precision:       { phrase: 70,  near: 20, hierarchy: 0,  assoc: 0,  assocCap: 0  },
+          hierarchy_heavy: { phrase: 20,  near: 30, hierarchy: 90, assoc: 40, assocCap: 20 },
+          entity:          { phrase: 70,  near: 30, hierarchy: 0,  assoc: 0,  assocCap: 0  },
+        };
+        const base = preset ? PRESETS[preset] : { phrase: 20, near: 50, hierarchy: 60, assoc: 50, assocCap: 30 };
+        const phrase    = phraselist_weight       ?? base.phrase;
+        const near      = nearlist_weight         ?? base.near;
+        const hierarchy = lower_hierarchy_weight  ?? base.hierarchy;
+        const assoc     = associative_weight      ?? base.assoc;
+        const assocCap  = associative_cap         ?? base.assocCap;
+        const presetLabel = preset ?? "custom";
+
+        const useZones = title_weight !== undefined && body_weight !== undefined;
+
+        // Build EVIDENCE combine — either zone-biased or flat
+        const evidenceLines = useZones
+          ? [
+              `\t\t<!-- Evidence lookup — zone-biased (title pos=1 weight=${title_weight}, body pos=0 weight=${body_weight}) -->`,
+              `\t\t<combine label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="100">`,
+              `\t\t\t<!-- Title zone evidence (higher weight) -->`,
+              `\t\t\t<combine weight="${title_weight}">`,
+              `\t\t\t\t<phraselist pos="1" stem="1" weight="${phrase}" foreach="1" />`,
+              near > 0 ? `\t\t\t\t<nearlist pos="1" stem="1" weight="${near}" foreach="1" />` : "",
+              `\t\t\t</combine>`,
+              `\t\t\t<!-- Body zone evidence -->`,
+              `\t\t\t<combine weight="${body_weight}">`,
+              `\t\t\t\t<phraselist pos="0" stem="1" weight="${phrase}" foreach="1" />`,
+              near > 0 ? `\t\t\t\t<nearlist pos="0" stem="1" weight="${near}" foreach="1" />` : "",
+              `\t\t\t</combine>`,
+              `\t\t</combine>`,
+            ].filter(l => l !== "")
+          : [
+              `\t\t<!-- Evidence lookup — all document zones -->`,
+              `\t\t<combine label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="100">`,
+              `\t\t\t<phraselist pos="0" stem="1" weight="${phrase}" foreach="1" />`,
+              near > 0 ? `\t\t\t<nearlist pos="0" stem="1" weight="${near}" foreach="1" />` : "",
+              `\t\t</combine>`,
+            ].filter(l => l !== "");
+
         templateContent = [
-          `<!-- Template: ${template_name} -->`,
+          `<!-- Template: ${template_name} | preset: ${presetLabel}${useZones ? ` | zone-biased title=${title_weight} body=${body_weight}` : ""} -->`,
           `<rulebase language="\${language.iso_code}">`,
           "",
-          `\t<!--~~`,
-          `\t\tCustom ContextualCitation-style template.`,
-          `\t\tExact phrase matches weight: ${phraselist_weight}`,
-          `\t\tNear-word matches weight: ${nearlist_weight}`,
-          `\t\tLower-in-hierarchy linklist weight: ${lower_hierarchy_weight}`,
-          `\t\tAssociative linklist weight: ${associative_weight} (capped at ${associative_cap}%)`,
+          `\t<!--`,
+          `\t  Preset: ${presetLabel}`,
+          `\t  phrase=${phrase}, near=${near}, hierarchy=${hierarchy}, assoc=${assoc} (cap ${assocCap}%)`,
+          useZones ? `\t  Zone-biased: title=${title_weight}, body=${body_weight}` : "",
           `\t-->`,
           "",
           `\t<content>`,
@@ -2290,63 +2362,372 @@ LIMIT 500`;
           `\t\t\t<link label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_FINAL"/>`,
           `\t\t</category>`,
           "",
-          `\t\t<!-- Combine score from evidence and relationships -->`,
+          `\t\t<!-- Combine: evidence + hierarchy + associative contributions -->`,
           `\t\t<combine label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_FINAL" weight="100">`,
-          `\t\t\t<!-- Direct evidence contribution -->`,
           `\t\t\t<link label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE"/>`,
-          `\t\t\t<!-- Contributions of associative relationships -->`,
-          `\t\t\t<combine weight="${associative_cap}">`,
-          `\t\t\t\t<linklist label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="${associative_weight}" relationshiptypes="Associative"/>`,
-          `\t\t\t</combine>`,
-          `\t\t\t<!-- Contributions of direct descendants -->`,
-          `\t\t\t<combine weight="100">`,
-          `\t\t\t\t<linklist label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="${lower_hierarchy_weight}" relationshiptypes="LowerInHierarchy"/>`,
-          `\t\t\t</combine>`,
+          assocCap > 0 ? [
+            `\t\t\t<combine weight="${assocCap}">`,
+            `\t\t\t\t<linklist label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="${assoc}" relationshiptypes="Associative"/>`,
+            `\t\t\t</combine>`,
+          ].join("\n") : "",
+          hierarchy > 0 ? [
+            `\t\t\t<combine weight="100">`,
+            `\t\t\t\t<linklist label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="${hierarchy}" relationshiptypes="LowerInHierarchy"/>`,
+            `\t\t\t</combine>`,
+          ].join("\n") : "",
           `\t\t</combine>`,
           "",
-          `\t\t<!-- Evidence lookup -->`,
-          `\t\t<combine label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="100">`,
-          `\t\t\t<!-- All labels, as phrases, anywhere in the document-->`,
-          `\t\t\t<phraselist pos="0" stem="1" weight="${phraselist_weight}" foreach="1" />`,
-          `\t\t\t<!-- Constituent words of the labels, appearing near each other, anywhere in the document. -->`,
-          `\t\t\t<nearlist pos="0" stem="1" weight="${nearlist_weight}" foreach="1" />`,
-          `\t\t</combine>`,
+          ...evidenceLines,
           "",
           `\t</content>`,
           "",
           `</rulebase>`,
-        ].join("\n");
+        ].filter(l => l !== "").join("\n");
       }
 
       try {
         await semaphore.kmmSetKidTemplate(model_uri, templateContent, { templateName: template_name });
 
-        const usedWeights = content
-          ? "(custom XML content provided)"
-          : `phraselist=${phraselist_weight}, nearlist=${nearlist_weight}, LowerInHierarchy=${lower_hierarchy_weight}, Associative=${associative_weight} (cap=${associative_cap}%)`;
+        let usedDesc: string;
+        if (content) {
+          usedDesc = "(raw XML content provided)";
+        } else {
+          const presetLabel = preset ?? "custom";
+          const resolvedPreset = preset
+            ? ({ balanced: { phrase: 20, near: 50, hierarchy: 60, assoc: 50, assocCap: 30 }, short_text: { phrase: 60, near: 20, hierarchy: 40, assoc: 0, assocCap: 0 }, exact_only: { phrase: 100, near: 0, hierarchy: 0, assoc: 0, assocCap: 0 }, precision: { phrase: 70, near: 20, hierarchy: 0, assoc: 0, assocCap: 0 }, hierarchy_heavy: { phrase: 20, near: 30, hierarchy: 90, assoc: 40, assocCap: 20 }, entity: { phrase: 70, near: 30, hierarchy: 0, assoc: 0, assocCap: 0 } }[preset])
+            : { phrase: 20, near: 50, hierarchy: 60, assoc: 50, assocCap: 30 };
+          const phrase    = phraselist_weight      ?? resolvedPreset!.phrase;
+          const near      = nearlist_weight        ?? resolvedPreset!.near;
+          const hierarchy = lower_hierarchy_weight ?? resolvedPreset!.hierarchy;
+          const assoc     = associative_weight     ?? resolvedPreset!.assoc;
+          const assocCap  = associative_cap        ?? resolvedPreset!.assocCap;
+          usedDesc = `preset=${presetLabel}, phrase=${phrase}, near=${near}, hierarchy=${hierarchy}, assoc=${assoc} (cap=${assocCap}%)`;
+          if (title_weight !== undefined && body_weight !== undefined) {
+            usedDesc += `, zone-biased title=${title_weight} body=${body_weight}`;
+          }
+        }
 
         const lines = [
           "PUBLISHER TEMPLATE UPDATED",
-          "─".repeat(50),
+          "─".repeat(55),
           "",
           `  Model:         ${model_uri}`,
           `  Template file: templates/${template_name}`,
-          `  Weights:       ${usedWeights}`,
+          `  Config:        ${usedDesc}`,
           "",
           "The .kid template has been uploaded to the publisher workspace ZIP.",
           "",
           "NEXT STEPS:",
           `  1. Rebuild rules:  semaphore_publish  model_uri="${model_uri}"  wait_for_completion=true`,
           `  2. Verify:         semaphore_classify  content="<sample text>"  threshold=0`,
-          `  3. Compare:        Compare scores before and after to validate the weight change.`,
+          `  3. Compare scores before/after to validate the weight change.`,
           "",
-          "NOTE: Weight changes only affect concepts published AFTER this update.",
-          "      The CLS rule set must be rebuilt to apply the new template.",
+          "NOTE: Template changes only take effect after semaphore_publish completes.",
         ];
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
+    }
+  );
+
+  // ── semaphore_kid_template_diagnose ──────────────────────────────────────────
+  server.tool(
+    "semaphore_kid_template_diagnose",
+    "Diagnose a Semaphore classification quality problem and recommend the right fix approach.\n\n" +
+    "Given a symptom description, this tool returns a prioritised action plan specifying WHICH\n" +
+    "tools to use, in what order, and why — rather than defaulting to template tuning when a\n" +
+    "simpler label edit would suffice.\n\n" +
+    "WHEN TO USE THIS TOOL:\n" +
+    "  • You have a classification quality problem but are unsure whether to fix it via label editing,\n" +
+    "    weight tuning, threshold adjustment, or a custom template.\n" +
+    "  • You want a structured diagnosis before making changes to the model or template.\n\n" +
+    "SYMPTOMS AND DEFAULT DIAGNOSES:\n" +
+    "  false_positives        — concept fires on irrelevant documents\n" +
+    "  missing_matches        — concept fails to fire on relevant documents\n" +
+    "  score_too_uniform      — all concepts score identically, threshold separation impossible\n" +
+    "  hierarchy_not_firing   — parent concept does not fire when child concept fires\n" +
+    "  nearlist_noise         — multi-word concept fires on documents with scattered unrelated words\n" +
+    "  short_text_poor        — classification unreliable on short text (headlines, metadata)\n" +
+    "  zone_ignored           — title-zone content not weighted more than body content\n" +
+    "  associative_overfiring — related concepts boosting unrelated concept scores too aggressively\n\n" +
+    "HOW TO USE:\n" +
+    "  1. Provide 'symptom' (required) — the classification quality issue you observe.\n" +
+    "  2. Optionally provide 'example_text' (the document or snippet that misbehaves) and\n" +
+    "     'concept_uri' (the concept that is firing incorrectly or not firing).\n" +
+    "  3. The tool returns a ranked action plan: try the cheapest fix first, escalate if needed.",
+    {
+      symptom: z.enum([
+        "false_positives",
+        "missing_matches",
+        "score_too_uniform",
+        "hierarchy_not_firing",
+        "nearlist_noise",
+        "short_text_poor",
+        "zone_ignored",
+        "associative_overfiring",
+      ]).describe(
+        "The classification quality symptom to diagnose."
+      ),
+      model_uri: z.string().optional().describe(
+        "KMM model URI to target recommendations at. Get from semaphore_kmm_models_list."
+      ),
+      concept_uri: z.string().optional().describe(
+        "The concept URI that is firing incorrectly or not firing. " +
+        "If provided, specific label-inspection steps are included in the plan."
+      ),
+      example_text: z.string().optional().describe(
+        "A short example of the text that is misbehaving (the document or snippet). " +
+        "Helps the tool give more specific recommendations."
+      ),
+    },
+    async ({ symptom, model_uri, concept_uri, example_text }) => {
+      const modelNote = model_uri ? `model_uri="${model_uri}"` : 'model_uri="<your-model>"';
+      const conceptNote = concept_uri ? `concept_uri="${concept_uri}"` : 'concept_uri="<from semaphore_concept_search>"';
+
+      const plans: Record<string, string[]> = {
+        false_positives: [
+          "DIAGNOSIS: false_positives — concept fires on irrelevant documents",
+          "─".repeat(60),
+          "",
+          "ROOT CAUSE CANDIDATES (in order of likelihood):",
+          "  1. An overly-broad altLabel or hiddenLabel matches unrelated text",
+          "  2. nearlist is firing on scattered constituent words in unrelated content",
+          "  3. Associative evidence is propagating score from a related concept",
+          "",
+          "RECOMMENDED ACTION PLAN:",
+          "",
+          "  Step 1 — Inspect the concept labels (cheapest fix first)",
+          `    semaphore_concept_get  ${modelNote}  ${conceptNote}`,
+          "    Look for altLabels / hiddenLabels that are common words or short phrases.",
+          "    → If found: semaphore_concept_labels_update  action=remove  label_type=altLabel",
+          "    → Then: semaphore_publish → semaphore_classify to verify",
+          "",
+          "  Step 2 — Check if nearlist is the source (if Step 1 doesn't fix it)",
+          `    semaphore_classify  content="<false-positive example>"  threshold=0`,
+          "    If the false-positive score is < phrase_weight threshold and no exact phrase is present,",
+          "    nearlist is likely contributing. Try:",
+          `    semaphore_kid_template_set  ${modelNote}  preset=precision`,
+          "    (reduces nearlist_weight to 20, disables hierarchy/associative)",
+          "",
+          "  Step 3 — Check associative evidence (if Steps 1–2 don't fix it)",
+          `    semaphore_kid_template_set  ${modelNote}  associative_cap=0`,
+          "    This disables associative propagation entirely for this model.",
+          "",
+          "  Step 4 — Absence-firing disambiguation (advanced, when Steps 1–3 are insufficient)",
+          "    Add skos:hiddenLabel disqualifying-context words to the problem concept via",
+          "    semaphore_kmm_sparql_update, then add a not=\"1\" phraselist rule via",
+          `    semaphore_kid_template_set  ${modelNote}  content="<custom XML with not=\\"1\\" rule>"`,
+          "    This boosts true-positive scores so threshold can be raised above false-positives.",
+          example_text ? `\n  EXAMPLE TEXT PROVIDED: "${example_text.slice(0, 120)}${example_text.length > 120 ? "..." : ""}"` : "",
+          "    Use semaphore_classify with this text + threshold=0 to see all firing evidence.",
+        ],
+
+        missing_matches: [
+          "DIAGNOSIS: missing_matches — concept fails to fire on relevant documents",
+          "─".repeat(60),
+          "",
+          "ROOT CAUSE CANDIDATES:",
+          "  1. The taxonomy concept lacks altLabels for common synonyms / domain phrasings",
+          "  2. The threshold is too high — document contains correct vocabulary but scores below cutoff",
+          "  3. The concept has never been published (no CLS rules exist for it)",
+          "  4. nearlist_weight is too low for multi-word concepts in long documents",
+          "",
+          "RECOMMENDED ACTION PLAN:",
+          "",
+          "  Step 1 — Test with threshold=0 to see if the concept fires at all",
+          `    semaphore_classify  content="<relevant text>"  threshold=0`,
+          "    If the concept fires at a low score: the concept + rules are working but threshold is too high.",
+          "    → Lower the pipeline threshold, or add more altLabels to boost score.",
+          "",
+          "  Step 2 — Inspect concept labels and add synonyms",
+          `    semaphore_concept_get  ${modelNote}  ${conceptNote}`,
+          "    Add domain-specific synonyms as altLabels or abbreviations as hiddenLabels:",
+          `    semaphore_concept_labels_update  ${modelNote}  ${conceptNote}  action=add  label_type=altLabel  label_value="<synonym>"`,
+          "    → Then: semaphore_publish → semaphore_classify to verify",
+          "",
+          "  Step 3 — Boost nearlist if multi-word phrases appear split in long documents",
+          `    semaphore_kid_template_set  ${modelNote}  nearlist_weight=70`,
+          "",
+          "  Step 4 — Verify the concept has been published",
+          `    semaphore_publish_diagnose  model_uri="${model_uri ?? "<model>"}"`,
+          "    Checks that the expected number of rules were generated (should be 1+ per concept).",
+          example_text ? `\n  EXAMPLE TEXT PROVIDED: "${example_text.slice(0, 120)}${example_text.length > 120 ? "..." : ""}"` : "",
+        ],
+
+        score_too_uniform: [
+          "DIAGNOSIS: score_too_uniform — all matching concepts score identically",
+          "─".repeat(60),
+          "",
+          "ROOT CAUSE: This is almost always caused by ALL concepts having single-word labels.",
+          "  • nearlist requires multi-word labels to fire — single-word concepts score only via",
+          "    phraselist, which gives the same weight to every match → all concepts score equally.",
+          "  • Threshold-based separation becomes impossible when scores are uniform.",
+          "",
+          "RECOMMENDED ACTION PLAN:",
+          "",
+          "  Option A — Add multi-word altLabels to key concepts (preferred)",
+          "    Identify the most important concepts. Add descriptive phrase altLabels:",
+          `    semaphore_concept_labels_update  ${modelNote}  action=add  label_type=altLabel  label_value="<descriptive phrase>"`,
+          "    Multi-word labels will then generate nearlist rules, differentiating scores.",
+          "",
+          "  Option B — Raise phraselist_weight and lower nearlist_weight to 0",
+          "    This makes phrase-match count (not just presence) drive the score:",
+          `    semaphore_kid_template_set  ${modelNote}  preset=exact_only`,
+          "    Documents mentioning a concept multiple times will score proportionally higher.",
+          "",
+          "  Option C — Enable zone-biasing (if documents have reliable title/body structure)",
+          `    semaphore_kid_template_set  ${modelNote}  preset=balanced  title_weight=80  body_weight=20`,
+          "    Title mentions then outweigh body mentions, providing natural score differentiation.",
+        ],
+
+        hierarchy_not_firing: [
+          "DIAGNOSIS: hierarchy_not_firing — parent concept does not fire when child fires",
+          "─".repeat(60),
+          "",
+          "ROOT CAUSE CANDIDATES:",
+          "  1. lower_hierarchy_weight is 0 or too low in the current template",
+          "  2. The hierarchy relationship is not modelled in the KMM (missing skos:broader link)",
+          "  3. The child concept itself is not generating enough evidence to propagate",
+          "",
+          "RECOMMENDED ACTION PLAN:",
+          "",
+          "  Step 1 — Check current template hierarchy weight",
+          `    semaphore_kid_template_get  ${modelNote}`,
+          "    Look for the linklist with relationshiptypes=\"LowerInHierarchy\" — check its weight.",
+          `    → If weight is 0: semaphore_kid_template_set  ${modelNote}  preset=hierarchy_heavy`,
+          "",
+          "  Step 2 — Verify the hierarchy relationship exists in KMM",
+          `    semaphore_concept_get  ${modelNote}  ${conceptNote}`,
+          "    Check 'broader' and 'narrower' links. If missing, the SPARQL doesn't have skos:broader triples.",
+          "    Add via: semaphore_kmm_sparql_update  INSERT DATA { <child-uri> skos:broader <parent-uri> }",
+          "",
+          "  Step 3 — Tune the hierarchy weight specifically",
+          `    semaphore_kid_template_set  ${modelNote}  lower_hierarchy_weight=90`,
+          "    Then: semaphore_publish → semaphore_classify to verify parent now fires.",
+        ],
+
+        nearlist_noise: [
+          "DIAGNOSIS: nearlist_noise — concepts fire because constituent words appear scattered",
+          "─".repeat(60),
+          "",
+          "ROOT CAUSE: nearlist matches when the individual words of a multi-word label appear",
+          "  near each other (within a CLS proximity window). Long documents with broad vocabulary",
+          "  will naturally contain these word combinations by chance.",
+          "",
+          "RECOMMENDED ACTION PLAN:",
+          "",
+          "  Step 1 — Quick check: does the false positive disappear with nearlist_weight=0?",
+          `    semaphore_kid_template_set  ${modelNote}  preset=exact_only`,
+          "    Publish and test. If the false positive disappears, nearlist was the cause.",
+          "",
+          "  Step 2 — Find a balanced nearlist weight that reduces noise without losing recall",
+          `    semaphore_kid_template_set  ${modelNote}  nearlist_weight=20`,
+          "    (or use preset=precision: phrase=70, near=20, no hierarchy/associative)",
+          "",
+          "  Step 3 — If nearlist noise is from specific concepts, add altLabels for exact phrases",
+          "    This allows the concept to rely on phraselist rather than nearlist for those matches.",
+          `    semaphore_concept_labels_update  ${modelNote}  action=add  label_type=altLabel  label_value="<exact phrase>"`,
+        ],
+
+        short_text_poor: [
+          "DIAGNOSIS: short_text_poor — classification unreliable on short text",
+          "─".repeat(60),
+          "",
+          "ROOT CAUSE: Short text (headlines, metadata, ~10–50 words) provides little evidence.",
+          "  • nearlist can fire on coincidental proximity in short windows",
+          "  • hierarchy + associative propagation adds noise relative to direct signal",
+          "  • Low token count means ALL weights are reduced proportionally",
+          "",
+          "RECOMMENDED ACTION PLAN:",
+          "",
+          "  Step 1 — Switch to short_text preset",
+          `    semaphore_kid_template_set  ${modelNote}  preset=short_text`,
+          "    (phrase=60, near=20, hierarchy=40, assoc=0)",
+          "    This gives exact phrase matches the dominant weight and suppresses associative noise.",
+          "",
+          "  Step 2 — Or use exact_only for maximum precision",
+          `    semaphore_kid_template_set  ${modelNote}  preset=exact_only`,
+          "    Use this when you prefer zero false positives over recall.",
+          "",
+          "  Step 3 — Ensure concept labels include exact phrasings used in your short texts",
+          "    Short texts often use specific jargon, acronyms, or abbreviated forms.",
+          `    semaphore_concept_labels_update  ${modelNote}  action=add  label_type=hiddenLabel  label_value="<abbreviation>"`,
+          "",
+          "  Step 4 — Lower the threshold for short-text pipelines",
+          "    Short texts generate weaker signals. A threshold of 30–40 may be more appropriate than 48.",
+          "    Test: semaphore_classify  content=\"<short headline>\"  threshold=0",
+          "    Observe score distribution before setting pipeline threshold.",
+        ],
+
+        zone_ignored: [
+          "DIAGNOSIS: zone_ignored — title content not weighted more than body content",
+          "─".repeat(60),
+          "",
+          "ROOT CAUSE: The default template does not use zone-biasing — all pos=0 (body zone).",
+          "  Title/heading text is structurally more significant but treated identically to body.",
+          "",
+          "RECOMMENDED ACTION PLAN:",
+          "",
+          "  Step 1 — Verify your documents have reliable title/body zone structure",
+          "    The Semaphore CLS zones are populated from the structured document input.",
+          "    For Flux-imported documents, the JSON/XML field mapping determines zone assignment.",
+          "    Title zone = pos=1 in the CLS rule; body zone = pos=0.",
+          "    Confirm with: semaphore_classify  content=\"<title text>\" → check scores",
+          "                  semaphore_classify  content=\"<body text>\"  → compare scores",
+          "",
+          "  Step 2 — Apply zone-biased template",
+          `    semaphore_kid_template_set  ${modelNote}  preset=balanced  title_weight=80  body_weight=20`,
+          "    This generates a template where title-zone phrase/near evidence counts 4× body evidence.",
+          "    Tune title_weight/body_weight based on your document structure (e.g. 70/30 is more subtle).",
+          "",
+          "  Step 3 — Publish and validate",
+          `    semaphore_publish  model_uri="${model_uri ?? "<model>"}"  wait_for_completion=true`,
+          "    semaphore_classify with both a title-heavy and body-heavy example — verify score difference.",
+        ],
+
+        associative_overfiring: [
+          "DIAGNOSIS: associative_overfiring — related concepts inflating scores of unrelated concepts",
+          "─".repeat(60),
+          "",
+          "ROOT CAUSE: The linklist Associative contribution (skos:related links) is adding weight",
+          "  to parent/sibling concepts when only a distantly related concept has direct evidence.",
+          "",
+          "RECOMMENDED ACTION PLAN:",
+          "",
+          "  Step 1 — Disable associative evidence entirely (cleanest fix)",
+          `    semaphore_kid_template_set  ${modelNote}  associative_cap=0`,
+          "    This removes associative propagation without changing phrase/near/hierarchy weights.",
+          "    Publish and test — this usually resolves over-broad associative firing immediately.",
+          "",
+          "  Step 2 — If you want to preserve SOME associative contribution, lower the cap",
+          `    semaphore_kid_template_set  ${modelNote}  associative_cap=10  associative_weight=30`,
+          "    (cap=10 means associative can contribute at most 10% of the final score)",
+          "",
+          "  Step 3 — Inspect the skos:related links on the problem concept",
+          `    semaphore_concept_get  ${modelNote}  ${conceptNote}`,
+          "    If the related link itself is the problem (wrong semantic relation), remove it:",
+          "    semaphore_kmm_sparql_update  DELETE DATA { <concept-uri> skos:related <related-uri> }",
+        ],
+      };
+
+      const plan = plans[symptom];
+      if (!plan) {
+        return { content: [{ type: "text", text: `Unknown symptom: ${symptom}` }], isError: true };
+      }
+
+      const footer = [
+        "",
+        "─".repeat(60),
+        "GENERAL DECISION HIERARCHY:",
+        "  1. Label edit (semaphore_concept_labels_update)  — cheapest, isolated fix",
+        "  2. Threshold adjust (semaphore_classify threshold)  — zero model changes, test first",
+        "  3. Template weight tuning (semaphore_kid_template_set preset=...)  — global, affects all concepts",
+        "  4. Raw template customisation (semaphore_kid_template_set content=...)  — advanced, surgical",
+        "  Always publish after ANY change: semaphore_publish → semaphore_classify to verify.",
+      ];
+
+      return { content: [{ type: "text", text: [...plan, ...footer].filter(l => l !== "").join("\n") }] };
     }
   );
 }
