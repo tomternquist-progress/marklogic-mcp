@@ -43,6 +43,8 @@ function createMockSemaphore(overrides: Record<string, unknown> = {}) {
     kmmPublish: vi.fn(),
     kmmGetPublishSets: vi.fn(),
     kmmPatchPublishConfigForPlainSkos: vi.fn(),
+    kmmGetKidTemplate: vi.fn(),
+    kmmSetKidTemplate: vi.fn(),
     getTdeInstalledForModel: vi.fn(),
     ...overrides,
   };
@@ -526,5 +528,136 @@ describe("semaphore_kmm_skos_load handler", () => {
     });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("FAILED");
+  });
+});
+
+// ─── semaphore_kid_template_get ───────────────────────────────────────────────
+
+describe("semaphore_kid_template_get handler", () => {
+  it("returns error when kmmBaseUrl not set", async () => {
+    const { tools } = setup({ kmmBaseUrl: null });
+    const result = await tools.get("semaphore_kid_template_get")!({ model_uri: "model:Test" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("KMM is not configured");
+  });
+
+  it("returns error when credentials not configured", async () => {
+    const { tools } = setup({ kmmConfigured: false });
+    const result = await tools.get("semaphore_kid_template_get")!({ model_uri: "model:Test" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("KMM credentials");
+  });
+
+  it("returns a message when workspace has no template yet", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmGetKidTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    const result = await tools.get("semaphore_kid_template_get")!({
+      model_uri: "model:Test",
+      template_name: "ContextualCitation.kid",
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("TEMPLATE NOT FOUND");
+  });
+
+  it("returns formatted template content on success", async () => {
+    const { tools, clients } = setup();
+    const fakeTemplate = "<rulebase language=\"en\"><content/></rulebase>";
+    (clients.semaphore.kmmGetKidTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(fakeTemplate);
+    const result = await tools.get("semaphore_kid_template_get")!({ model_uri: "model:Test" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain(fakeTemplate);
+    expect(result.content[0].text).toContain("ContextualCitation.kid");
+  });
+
+  it("passes templateName to the client", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmGetKidTemplate as ReturnType<typeof vi.fn>).mockResolvedValue("<rulebase/>");
+    await tools.get("semaphore_kid_template_get")!({ model_uri: "model:Test", template_name: "Custom.kid" });
+    expect(clients.semaphore.kmmGetKidTemplate).toHaveBeenCalledWith("model:Test", "Custom.kid");
+  });
+});
+
+// ─── semaphore_kid_template_set ───────────────────────────────────────────────
+
+describe("semaphore_kid_template_set handler", () => {
+  it("returns error when kmmBaseUrl not set", async () => {
+    const { tools } = setup({ kmmBaseUrl: null });
+    const result = await tools.get("semaphore_kid_template_set")!({ model_uri: "model:Test" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("KMM is not configured");
+  });
+
+  it("returns error when credentials not configured", async () => {
+    const { tools } = setup({ kmmConfigured: false });
+    const result = await tools.get("semaphore_kid_template_set")!({ model_uri: "model:Test" });
+    expect(result.isError).toBe(true);
+  });
+
+  it("uploads raw content as-is when content param is provided", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const raw = "<rulebase language=\"en\"><content/></rulebase>";
+    const result = await tools.get("semaphore_kid_template_set")!({ model_uri: "model:Test", content: raw });
+    expect(result.isError).toBeUndefined();
+    expect(clients.semaphore.kmmSetKidTemplate).toHaveBeenCalledWith("model:Test", raw, expect.any(Object));
+    expect(result.content[0].text).toContain("raw XML content");
+  });
+
+  it("generates a template from default weights when no preset or weights given", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const result = await tools.get("semaphore_kid_template_set")!({ model_uri: "model:Test" });
+    expect(result.isError).toBeUndefined();
+    const uploadedContent: string = (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(uploadedContent).toContain("weight=\"20\""); // default phraselist
+    expect(uploadedContent).toContain("weight=\"50\""); // default nearlist
+  });
+
+  it("applies named preset weights correctly", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const result = await tools.get("semaphore_kid_template_set")!({ model_uri: "model:Test", preset: "exact_only" });
+    expect(result.isError).toBeUndefined();
+    const uploadedContent: string = (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    // exact_only: phrase=100, near=0, hierarchy=0, assoc=0
+    expect(uploadedContent).toContain("weight=\"100\""); // phraselist
+    expect(uploadedContent).not.toContain("<nearlist"); // nearlist omitted when weight=0
+    expect(result.content[0].text).toContain("exact_only");
+  });
+
+  it("overrides preset weight with explicit param", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    await tools.get("semaphore_kid_template_set")!({
+      model_uri: "model:Test",
+      preset: "balanced",
+      phraselist_weight: 40,
+    });
+    const uploadedContent: string = (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(uploadedContent).toContain("weight=\"40\""); // overridden phraselist
+    expect(uploadedContent).toContain("weight=\"50\""); // balanced nearlist unchanged
+  });
+
+  it("generates zone-biased template when title_weight and body_weight provided", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const result = await tools.get("semaphore_kid_template_set")!({
+      model_uri: "model:Test",
+      title_weight: 80,
+      body_weight: 20,
+    });
+    expect(result.isError).toBeUndefined();
+    const uploadedContent: string = (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mock.calls[0][1];
+    expect(uploadedContent).toContain("pos=\"1\""); // title zone
+    expect(uploadedContent).toContain("pos=\"0\""); // body zone
+    expect(uploadedContent).toContain("zone-biased");
+    expect(result.content[0].text).toContain("title=80");
+  });
+
+  it("sets isError on upload failure", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("zip error"));
+    const result = await tools.get("semaphore_kid_template_set")!({ model_uri: "model:Test" });
+    expect(result.isError).toBe(true);
   });
 });
