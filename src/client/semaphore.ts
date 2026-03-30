@@ -400,6 +400,21 @@ export interface KmmModel {
   id: string;
 }
 
+export interface KmmTask {
+  /** Full KMM task ID, e.g. "task:ATCDrugClassification:Test" */
+  id: string;
+  /** Parent model URI, e.g. "model:ATCDrugClassification" */
+  modelId: string;
+  /** Short task name, e.g. "Test" */
+  taskName: string;
+  /** Human-readable label */
+  label?: string;
+  /** Status short name, e.g. "Uncommitted", "Committed" */
+  status?: string;
+  /** ISO 8601 creation timestamp */
+  created?: string;
+}
+
 export interface KmmSparqlResult {
   /** Raw SPARQL XML result string */
   xml: string;
@@ -598,6 +613,49 @@ export class SemaphoreClient {
       .filter((item, idx, arr) => arr.findIndex((x) => x.id === item.id) === idx)
       // Drop any remaining internal IDs that don't look like user-created model URIs
       .filter((item) => item.id.startsWith("model:"));
+  }
+
+  /**
+   * List working copies (tasks) registered in KMM.
+   *
+   * GLOBAL (no modelUri): GET /kmm/api/specialgraph:system/teamwork:Tag/rdf:instance
+   *   Returns only tasks that were created via Studio (fully initialized, have status+created).
+   *
+   * PER-MODEL (modelUri provided): GET /kmm/api/{modelUri}/teamwork:Tag/rdf:instance
+   *   Returns all tags for that model, including API-created ones that may lack metadata.
+   *
+   * Task IDs follow the pattern "task:{ModelName}:{TaskName}" (using the "task:" prefix which
+   * expands to "urn:x-tags:"). The named graph for a task is "urn:x-evn-tag:{ModelName}:{TaskName}".
+   *
+   * Status values: teamwork:Uncommitted (open), teamwork:Committed (submitted), teamwork:Implemented (merged).
+   */
+  async listKmmTasks(modelUri?: string): Promise<KmmTask[]> {
+    const props = "teamwork%3Astatus%2Crdfs%3Alabel%2Cdcterms%3Acreated";
+    const endpoint = modelUri
+      ? `/kmm/api/${modelUri}/teamwork:Tag/rdf:instance?properties=${props}`
+      : `/kmm/api/specialgraph:system/teamwork:Tag/rdf:instance?properties=${props}`;
+    const data = await this.kmmGet<{ "@graph"?: Array<Record<string, unknown>> }>(endpoint);
+    return (data["@graph"] ?? []).map((node) => {
+      const fullId = node["@id"] as string;
+      // fullId format: "task:{ModelName}:{TaskName}"
+      const withoutPrefix = fullId.startsWith("task:") ? fullId.slice("task:".length) : fullId;
+      const colonIdx = withoutPrefix.indexOf(":");
+      const modelName = colonIdx >= 0 ? withoutPrefix.slice(0, colonIdx) : withoutPrefix;
+      const taskName = colonIdx >= 0 ? withoutPrefix.slice(colonIdx + 1) : "";
+      const labelArr = node["rdfs:label"];
+      const label = Array.isArray(labelArr)
+        ? (labelArr[0] as Record<string, string>)["@value"]
+        : undefined;
+      const statusArr = node["teamwork:status"];
+      const status = Array.isArray(statusArr)
+        ? (statusArr[0] as Record<string, string>)["@id"]?.split("#").pop()
+        : undefined;
+      const createdArr = node["dcterms:created"];
+      const created = Array.isArray(createdArr)
+        ? (createdArr[0] as Record<string, string>)["@value"]
+        : undefined;
+      return { id: fullId, modelId: `model:${modelName}`, taskName, label, status, created };
+    });
   }
 
   /**
@@ -1008,18 +1066,27 @@ export class SemaphoreClient {
       environment?: string;
       language?: string;
       async?: boolean;
+      /** Task name to publish (e.g. "Test" from "task:ATCDrugClassification:Test").
+       *  When set, publishes the task's working copy graph instead of master.
+       *  Looks up sempubpermissions:publishTask on sys/task:{Model}:{Task}/user:{user}.
+       *  Falls back to publishMaster env if publishTask is not separately configured. */
+      taskName?: string;
     } = {}
   ): Promise<{ accepted: boolean; jobId?: string; status?: string }> {
     const lang = options.language ?? "en";
     const username = this.kmmUsername;
     const modelName = modelUri.replace(/^model:/, "");
     const useAsync = options.async !== false;
+    const taskName = options.taskName;
 
-    // Step 1 — discover the Studio environment URI assigned to this user/model.
-    // The environment URI comes from sempubpermissions:publishMaster on the sys user record.
-    // It is set when a user first clicks Publish in Semaphore Studio for this model.
-    // KMM sys path uses "user:<name>" format, not bare username
-    const sysPath = `sys/${modelUri}/user:${username}`;
+    // For task publishing: use the task's sys record and publishTask permission.
+    // For model publishing: use the model's sys record and publishMaster permission.
+    const sysPath = taskName
+      ? `sys/task:${modelName}:${taskName}/user:${username}`
+      : `sys/${modelUri}/user:${username}`;
+    const permPropKey = taskName
+      ? "sempubpermissions:publishTask"
+      : "sempubpermissions:publishMaster";
     const permProps = "sempubpermissions:publishMaster%2Csempubpermissions:publishTask";
     let envUri: string | undefined;
 
@@ -1033,9 +1100,13 @@ export class SemaphoreClient {
         );
         const graph = permData["@graph"] ?? [];
         for (const node of graph) {
+          // For tasks: prefer publishTask; fall back to publishMaster.
+          // For models: use publishMaster.
+          const pt = node[permPropKey];
           const pm = node["sempubpermissions:publishMaster"];
-          if (Array.isArray(pm) && pm.length > 0) {
-            envUri = (pm[0] as Record<string, string>)["@id"];
+          const preferred = Array.isArray(pt) && pt.length > 0 ? pt : (Array.isArray(pm) && pm.length > 0 ? pm : null);
+          if (preferred) {
+            envUri = (preferred[0] as Record<string, string>)["@id"];
             break;
           }
         }
@@ -1071,8 +1142,13 @@ export class SemaphoreClient {
               if (Array.isArray(pm) && pm.length > 0) {
                 const candidateUri = (pm[0] as Record<string, string>)["@id"];
                 if (candidateUri) {
-                  // Assign to this model
+                  // Assign environment to the target resource (task or model).
+                  // For tasks: write publishTask (+ publishMaster as fallback).
+                  // For models: write both publishMaster and publishTask.
                   const token = await this.kmmApiKey();
+                  const targetSysPath = taskName
+                    ? `sys/task:${modelName}:${taskName}/user:${username}`
+                    : `sys/${modelUri}/user:${username}`;
                   const patch = [
                     {
                       op: "add",
@@ -1086,7 +1162,7 @@ export class SemaphoreClient {
                     },
                   ];
                   const patchRes = await this.kmmHttp.patch(
-                    `/kmm/api/sys/${modelUri}/user:${username}`,
+                    `/kmm/api/${targetSysPath}`,
                     patch,
                     {
                       headers: {
@@ -1119,8 +1195,9 @@ export class SemaphoreClient {
     }
 
     if (!envUri) {
+      const subject = taskName ? `task "${taskName}" of model "${modelUri}"` : `model "${modelUri}"`;
       throw new Error(
-        `Publish failed: no publisher environment is assigned to user "${username}" for model "${modelUri}",\n` +
+        `Publish failed: no publisher environment is assigned to user "${username}" for ${subject},\n` +
         `and no sibling model with an existing environment was found to borrow from.\n` +
         `Open Semaphore Studio → Administration → Publisher → Classification Server Environments\n` +
         `and ensure a CLS environment is configured. Then publish any model once from the Studio UI\n` +
@@ -1129,12 +1206,8 @@ export class SemaphoreClient {
     }
 
     // Step 2 — POST directly to the publisher API.
-    // This mirrors what Semaphore Studio does (observed via DevTools):
-    //   POST /kmm/api?path=publisher/model:{Name}/publish
-    //        &config={Name}/Semaphore-Publisher-CS-only.xml
-    //        &environment={envUri}
-    //        &async=true
-    //        &language=en
+    // For model publishing:   publisher/model:{Name}/publish
+    // For task publishing:    publisher/task:{ModelName}:{TaskName}/publish
     //
     // The publisher service returns HTTP 202 with:
     //   { status: "ACCEPTED", jobId: "...", resultLifetimeMs: ..., nextStatusCheckMs: ... }
@@ -1145,12 +1218,13 @@ export class SemaphoreClient {
     // the publish job will complete in ~2ms with 0 rules (silent failure).
     // Fix: Studio → Administration → Publisher → Classification Server Environments → (re)create.
 
-    // Determine config path. Semaphore stores workspace files at {ModelName}/{configFile}
-    // on the publisher service filesystem, even though the ZIP download strips the prefix.
+    // Determine config path and publisher target path.
+    // Semaphore stores workspace files at {ModelName}/{configFile} on the publisher filesystem.
     const configPath = options.config ?? `${modelName}/Semaphore-Publisher-CS-only.xml`;
+    const publisherTarget = taskName ? `task:${modelName}:${taskName}` : modelUri;
 
     const qs = new URLSearchParams({
-      path: `publisher/${modelUri}/publish`,
+      path: `publisher/${publisherTarget}/publish`,
       config: configPath,
       environment: envUri,
       async: String(useAsync),

@@ -309,6 +309,79 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     }
   );
 
+  // ── semaphore_task_list ───────────────────────────────────────────────────────
+  server.tool(
+    "semaphore_task_list",
+    "List open working copies (tasks) in Semaphore KMM.\n\n" +
+    "In Semaphore KMM, a 'task' is a working copy / branch of a taxonomy model — the governance mechanism\n" +
+    "for proposing and reviewing changes before they are merged into master.\n\n" +
+    "TASK LIFECYCLE:\n" +
+    "  1. Create task in Studio (Model → Working Copies → New) — status: Uncommitted\n" +
+    "  2. Edit taxonomy concepts in the task (isolated from master)\n" +
+    "  3. Publish task to staging CLS via semaphore_publish task_name=... to test classification\n" +
+    "  4. Validate with semaphore_classify against the staging rule set\n" +
+    "  5. Commit task (Studio) → status: Committed\n" +
+    "  6. Merge/implement task into master (Studio) → status: Implemented\n" +
+    "  7. Publish master to production CLS via semaphore_publish (no task_name)\n\n" +
+    "NAMED GRAPHS:\n" +
+    "  Master graph:  urn:x-evn-master:{ModelName}\n" +
+    "  Task graph:    urn:x-evn-tag:{ModelName}:{TaskName}\n\n" +
+    "  The task graph contains only the delta (added/changed concepts) relative to master.\n" +
+    "  When publishing a task, the publisher merges master + task delta to generate rules.\n\n" +
+    "NOTE: Task creation and merging require Semaphore Studio UI.\n" +
+    "      Use semaphore_publish with task_name to publish a task for classification testing.",
+    {
+      model_uri: z.string().optional().describe(
+        "Filter tasks to a specific model, e.g. 'model:IPTCMediaTopics'. " +
+        "Omit to list all tasks across all models (only shows Studio-created tasks with full metadata)."
+      ),
+    },
+    async ({ model_uri }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      try {
+        const tasks = await semaphore.listKmmTasks(model_uri);
+        if (tasks.length === 0) {
+          const scope = model_uri ? ` for ${model_uri}` : "";
+          return {
+            content: [{
+              type: "text",
+              text: `No open tasks found${scope}.\n\nTo create a task: Semaphore Studio → open model → Working Copies → New Working Copy.`,
+            }],
+          };
+        }
+        const lines = [
+          "SEMAPHORE KMM TASKS (WORKING COPIES)",
+          "─".repeat(50),
+          "",
+          ...tasks.map((t, i) => {
+            const status = t.status ?? "unknown";
+            const created = t.created ? ` | created: ${t.created.slice(0, 10)}` : "";
+            return `  ${i + 1}. ${t.id}\n     Model: ${t.modelId} | Status: ${status}${created}`;
+          }),
+          "",
+          `Total: ${tasks.length} task(s)`,
+          "",
+          "To publish a task for testing: semaphore_publish  model_uri=<model>  task_name=<taskName>",
+          "To publish master to CLS:       semaphore_publish  model_uri=<model>",
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
   // ── semaphore_kmm_model_create ────────────────────────────────────────────────
   server.tool(
     "semaphore_kmm_model_create",
@@ -804,9 +877,21 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
   // ── semaphore_publish ─────────────────────────────────────────────────────────
   server.tool(
     "semaphore_publish",
-    "Trigger a Semaphore KMM publish — compile the taxonomy model into CLS classification rules.\n\n" +
+    "Trigger a Semaphore KMM publish — compile the taxonomy model (or task working copy) into CLS classification rules.\n\n" +
     "Publishing converts the RDF taxonomy in KMM into a .rules file that the Classification Server (CLS) " +
     "uses to classify text. You must re-publish after any change to model content or publisher config.\n\n" +
+    "TASK vs MASTER PUBLISHING:\n" +
+    "  • task_name omitted → publishes the MASTER graph (urn:x-evn-master:{Model}) to production CLS.\n" +
+    "  • task_name=<name> → publishes the TASK working copy (urn:x-evn-tag:{Model}:{Task}) to CLS.\n\n" +
+    "  RECOMMENDED GOVERNANCE WORKFLOW for production taxonomy changes:\n" +
+    "    1. Create task in Studio: Model → Working Copies → New Working Copy\n" +
+    "    2. Edit taxonomy in the task (concepts are isolated from master)\n" +
+    "    3. semaphore_publish  model_uri=...  task_name=...  — publish task to test CLS\n" +
+    "    4. semaphore_classify — validate classification quality against the task rule set\n" +
+    "    5. Commit + merge task in Studio (Working Copies → Submit → Merge to Master)\n" +
+    "    6. semaphore_publish  model_uri=...  — publish master to production CLS\n\n" +
+    "  For sandbox/development (single-user, rapid iteration): publishing master directly is fine.\n" +
+    "  Use semaphore_task_list to see open tasks before publishing.\n\n" +
     "PREREQUISITES:\n" +
     "  1. PUBLISHER WORKSPACE: Created automatically the first time a publish is triggered.\n" +
     "     No Studio interaction required — workspace init happens as a side effect of publish.\n\n" +
@@ -847,6 +932,12 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "Language code to publish (default: 'en'). " +
         "Must match the language codes configured in the publisher config."
       ),
+      task_name: z.string().optional().describe(
+        "Task (working copy) name to publish instead of master, e.g. 'Test' from task:ATCDrugClassification:Test. " +
+        "Use semaphore_task_list to discover open tasks. When set, publishes the task's delta graph " +
+        "to CLS for classification testing — without merging into master. " +
+        "Omit to publish the master graph (production publish)."
+      ),
       async: z.boolean().optional().describe(
         "Use async publish (default: true). Recommended for all models — sync publish times out " +
         "for models with more than a few hundred concepts."
@@ -856,7 +947,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "Returns COMPLETE/FAILED/TIMEOUT. Use this to confirm the publish finished before classifying."
       ),
     },
-    async ({ model_uri, config, environment, language, async: useAsync, wait_for_completion }) => {
+    async ({ model_uri, config, environment, language, task_name, async: useAsync, wait_for_completion }) => {
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -876,13 +967,16 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           environment,
           language: language ?? "en",
           async: useAsync !== false,
+          taskName: task_name,
         });
 
+        const publishTarget = task_name ? `${model_uri} (task: ${task_name})` : model_uri;
         const lines = [
           "SEMAPHORE PUBLISH TRIGGERED",
           "─".repeat(50),
           "",
-          `  Model:       ${model_uri}`,
+          `  Target:      ${publishTarget}`,
+          task_name ? `  Source:      task working copy (urn:x-evn-tag:${model_uri.replace(/^model:/, "")}:${task_name})` : `  Source:      master graph (urn:x-evn-master:${model_uri.replace(/^model:/, "")})`,
           `  Language:    ${language ?? "en"}`,
           config       ? `  Config:      ${config}` : "",
           environment  ? `  Environment: ${environment}` : "",
@@ -946,6 +1040,13 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           lines.push("");
           lines.push("If classification scores are all 0, the rulenet index is still building.");
           lines.push("Wait 1-2 minutes and retry semaphore_classify.");
+          if (task_name) {
+            lines.push("");
+            lines.push("TASK WORKFLOW — next steps after validating classification quality:");
+            lines.push(`  1. Studio: open ${model_uri} → Working Copies → ${task_name} → Submit`);
+            lines.push(`  2. Studio: merge the task into master`);
+            lines.push(`  3. semaphore_publish  model_uri="${model_uri}"  — publish master to production CLS`);
+          }
         } else {
           lines.push("  Status: COMPLETE (synchronous publish)");
           lines.push("");
