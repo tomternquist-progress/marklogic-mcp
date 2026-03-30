@@ -2086,4 +2086,237 @@ LIMIT 500`;
       return { content: [{ type: "text", text: output.join("\n") }] };
     }
   );
+
+  // ── semaphore_kid_template_get ────────────────────────────────────────────────
+  server.tool(
+    "semaphore_kid_template_get",
+    "Retrieve the current Semaphore publisher rule template (.kid file) from a model's workspace.\n\n" +
+    "The .kid file is an XML template that controls how Semaphore generates CLS rules from taxonomy " +
+    "concepts. It defines the scoring weights for:\n" +
+    "  • Exact phrase matches (phraselist weight)\n" +
+    "  • Near-word matches (nearlist weight — constituent words appearing near each other)\n" +
+    "  • Hierarchy contributions (linklist LowerInHierarchy weight — child concept fires → parent gets credit)\n" +
+    "  • Associative contributions (linklist Associative weight — related concepts boost score)\n" +
+    "  • Associative cap (combine weight capping total associative contribution)\n\n" +
+    "USE THIS TO:\n" +
+    "  • Inspect the current scoring weights before tuning\n" +
+    "  • Retrieve the template XML to edit and re-upload via semaphore_kid_template_set\n" +
+    "  • Verify that a previous semaphore_kid_template_set took effect\n\n" +
+    "DEFAULT WEIGHTS (ContextualCitation.kid):\n" +
+    "  phraselist=20, nearlist=50, linklist LowerInHierarchy=60, Associative=50, associative cap=30",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI, e.g. 'model:IPTCMediaTopics'. Get from semaphore_kmm_models_list."
+      ),
+      template_name: z.string().optional().describe(
+        "Template filename to retrieve, e.g. 'ContextualCitation.kid'. " +
+        "Default: 'ContextualCitation.kid' (the standard Semaphore template)."
+      ),
+    },
+    async ({ model_uri, template_name = "ContextualCitation.kid" }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return { content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }], isError: true };
+      }
+      if (!semaphore.kmmConfigured) {
+        return { content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }], isError: true };
+      }
+      try {
+        const content = await semaphore.kmmGetKidTemplate(model_uri, template_name);
+        if (content === null) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                `TEMPLATE NOT FOUND: ${template_name}\n\n` +
+                `No publisher workspace or template found for ${model_uri}.\n\n` +
+                "Possible causes:\n" +
+                "  • The model has never been published — run semaphore_publish first to create the workspace.\n" +
+                "  • The template name is different — check with semaphore_publish_config_fix_plain_skos which template is configured.\n\n" +
+                "To set a custom template, use semaphore_kid_template_set.",
+            }],
+          };
+        }
+        const lines = [
+          `PUBLISHER TEMPLATE: ${template_name}`,
+          `Model: ${model_uri}`,
+          "─".repeat(60),
+          "",
+          content,
+          "",
+          "─".repeat(60),
+          "To customize weights or content, use semaphore_kid_template_set.",
+          "After updating the template, run semaphore_publish to rebuild the CLS rule set.",
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_kid_template_set ────────────────────────────────────────────────
+  server.tool(
+    "semaphore_kid_template_set",
+    "Upload a custom Semaphore publisher rule template (.kid file) for a model.\n\n" +
+    "The .kid template controls how the Semaphore publisher generates CLS classification rules from " +
+    "taxonomy concepts. Customizing scoring weights changes how evidence is combined:\n\n" +
+    "WEIGHT PARAMETERS (generates a ContextualCitation-style template with custom weights):\n" +
+    "  phraselist_weight       — weight for exact phrase matches (default: 20)\n" +
+    "                            Higher = exact phrase mentions drive classification more strongly.\n" +
+    "  nearlist_weight         — weight for near-word matches (default: 50)\n" +
+    "                            Higher = constituent words appearing near each other score more.\n" +
+    "  lower_hierarchy_weight  — weight for lower-in-hierarchy linklist (default: 60)\n" +
+    "                            Higher = child concept firing gives more credit to the parent.\n" +
+    "  associative_weight      — raw weight for associative linklist (default: 50)\n" +
+    "                            Higher = related concepts contribute more strongly.\n" +
+    "  associative_cap         — combine weight capping total associative contribution (default: 30)\n" +
+    "                            Acts as a ceiling on how much associative evidence can contribute.\n\n" +
+    "TUNING STRATEGY:\n" +
+    "  • If too many false positives from near-word matches → reduce nearlist_weight (e.g. 30)\n" +
+    "  • If near-word evidence should be the primary signal → increase nearlist_weight (e.g. 70)\n" +
+    "  • To rely only on exact phrase matches → set nearlist_weight=0\n" +
+    "  • To disable hierarchy propagation → set lower_hierarchy_weight=0\n" +
+    "  • To disable associative evidence → set associative_cap=0\n\n" +
+    "RAW CONTENT:\n" +
+    "  Provide 'content' with the full .kid XML to upload an entirely custom template.\n" +
+    "  Retrieve the current template with semaphore_kid_template_get to use as a starting point.\n\n" +
+    "AFTER UPDATING:\n" +
+    "  Run semaphore_publish to rebuild the CLS rule set with the new template.\n" +
+    "  Then run semaphore_classify to verify the scoring change had the desired effect.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI, e.g. 'model:IPTCMediaTopics'. Get from semaphore_kmm_models_list."
+      ),
+      template_name: z.string().optional().describe(
+        "Template filename to set, e.g. 'ContextualCitation.kid'. " +
+        "Default: 'ContextualCitation.kid'. If a non-default name is provided, " +
+        "the publisher XML config is also patched to reference it."
+      ),
+      content: z.string().optional().describe(
+        "Raw .kid XML content to upload. Mutually exclusive with weight parameters. " +
+        "Use semaphore_kid_template_get to retrieve the current template as a starting point."
+      ),
+      phraselist_weight: z.number().int().min(0).max(100).optional().describe(
+        "Weight for exact phrase matches (0–100, default: 20). " +
+        "Applied when ignored when content is provided."
+      ),
+      nearlist_weight: z.number().int().min(0).max(100).optional().describe(
+        "Weight for near-word matches (0–100, default: 50). " +
+        "Applied when ignored when content is provided."
+      ),
+      lower_hierarchy_weight: z.number().int().min(0).max(100).optional().describe(
+        "Weight for lower-in-hierarchy linklist (0–100, default: 60). " +
+        "Applied when ignored when content is provided."
+      ),
+      associative_weight: z.number().int().min(0).max(100).optional().describe(
+        "Raw associative linklist weight (0–100, default: 50). " +
+        "Applied when ignored when content is provided."
+      ),
+      associative_cap: z.number().int().min(0).max(100).optional().describe(
+        "Max total associative contribution as a combine weight (0–100, default: 30). " +
+        "Applied when ignored when content is provided."
+      ),
+    },
+    async ({
+      model_uri,
+      template_name = "ContextualCitation.kid",
+      content,
+      phraselist_weight = 20,
+      nearlist_weight = 50,
+      lower_hierarchy_weight = 60,
+      associative_weight = 50,
+      associative_cap = 30,
+    }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return { content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }], isError: true };
+      }
+      if (!semaphore.kmmConfigured) {
+        return { content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }], isError: true };
+      }
+
+      let templateContent: string;
+
+      if (content) {
+        // Raw content provided — use as-is
+        templateContent = content;
+      } else {
+        // Generate a template from the weight parameters
+        templateContent = [
+          `<!-- Template: ${template_name} -->`,
+          `<rulebase language="\${language.iso_code}">`,
+          "",
+          `\t<!--~~`,
+          `\t\tCustom ContextualCitation-style template.`,
+          `\t\tExact phrase matches weight: ${phraselist_weight}`,
+          `\t\tNear-word matches weight: ${nearlist_weight}`,
+          `\t\tLower-in-hierarchy linklist weight: ${lower_hierarchy_weight}`,
+          `\t\tAssociative linklist weight: ${associative_weight} (capped at ${associative_cap}%)`,
+          `\t-->`,
+          "",
+          `\t<content>`,
+          "",
+          `\t\t<!-- Firing category -->`,
+          `\t\t<category class="\${rulebaseClass}" name="\${resource.label}" id="\${resource.guid}">`,
+          `\t\t\t<link label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_FINAL"/>`,
+          `\t\t</category>`,
+          "",
+          `\t\t<!-- Combine score from evidence and relationships -->`,
+          `\t\t<combine label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_FINAL" weight="100">`,
+          `\t\t\t<!-- Direct evidence contribution -->`,
+          `\t\t\t<link label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE"/>`,
+          `\t\t\t<!-- Contributions of associative relationships -->`,
+          `\t\t\t<combine weight="${associative_cap}">`,
+          `\t\t\t\t<linklist label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="${associative_weight}" relationshiptypes="Associative"/>`,
+          `\t\t\t</combine>`,
+          `\t\t\t<!-- Contributions of direct descendants -->`,
+          `\t\t\t<combine weight="100">`,
+          `\t\t\t\t<linklist label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="${lower_hierarchy_weight}" relationshiptypes="LowerInHierarchy"/>`,
+          `\t\t\t</combine>`,
+          `\t\t</combine>`,
+          "",
+          `\t\t<!-- Evidence lookup -->`,
+          `\t\t<combine label="link.\${rulebaseClass}.\${resource.label}.\${language.iso_code}.\${resource.guid}_EVIDENCE" weight="100">`,
+          `\t\t\t<!-- All labels, as phrases, anywhere in the document-->`,
+          `\t\t\t<phraselist pos="0" stem="1" weight="${phraselist_weight}" foreach="1" />`,
+          `\t\t\t<!-- Constituent words of the labels, appearing near each other, anywhere in the document. -->`,
+          `\t\t\t<nearlist pos="0" stem="1" weight="${nearlist_weight}" foreach="1" />`,
+          `\t\t</combine>`,
+          "",
+          `\t</content>`,
+          "",
+          `</rulebase>`,
+        ].join("\n");
+      }
+
+      try {
+        await semaphore.kmmSetKidTemplate(model_uri, templateContent, { templateName: template_name });
+
+        const usedWeights = content
+          ? "(custom XML content provided)"
+          : `phraselist=${phraselist_weight}, nearlist=${nearlist_weight}, LowerInHierarchy=${lower_hierarchy_weight}, Associative=${associative_weight} (cap=${associative_cap}%)`;
+
+        const lines = [
+          "PUBLISHER TEMPLATE UPDATED",
+          "─".repeat(50),
+          "",
+          `  Model:         ${model_uri}`,
+          `  Template file: templates/${template_name}`,
+          `  Weights:       ${usedWeights}`,
+          "",
+          "The .kid template has been uploaded to the publisher workspace ZIP.",
+          "",
+          "NEXT STEPS:",
+          `  1. Rebuild rules:  semaphore_publish  model_uri="${model_uri}"  wait_for_completion=true`,
+          `  2. Verify:         semaphore_classify  content="<sample text>"  threshold=0`,
+          `  3. Compare:        Compare scores before and after to validate the weight change.`,
+          "",
+          "NOTE: Weight changes only affect concepts published AFTER this update.",
+          "      The CLS rule set must be rebuilt to apply the new template.",
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
 }

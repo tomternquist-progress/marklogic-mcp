@@ -1537,6 +1537,87 @@ export class SemaphoreClient {
     );
   }
 
+  // ── Publisher .kid template management ──────────────────────────────────────
+
+  /**
+   * Retrieve the content of a publisher rule template (.kid file) from the
+   * model's workspace config ZIP.
+   *
+   * @param modelUri     KMM model URI, e.g. "model:IPTCMediaTopics"
+   * @param templateName Template filename, e.g. "ContextualCitation.kid" (default)
+   * @returns The raw .kid XML string, or null if the workspace / template does not exist yet.
+   */
+  async kmmGetKidTemplate(
+    modelUri: string,
+    templateName = "ContextualCitation.kid"
+  ): Promise<string | null> {
+    const zipBuffer = await this.kmmDownloadPublishConfigZip(modelUri);
+    if (!zipBuffer) return null;
+
+    const zip = await JSZip.loadAsync(zipBuffer);
+    const key = `templates/${templateName}`;
+    if (!zip.files[key]) return null;
+    return zip.files[key].async("string");
+  }
+
+  /**
+   * Upload a publisher rule template (.kid file) into the model's workspace config ZIP.
+   *
+   * If the workspace does not exist yet, an initial bootstrap publish is triggered to
+   * create it before uploading. If a non-default template name is provided, the
+   * publisher XML is also patched to reference the new template file.
+   *
+   * After calling this method, run kmmPublish() to rebuild the CLS rule set.
+   *
+   * @param modelUri        KMM model URI, e.g. "model:IPTCMediaTopics"
+   * @param templateContent Raw .kid XML string
+   * @param options         templateName — filename to store (default: "ContextualCitation.kid")
+   */
+  async kmmSetKidTemplate(
+    modelUri: string,
+    templateContent: string,
+    options: { templateName?: string } = {}
+  ): Promise<void> {
+    const templateName = options.templateName ?? "ContextualCitation.kid";
+    const modelName = modelUri.replace(/^model:/, "");
+    const xmlFilename = "Semaphore-Publisher-CS-only.xml";
+
+    let zipBuffer = await this.kmmDownloadPublishConfigZip(modelUri);
+
+    if (!zipBuffer) {
+      logger.info("kmmSetKidTemplate: no workspace yet — bootstrapping via initial publish", { modelUri });
+      try {
+        await this.kmmPublish(modelUri, { async: false });
+        zipBuffer = await this.kmmDownloadPublishConfigZip(modelUri);
+      } catch (e) {
+        logger.warn("Bootstrap publish failed — creating fresh ZIP", { modelUri, err: String(e) });
+      }
+    }
+
+    const zip = zipBuffer ? await JSZip.loadAsync(zipBuffer) : new JSZip();
+
+    // Add or replace the template file
+    zip.file(`templates/${templateName}`, templateContent);
+
+    // If a non-default template name is used, update the publisher XML reference
+    if (templateName !== "ContextualCitation.kid") {
+      const currentXml = zip.files[xmlFilename]
+        ? await zip.files[xmlFilename].async("string")
+        : buildPlainSkosPublisherXml(modelName);
+      const updatedXml = currentXml.replace(
+        /(<property name="templateFileName" value=")[^"]*("(?:\s*\/)?>)/,
+        `$1${templateName}$2`
+      );
+      zip.file(xmlFilename, updatedXml);
+    }
+
+    const newZipBuffer = Buffer.from(
+      await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" })
+    );
+    await this.kmmUploadPublishConfigZip(modelUri, newZipBuffer);
+    logger.info("kmmSetKidTemplate: template uploaded", { modelUri, templateName });
+  }
+
   // ── CLS methods ─────────────────────────────────────────────────────────────
 
   /** Returns true if the Classification Server (CLS) is reachable. */
