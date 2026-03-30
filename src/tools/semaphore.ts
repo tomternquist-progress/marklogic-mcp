@@ -1157,7 +1157,10 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
                 "  • No publish sets are loaded — run semaphore_publish_sets to check.\n" +
                 "    If no sets are active, publish a model from Semaphore Studio first.\n" +
                 "  • The content does not match any classification rules in the active rulenet.\n\n" +
-                "Debug: run semaphore_classes to confirm classification classes are active.",
+                "Debug:\n" +
+                "  • semaphore_classes to confirm classification classes are active.\n" +
+                "  • semaphore_publish_diagnose to check rule count vs concept count.\n" +
+                "  • semaphore_kid_template_diagnose  symptom=missing_matches for a guided fix plan.",
             }],
           };
         }
@@ -1193,10 +1196,72 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           lines.push("");
         }
 
+        // ── Quality signal analysis ─────────────────────────────────────────
+        // Detect anomalous score patterns and surface the right next step.
+        const scores = cats.map(c => c.score);
+        const nonZeroScores = scores.filter(s => s > 0);
+        const uniqueScores = new Set(nonZeroScores.map(s => s.toFixed(2)));
+        const allZero = nonZeroScores.length === 0;
+        const allIdentical = uniqueScores.size === 1 && nonZeroScores.length > 2;
+        const suspiciouslyMany = cats.length > 15;
+        const hasQualitySignal = allZero || allIdentical || suspiciouslyMany;
+
+        if (hasQualitySignal) {
+          lines.push("─".repeat(50));
+          lines.push("⚠ QUALITY SIGNALS DETECTED:");
+          lines.push("");
+
+          if (allZero) {
+            lines.push("  ALL SCORES = 0");
+            lines.push("    Most likely cause: the CLS rulenet index is still building after a recent publish.");
+            lines.push("    Wait 30–60 seconds and re-run this classification.");
+            lines.push("    If it persists: run semaphore_publish_diagnose to check rule count vs concept count.");
+          }
+
+          if (allIdentical) {
+            const uniformScore = nonZeroScores[0].toFixed(2);
+            lines.push(`  ALL SCORES IDENTICAL (${uniformScore})`);
+            lines.push("    Cause: all firing concepts contribute the same weight — likely single-word labels");
+            lines.push("    matched only via phraselist (nearlist needs multi-word labels to differentiate).");
+            lines.push("    This makes threshold-based separation impossible.");
+            lines.push("");
+            lines.push("    FIX OPTIONS (try in order):");
+            lines.push("      1. Add multi-word altLabels to key concepts → semaphore_concept_labels_update");
+            lines.push("      2. Use a precision-focused velocity template → semaphore_kid_template_set preset=exact_only");
+            lines.push("      3. Add zone-biasing if docs have title/body → semaphore_kid_template_set title_weight=80 body_weight=20");
+            lines.push("    Diagnose: semaphore_kid_template_diagnose  symptom=score_too_uniform");
+          }
+
+          if (suspiciouslyMany && !allIdentical) {
+            lines.push(`  HIGH CATEGORY COUNT (${cats.length} categories)`);
+            lines.push("    This may indicate over-matching — too many concepts firing on a single document.");
+            lines.push("    Common causes: nearlist noise, overly-broad altLabels, or aggressive associative propagation.");
+            lines.push("");
+            lines.push("    FIX OPTIONS (try in order):");
+            lines.push("      1. Inspect the unexpected concepts → semaphore_concept_get on the low-scoring categories");
+            lines.push("      2. Remove over-broad labels → semaphore_concept_labels_update  action=remove");
+            lines.push("      3. Reduce nearlist contribution → semaphore_kid_template_set  preset=precision");
+            lines.push("      4. Disable associative propagation → semaphore_kid_template_set  associative_cap=0");
+            lines.push("    Diagnose: semaphore_kid_template_diagnose  symptom=false_positives");
+          }
+
+          lines.push("");
+        }
+
         lines.push("─".repeat(50));
-        lines.push("Store in MarkLogic as:");
-        lines.push('  "classification": { "categories": [...], "topCategory": {...} }');
-        lines.push("Then add a path range index on classification/categories/label for search facets.");
+        if (!hasQualitySignal) {
+          lines.push("Store in MarkLogic as:");
+          lines.push('  "classification": { "categories": [...], "topCategory": {...} }');
+          lines.push("Then add a path range index on classification/categories/label for search facets.");
+        }
+        lines.push("");
+        lines.push("CLASSIFICATION TUNING DECISION HIERARCHY:");
+        lines.push("  If results look wrong, try fixes in this order:");
+        lines.push("    1. Label edit (semaphore_concept_labels_update)  — fix one concept's labels");
+        lines.push("    2. Threshold adjust (re-run this tool with different threshold)  — zero model changes");
+        lines.push("    3. Velocity template tuning (semaphore_kid_template_set preset=...)  — global weight change");
+        lines.push("    4. Custom template (semaphore_kid_template_set content=...)  — advanced XML");
+        lines.push("  Run: semaphore_kid_template_diagnose  symptom=<symptom>  for a guided action plan.");
 
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
@@ -2170,8 +2235,22 @@ LIMIT 500`;
   server.tool(
     "semaphore_kid_template_set",
     "Upload a custom Semaphore publisher rule template (.kid file) for a model.\n\n" +
-    "The .kid template (a Velocity template) controls how the Semaphore publisher generates CLS\n" +
-    "classification rules from taxonomy concepts.\n\n" +
+    "WHAT VELOCITY TEMPLATES ARE:\n" +
+    "  The .kid file is a Velocity template that runs at PUBLISH TIME — it controls how the Semaphore\n" +
+    "  publisher converts each SKOS concept into CLS classification rules. It defines what types of\n" +
+    "  evidence score (exact phrases, near-word matches, child-concept firing, related-concept firing)\n" +
+    "  and how much each type contributes. The template is compiled once per publish and the resulting\n" +
+    "  .rules file is what the CLS uses at classification time.\n\n" +
+    "  KEY ARCHITECTURAL FACT: the template applies IDENTICALLY to every concept in the model.\n" +
+    "  A weight change raises or lowers evidence contribution for ALL concepts equally.\n" +
+    "  This is why templates are the right fix for SYSTEMIC problems and the wrong fix for\n" +
+    "  problems with a specific concept — use label editing for those.\n\n" +
+    "PRACTICAL TRIGGER FOR USING THIS TOOL:\n" +
+    "  → You find yourself wanting to make the same label edit to many concepts for the same reason.\n" +
+    "    That reason is a scoring behaviour that belongs in the template, not in individual concept labels.\n" +
+    "  → The default scoring behaviour doesn't match your content type (short headlines vs long reports,\n" +
+    "    structured documents with reliable title zones, controlled terminology with no synonyms, etc.)\n" +
+    "  → You need a rule structure (zone-biasing, absence-firing) that label editing cannot express.\n\n" +
     "WHEN TO USE THIS TOOL vs. OTHER APPROACHES:\n" +
     "  Use label editing (semaphore_concept_labels_update) FIRST:\n" +
     "    → A specific concept fires on wrong text (remove the offending altLabel)\n" +
@@ -2181,9 +2260,9 @@ LIMIT 500`;
     "    → You want to explore the precision/recall trade-off without changing the model\n" +
     "    → Quick iteration before committing to model or template changes\n" +
     "  Use this tool (template weight tuning) when:\n" +
-    "    → A SYSTEMIC issue affects ALL concepts globally (e.g. nearlist fires too broadly on all topics)\n" +
-    "    → You need to change the relative importance of phrase vs near-word vs hierarchy evidence\n" +
-    "    → You need zone-biasing (title matches should outweigh body matches)\n" +
+    "    → The same scoring problem affects every concept (nearlist noise, hierarchy not propagating,\n" +
+    "      associative links inflating scores, title zone not outweighing body)\n" +
+    "    → The content type systematically defeats the default scoring (short text, zone-structured docs)\n" +
     "    → You need absence-firing rules (boost true-positives by detecting disqualifying context)\n" +
     "  Use raw content (content param) when:\n" +
     "    → You need KID elements not covered by the weight presets (e.g. labeltypes filtering,\n" +
@@ -2435,13 +2514,28 @@ LIMIT 500`;
   server.tool(
     "semaphore_kid_template_diagnose",
     "Diagnose a Semaphore classification quality problem and recommend the right fix approach.\n\n" +
-    "Given a symptom description, this tool returns a prioritised action plan specifying WHICH\n" +
-    "tools to use, in what order, and why — rather than defaulting to template tuning when a\n" +
-    "simpler label edit would suffice.\n\n" +
+    "UNDERSTANDING THE FIX LEVELS:\n" +
+    "  Semaphore classification quality problems have three fix levels, each with different scope:\n\n" +
+    "  1. LABEL LEVEL (semaphore_concept_labels_update)\n" +
+    "     Fixes a specific concept's vocabulary — add/remove altLabels, hiddenLabels.\n" +
+    "     Scope: one concept. Cost: low. Use when the problem is isolated.\n\n" +
+    "  2. THRESHOLD LEVEL (semaphore_classify threshold param)\n" +
+    "     Adjusts the precision/recall cut-off without changing the model or rules.\n" +
+    "     Scope: all results, no model change. Cost: zero. Use to explore before committing.\n\n" +
+    "  3. VELOCITY TEMPLATE LEVEL (semaphore_kid_template_set)\n" +
+    "     Changes HOW the publisher generates rules from concepts — controls scoring weights for\n" +
+    "     phrase matches, near-word matches, hierarchy propagation, and associative propagation.\n" +
+    "     Scope: every concept in the model, equally. Requires re-publish.\n" +
+    "     Use when: the problem is SYSTEMIC (affects all or most concepts), or the content type\n" +
+    "     systematically defeats the default scoring (short text, zone-structured docs, etc.),\n" +
+    "     or you would need the same label fix on many concepts for the same reason.\n\n" +
+    "  PRACTICAL TRIGGER FOR TEMPLATE TUNING:\n" +
+    "     'I keep making the same label edit to different concepts for the same reason.'\n" +
+    "     That reason belongs in the template, not in individual concept labels.\n\n" +
     "WHEN TO USE THIS TOOL:\n" +
-    "  • You have a classification quality problem but are unsure whether to fix it via label editing,\n" +
-    "    weight tuning, threshold adjustment, or a custom template.\n" +
-    "  • You want a structured diagnosis before making changes to the model or template.\n\n" +
+    "  • You have a classification quality problem but are unsure which fix level to apply.\n" +
+    "  • semaphore_classify returned unexpected results (wrong concepts, uniform scores, too many hits).\n" +
+    "  • You want a ranked action plan before making any changes.\n\n" +
     "SYMPTOMS AND DEFAULT DIAGNOSES:\n" +
     "  false_positives        — concept fires on irrelevant documents\n" +
     "  missing_matches        — concept fails to fire on relevant documents\n" +
@@ -2455,7 +2549,7 @@ LIMIT 500`;
     "  1. Provide 'symptom' (required) — the classification quality issue you observe.\n" +
     "  2. Optionally provide 'example_text' (the document or snippet that misbehaves) and\n" +
     "     'concept_uri' (the concept that is firing incorrectly or not firing).\n" +
-    "  3. The tool returns a ranked action plan: try the cheapest fix first, escalate if needed.",
+    "  3. The tool returns a ranked action plan: label fix first, escalate to template only if needed.",
     {
       symptom: z.enum([
         "false_positives",

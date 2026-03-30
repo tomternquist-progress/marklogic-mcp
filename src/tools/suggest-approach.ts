@@ -513,6 +513,101 @@ function classify(task: string): ToolRecipe[] {
     /load.*taxon|import.*skos|skos.*load|import.*vocab|vocab.*import|publish.*taxon|taxon.*publish|iptc|eurovoc|agrovoc|unesco.*thesaur|media.*topic/.test(t);
   const isBulkClassification =
     isClassification && (isBulkImport || /bulk|all docs|collection|reprocess|pipeline/.test(t));
+  const isTemplateDesign =
+    /kid|velocity.*templ|templ.*velocity|rule.*templ|templ.*rule|templ.*design|design.*templ|weight.*tun|tun.*weight|false.positive|missing.match|classif.*qualit|qualit.*classif|classif.*tun|tun.*classif|zone.*bias|bias.*zone|short.text|headline.*classif|classif.*headline/.test(t);
+
+  // ── Velocity template design / classification quality tuning ────────────────
+  if (isTemplateDesign) {
+    results.push({
+      tool: "semaphore_kid_template_diagnose → semaphore_kid_template_set → semaphore_publish → semaphore_classify",
+      description: "Diagnose a classification quality problem and tune the Semaphore velocity template",
+      use_when: ["template-tuning", "classification-quality", "false-positives", "missing-matches", "weight-tuning", "zone-biasing"],
+      recipe: {
+        step1_diagnose: {
+          tool: "semaphore_kid_template_diagnose",
+          symptom: "<false_positives | missing_matches | score_too_uniform | hierarchy_not_firing | nearlist_noise | short_text_poor | zone_ignored | associative_overfiring>",
+          model_uri: "model:<ModelName>",
+          concept_uri: "<optional — concept that is misfiring>",
+          example_text: "<optional — text that misbehaves>",
+          note: "Returns a ranked action plan. Try label editing first before template changes.",
+        },
+        step2_inspect_current_template: {
+          tool: "semaphore_kid_template_get",
+          model_uri: "model:<ModelName>",
+          note: "See current weights before changing them.",
+        },
+        step3_apply_preset_or_weights: {
+          tool: "semaphore_kid_template_set",
+          model_uri: "model:<ModelName>",
+          preset: "<balanced | short_text | exact_only | precision | hierarchy_heavy | entity>",
+          note: "Use preset first; override individual weights if needed. Add title_weight/body_weight for zone-biasing.",
+        },
+        step4_rebuild_rules: {
+          tool: "semaphore_publish",
+          model_uri: "model:<ModelName>",
+          wait_for_completion: true,
+        },
+        step5_verify: {
+          tool: "semaphore_classify",
+          content: "<sample text>",
+          threshold: 0,
+          note: "Compare scores before/after to validate the change.",
+        },
+      },
+      rationale:
+        "The .kid file is a Velocity template that controls HOW the Semaphore publisher generates CLS rules " +
+        "from each taxonomy concept. It defines scoring weights for: exact phrase matches (phraselist), " +
+        "near-word matches (nearlist), child-to-parent hierarchy propagation (LowerInHierarchy linklist), " +
+        "and associative-link propagation. Tuning these weights is a GLOBAL change affecting every concept " +
+        "in the model — always prefer fixing individual concept labels first (semaphore_concept_labels_update) " +
+        "before reaching for template tuning. Use semaphore_kid_template_diagnose to identify whether the " +
+        "problem is label-level (surgical fix) or systematic (template fix).",
+      warnings: [
+        "Template changes affect ALL concepts in the model — test on both true-positive and false-positive examples.",
+        "nearlist_weight has NO effect on single-word concept labels; those always score via phraselist only.",
+        "Zone-biasing (title_weight/body_weight) only works if your documents have reliable title/body CLS zones.",
+        "Always run semaphore_publish after any template change — the CLS rule set must be rebuilt.",
+        "Use preset=exact_only first when debugging: it isolates phrase-match behaviour, removing nearlist/hierarchy noise.",
+      ],
+    });
+
+    // Add label-first reminder if symptoms suggest it might be a label issue
+    results.push({
+      tool: "semaphore_concept_get → semaphore_concept_labels_update → semaphore_publish",
+      description: "Fix classification quality at the label level (cheaper than template tuning)",
+      use_when: ["false-positives", "missing-matches", "label-edit", "synonym-add"],
+      recipe: {
+        step1_find_concept: {
+          tool: "semaphore_concept_search",
+          model_uri: "model:<ModelName>",
+          query: "<concept label>",
+        },
+        step2_inspect_labels: {
+          tool: "semaphore_concept_get",
+          model_uri: "model:<ModelName>",
+          concept_uri: "<from search results>",
+          note: "Look for overly broad altLabels causing false positives, or missing synonyms causing missed matches.",
+        },
+        step3_edit_label: {
+          tool: "semaphore_concept_labels_update",
+          model_uri: "model:<ModelName>",
+          concept_uri: "<concept uri>",
+          action: "<add | remove>",
+          label_type: "<altLabel | hiddenLabel | prefLabel>",
+          label_value: "<the label text>",
+        },
+        step4_publish_verify: {
+          tool: "semaphore_publish → semaphore_classify",
+        },
+      },
+      rationale:
+        "Label edits are surgical — they fix one concept without affecting others. Always try this before " +
+        "changing the velocity template. Common patterns: (1) false positive → remove the overly-broad altLabel; " +
+        "(2) missed match → add altLabel synonyms; (3) abbreviation matching → add hiddenLabel for the abbreviation.",
+      not_this_tool:
+        "If the quality problem is systematic (affects most/all concepts, not just one), use template tuning instead.",
+    });
+  }
 
   // ── Taxonomy loading pipeline ────────────────────────────────────────────────
   if (isTaxonomyLoad) {
