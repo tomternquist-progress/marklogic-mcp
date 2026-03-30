@@ -1631,12 +1631,24 @@ LIMIT 500`;
     "IMPROVING RECALL (too few correct matches):\n" +
     "  Add altLabels for common synonyms, abbreviations, or domain-specific phrasings.\n\n" +
     "PRECLUSION / NEGATIVE EVIDENCE:\n" +
-    "  Semaphore does not have a native NOT operator in standard rules.\n" +
-    "  Best approaches (in order of preference):\n" +
+    "  Semaphore does not have a native score-subtraction operator in standard KID template rules.\n" +
+    "  The CLS 'not' attribute (not=\"1\" on phraselist/nearlist) means ABSENCE-FIRING, not score-reduction:\n" +
+    "    not=\"0\" (default) — contributes weight when the pattern IS found in the document\n" +
+    "    not=\"1\"           — contributes weight when the pattern is NOT found in the document\n" +
+    "  This means hiddenLabel + not=\"1\" in the KID template creates UPWARD SEPARATION:\n" +
+    "    • Genuine concept articles (no disqualifying words) score HIGHER (phraselist + not=\"1\" both fire)\n" +
+    "    • False-positive articles (disqualifying words present) score the SAME as before (not=\"1\" contributes 0)\n" +
+    "  It does NOT reduce false-positive scores — it widens the gap between true and false positives.\n" +
+    "  Combined with a raised threshold (e.g. 65+), this can eliminate false positives IF true positives\n" +
+    "  reliably score above the new threshold. Test with semaphore_classify before committing.\n\n" +
+    "  Best approaches for false positives (in order of preference):\n" +
     "  1. Remove the label causing the match (simplest, model-level fix)\n" +
-    "  2. Narrow the concept scope — add skos:scopeNote to document intent (won't affect rules, but helps humans)\n" +
-    "  3. For complex disambiguation: use semaphore_kmm_sparql_update to add a custom rule override\n" +
-    "     (advanced — consult Semaphore documentation on manual rule templates)\n\n" +
+    "  2. hiddenLabel + not=\"1\" KID template rule → raises true-positive scores, enabling a higher threshold\n" +
+    "     Step 1: semaphore_kmm_sparql_update — add skos:hiddenLabel disqualifying-context words to the concept\n" +
+    "     Step 2: semaphore_kid_template_set content='...' — add <phraselist not=\"1\" labeltypes=\"hiddenLabel\" weight=\"N\" foreach=\"1\"/> to the EVIDENCE combine\n" +
+    "     Step 3: semaphore_publish → semaphore_classify threshold=0 on both true and false positive examples\n" +
+    "     Step 4: if separation is visible, raise pipeline threshold accordingly\n" +
+    "  3. Narrow the concept scope — add skos:scopeNote to document intent (won't affect rules, but helps humans)\n\n" +
     "IMPORTANT: After any label change, run semaphore_publish to apply the change to the Classification Server.",
     {
       model_uri: z.string().describe(
@@ -2176,7 +2188,25 @@ LIMIT 500`;
     "  • If near-word evidence should be the primary signal → increase nearlist_weight (e.g. 70)\n" +
     "  • To rely only on exact phrase matches → set nearlist_weight=0\n" +
     "  • To disable hierarchy propagation → set lower_hierarchy_weight=0\n" +
-    "  • To disable associative evidence → set associative_cap=0\n\n" +
+    "  • To disable associative evidence → set associative_cap=0\n" +
+    "  NOTE: swapping phraselist/nearlist weights (e.g. phrase=50, near=20) does NOT help single-word\n" +
+    "  concept labels — nearlist requires multi-word labels to fire, so single-word concepts score\n" +
+    "  entirely via phraselist regardless of the nearlist weight. All matched concepts end up at\n" +
+    "  the same score (phraselist weight), making threshold-based separation impossible.\n\n" +
+    "NEGATIVE EVIDENCE VIA hiddenLabel + not=\"1\" (advanced):\n" +
+    "  The CLS 'not' attribute on phraselist/nearlist means ABSENCE-FIRING, not score-reduction:\n" +
+    "    not=\"1\" fires when the pattern is NOT found → boosts true-positive articles\n" +
+    "    not=\"1\" contributes 0 when the pattern IS found → no effect on false-positive articles\n" +
+    "  To use this technique:\n" +
+    "    1. Add skos:hiddenLabel disqualifying-context words to problem concepts via semaphore_kmm_sparql_update\n" +
+    "       (e.g. 'streaming','revenue' for a 'music' art-form concept to penalise business-context matches)\n" +
+    "    2. Add to the EVIDENCE combine in the custom content:\n" +
+    "       <phraselist pos=\"0\" stem=\"1\" weight=\"N\" not=\"1\" foreach=\"1\" labeltypes=\"hiddenLabel\" />\n" +
+    "    3. Publish and test: true-positive articles (no disqualifying words) score higher;\n" +
+    "       false-positive articles score the same as before — raise threshold to exploit the gap.\n" +
+    "  Limitation: does not reduce false-positive scores; only widens the gap IF true positives\n" +
+    "  reliably lack the disqualifying vocabulary. Ineffective when true and false positives share\n" +
+    "  the same vocabulary (e.g. short RSS snippets with low token counts).\n\n" +
     "RAW CONTENT:\n" +
     "  Provide 'content' with the full .kid XML to upload an entirely custom template.\n" +
     "  Retrieve the current template with semaphore_kid_template_get to use as a starting point.\n\n" +
