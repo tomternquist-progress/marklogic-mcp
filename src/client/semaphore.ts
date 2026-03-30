@@ -618,11 +618,12 @@ export class SemaphoreClient {
   /**
    * List working copies (tasks) registered in KMM.
    *
-   * GLOBAL (no modelUri): GET /kmm/api/specialgraph:system/teamwork:Tag/rdf:instance
-   *   Returns only tasks that were created via Studio (fully initialized, have status+created).
+   * Uses the global system task list endpoint which returns Studio-created tasks with
+   * full metadata (status, created date). API-created tasks may not appear here.
    *
-   * PER-MODEL (modelUri provided): GET /kmm/api/{modelUri}/teamwork:Tag/rdf:instance
-   *   Returns all tags for that model, including API-created ones that may lack metadata.
+   * ENDPOINT (global): GET /kmm/api/specialgraph:system/teamwork:Tag/rdf:instance
+   * ENDPOINT (per-model, documented): GET /kmm/api/{modelUri}/semsys:hasTask/meta:transitiveInstance
+   *   (Documented in KMM API reference but not yet implemented in Semaphore 5.10.x)
    *
    * Task IDs follow the pattern "task:{ModelName}:{TaskName}" (using the "task:" prefix which
    * expands to "urn:x-tags:"). The named graph for a task is "urn:x-evn-tag:{ModelName}:{TaskName}".
@@ -631,11 +632,12 @@ export class SemaphoreClient {
    */
   async listKmmTasks(modelUri?: string): Promise<KmmTask[]> {
     const props = "teamwork%3Astatus%2Crdfs%3Alabel%2Cdcterms%3Acreated";
-    const endpoint = modelUri
-      ? `/kmm/api/${modelUri}/teamwork:Tag/rdf:instance?properties=${props}`
-      : `/kmm/api/specialgraph:system/teamwork:Tag/rdf:instance?properties=${props}`;
+    // Global list returns only Studio-created tasks with full metadata.
+    // Per-model semsys:hasTask/meta:transitiveInstance is the documented endpoint but requires
+    // a newer KMM version; fall back to specialgraph:system/teamwork:Tag filtering by model.
+    const endpoint = `/kmm/api/specialgraph:system/teamwork:Tag/rdf:instance?properties=${props}`;
     const data = await this.kmmGet<{ "@graph"?: Array<Record<string, unknown>> }>(endpoint);
-    return (data["@graph"] ?? []).map((node) => {
+    const tasks = (data["@graph"] ?? []).map((node) => {
       const fullId = node["@id"] as string;
       // fullId format: "task:{ModelName}:{TaskName}"
       const withoutPrefix = fullId.startsWith("task:") ? fullId.slice("task:".length) : fullId;
@@ -654,8 +656,143 @@ export class SemaphoreClient {
       const created = Array.isArray(createdArr)
         ? (createdArr[0] as Record<string, string>)["@value"]
         : undefined;
-      return { id: fullId, modelId: `model:${modelName}`, taskName, label, status, created };
+      return { id: fullId, modelId: `model:${modelName}`, taskName, label, status, created } as KmmTask;
     });
+    // Filter to the requested model if specified
+    return modelUri ? tasks.filter((t) => t.modelId === modelUri) : tasks;
+  }
+
+  /**
+   * Create a new task (working copy) for a model.
+   *
+   * DOCUMENTED ENDPOINT (KMM API reference):
+   *   POST /{graphUri}/semsys:hasTask/rdf:instance
+   *   Body: JSON-LD with @type, rdfs:label, rdfs:comment
+   *   Response: 201 Created
+   *
+   * LEGACY ENDPOINT (Semaphore 5.10.x — current latest release):
+   *   POST /{modelUri}/teamwork:Tag/rdf:instance
+   *   — Creates a model-level tag but NOT a system-level task (does not appear
+   *     in the global task list, lacks dcterms:created, and has no urn:x-evn-tag graph).
+   *
+   * This method tries the documented semsys:hasTask endpoint first. If it fails (HTTP 400
+   * with "missing rdf:type" on semsys:hasTask — meaning the property isn't defined on this
+   * KMM version), it falls back to the legacy teamwork:Tag endpoint with a warning.
+   *
+   * @returns The task ID (e.g. "task:MyModel:MyTask") if the server returns one, or a
+   *          constructed ID based on the model and label.
+   */
+  async createKmmTask(
+    modelUri: string,
+    label: string,
+    description?: string
+  ): Promise<{ id: string; fullSupport: boolean }> {
+    const modelName = modelUri.replace(/^model:/, "");
+    const token = await this.kmmApiKey();
+
+    // Body for the documented semsys:hasTask endpoint
+    const body = {
+      "@graph": [{
+        "rdfs:label": label,
+        ...(description ? { "rdfs:comment": description } : {}),
+      }],
+    };
+
+    // Try documented endpoint first
+    try {
+      const res = await this.kmmHttp.post(
+        `/kmm/api/${modelUri}/semsys:hasTask/rdf:instance`,
+        body,
+        {
+          headers: { "x-api-key": token, "Content-Type": "application/ld+json" },
+          validateStatus: (s) => s < 500,
+        }
+      );
+      if (res.status === 201 || res.status === 200) {
+        // Extract task ID from response or Location header
+        const location = res.headers?.location as string | undefined;
+        const id = location?.split("/").pop() ?? `task:${modelName}:${label}`;
+        return { id, fullSupport: true };
+      }
+      // If semsys:hasTask isn't recognized, fall through to legacy
+      const errType = (res.data as Record<string, unknown>)?.errors;
+      const isUnsupported = JSON.stringify(errType).includes("semsys:hasTask");
+      if (!isUnsupported) {
+        throw new Error(`Task creation failed: HTTP ${res.status} — ${JSON.stringify(res.data)}`);
+      }
+    } catch (e) {
+      // If it's our own thrown error, re-throw
+      if (e instanceof Error && e.message.startsWith("Task creation failed")) throw e;
+      // Otherwise fall through to legacy
+    }
+
+    // Fallback: legacy teamwork:Tag endpoint (Semaphore ≤5.10.x)
+    logger.info("semsys:hasTask not available, falling back to legacy teamwork:Tag", { modelUri });
+    const legacyBody = {
+      "@graph": [{
+        "@type": "http://topbraid.org/teamwork#Tag",
+        "http://www.w3.org/2000/01/rdf-schema#label": [{ "@value": label }],
+        ...(description ? { "http://www.w3.org/2000/01/rdf-schema#comment": [{ "@value": description }] } : {}),
+      }],
+    };
+    const res = await this.kmmHttp.post(
+      `/kmm/api/${modelUri}/teamwork:Tag/rdf:instance`,
+      legacyBody,
+      {
+        headers: { "x-api-key": token, "Content-Type": "application/ld+json" },
+        validateStatus: (s) => s < 500,
+      }
+    );
+    if (res.status === 201 || res.status === 200) {
+      return { id: `task:${modelName}:${label}`, fullSupport: false };
+    }
+    throw new Error(`Task creation failed: HTTP ${res.status} — ${JSON.stringify(res.data)}`);
+  }
+
+  /**
+   * Commit (merge) a task's changes into master.
+   *
+   * DOCUMENTED ENDPOINT (KMM API reference):
+   *   POST /sys/{taskGraphUri}
+   *   Merges the task delta graph into the master graph.
+   *
+   * AVAILABILITY: This endpoint returns "not yet supported" on Semaphore 5.10.x
+   * (the current latest release). Tasks must be committed via the Studio UI.
+   *
+   * @throws Error with a descriptive message if the server doesn't support this endpoint.
+   */
+  async commitKmmTask(
+    modelUri: string,
+    taskName: string
+  ): Promise<{ committed: boolean; message: string }> {
+    const modelName = modelUri.replace(/^model:/, "");
+    const taskGraphUri = `task:${modelName}:${taskName}`;
+    const token = await this.kmmApiKey();
+
+    const res = await this.kmmHttp.post(
+      `/kmm/api/sys/${taskGraphUri}`,
+      {},
+      {
+        headers: { "x-api-key": token, "Content-Type": "application/ld+json" },
+        validateStatus: (s) => s < 500,
+      }
+    );
+
+    if (res.status === 200 || res.status === 204) {
+      return { committed: true, message: `Task "${taskName}" committed to master.` };
+    }
+
+    const errMsg = JSON.stringify(res.data);
+    if (errMsg.includes("not yet supported")) {
+      return {
+        committed: false,
+        message:
+          `Task commit via API is not supported on this Semaphore version.\n` +
+          `Use Semaphore Studio: open ${modelUri} → Working Copies → ${taskName} → Submit → Merge to Master.`,
+      };
+    }
+
+    throw new Error(`Task commit failed: HTTP ${res.status} — ${errMsg}`);
   }
 
   /**

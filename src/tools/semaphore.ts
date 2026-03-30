@@ -382,6 +382,133 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     }
   );
 
+  // ── semaphore_task_create ──────────────────────────────────────────────────────
+  server.tool(
+    "semaphore_task_create",
+    "Create a new task (working copy) for a taxonomy model in Semaphore KMM.\n\n" +
+    "A task isolates changes from the master graph so they can be tested and reviewed\n" +
+    "before being merged. The task gets its own named graph (urn:x-evn-tag:{Model}:{Task}).\n\n" +
+    "WORKFLOW AFTER CREATION:\n" +
+    "  1. Edit concepts in the task (via Studio, or API tools that support task_name param)\n" +
+    "  2. semaphore_publish model_uri=... task_name=... — publish task to CLS for testing\n" +
+    "  3. semaphore_classify — validate classification results\n" +
+    "  4. semaphore_task_commit — merge task into master (or via Studio UI)\n" +
+    "  5. semaphore_publish model_uri=... — publish master to production CLS\n\n" +
+    "COMPATIBILITY:\n" +
+    "  The KMM API reference documents POST /{model}/semsys:hasTask/rdf:instance for task creation,\n" +
+    "  but this endpoint is not yet implemented in Semaphore 5.10.x (the current latest release).\n" +
+    "  The tool falls back to the legacy teamwork:Tag endpoint. Tasks created via the legacy endpoint\n" +
+    "  may not appear in semaphore_task_list — use Studio UI for full task lifecycle support.",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI to create the task for, e.g. 'model:IPTCMediaTopics'. " +
+        "Get from semaphore_kmm_models_list."
+      ),
+      label: z.string().describe(
+        "Short name for the task / working copy, e.g. 'AddSynonyms' or 'Q1-2026-Updates'. " +
+        "Used as the task identifier — avoid spaces and special characters."
+      ),
+      description: z.string().optional().describe(
+        "Optional description of what changes this task will contain."
+      ),
+    },
+    async ({ model_uri, label, description }) => {
+      if (!semaphore.kmmBaseUrl || !semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST, SEMAPHORE_USERNAME, and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      try {
+        const result = await semaphore.createKmmTask(model_uri, label, description);
+        const lines = [
+          "SEMAPHORE TASK CREATED",
+          "─".repeat(50),
+          "",
+          `  Task ID:    ${result.id}`,
+          `  Model:      ${model_uri}`,
+          `  Label:      ${label}`,
+          description ? `  Description: ${description}` : "",
+          "",
+        ].filter(s => s !== "");
+
+        if (!result.fullSupport) {
+          lines.push(
+            "⚠  Created via legacy API (teamwork:Tag) — Semaphore 5.10.x does not support",
+            "   the semsys:hasTask endpoint. This task may not appear in semaphore_task_list.",
+            "   For full task lifecycle support, create tasks via Semaphore Studio:",
+            `   Studio → open ${model_uri} → Working Copies → New Working Copy`,
+            "",
+          );
+        }
+
+        lines.push(
+          "Next steps:",
+          `  1. Edit taxonomy in the task (via Studio or API)`,
+          `  2. semaphore_publish  model_uri="${model_uri}"  task_name="${label}"`,
+          `  3. semaphore_classify  — validate results`,
+          `  4. semaphore_task_commit  model_uri="${model_uri}"  task_name="${label}"`,
+        );
+
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_task_commit ────────────────────────────────────────────────────
+  server.tool(
+    "semaphore_task_commit",
+    "Commit (merge) a task's changes into the master graph.\n\n" +
+    "This merges the task's delta graph (urn:x-evn-tag:{Model}:{Task}) into the model's\n" +
+    "master graph (urn:x-evn-master:{Model}). After committing, publish master to CLS.\n\n" +
+    "COMPATIBILITY:\n" +
+    "  The KMM API reference documents POST /sys/{taskGraphUri} for task commit,\n" +
+    "  but this endpoint is not yet implemented in Semaphore 5.10.x (current latest release).\n" +
+    "  The tool attempts the API call and provides Studio instructions as fallback.\n\n" +
+    "AFTER COMMIT:\n" +
+    "  semaphore_publish  model_uri=<model>  — publish master to production CLS",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI, e.g. 'model:IPTCMediaTopics'."
+      ),
+      task_name: z.string().describe(
+        "Task name to commit, e.g. 'Test' from task:ATCDrugClassification:Test. " +
+        "Use semaphore_task_list to discover open tasks."
+      ),
+    },
+    async ({ model_uri, task_name }) => {
+      if (!semaphore.kmmBaseUrl || !semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST, SEMAPHORE_USERNAME, and SEMAPHORE_PASSWORD." }],
+          isError: true,
+        };
+      }
+      try {
+        const result = await semaphore.commitKmmTask(model_uri, task_name);
+        const lines = [
+          result.committed ? "SEMAPHORE TASK COMMITTED" : "SEMAPHORE TASK COMMIT — MANUAL ACTION REQUIRED",
+          "─".repeat(50),
+          "",
+          result.message,
+        ];
+
+        if (result.committed) {
+          lines.push(
+            "",
+            "Next step: publish master to production CLS:",
+            `  semaphore_publish  model_uri="${model_uri}"`,
+          );
+        }
+
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
   // ── semaphore_kmm_model_create ────────────────────────────────────────────────
   server.tool(
     "semaphore_kmm_model_create",
