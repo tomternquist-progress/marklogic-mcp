@@ -1203,7 +1203,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         const uniqueScores = new Set(nonZeroScores.map(s => s.toFixed(2)));
         const allZero = nonZeroScores.length === 0;
         const allIdentical = uniqueScores.size === 1 && nonZeroScores.length > 2;
-        const suspiciouslyMany = cats.length > 15;
+        const suspiciouslyMany = nonZeroScores.length > 15;
         const hasQualitySignal = allZero || allIdentical || suspiciouslyMany;
 
         if (hasQualitySignal) {
