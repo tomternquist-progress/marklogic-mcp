@@ -413,9 +413,15 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
     },
     async ({ model_uri, label, description }) => {
-      if (!semaphore.kmmBaseUrl || !semaphore.kmmConfigured) {
+      if (!semaphore.kmmBaseUrl) {
         return {
-          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST, SEMAPHORE_USERNAME, and SEMAPHORE_PASSWORD." }],
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
           isError: true,
         };
       }
@@ -479,9 +485,15 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
     },
     async ({ model_uri, task_name }) => {
-      if (!semaphore.kmmBaseUrl || !semaphore.kmmConfigured) {
+      if (!semaphore.kmmBaseUrl) {
         return {
-          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST, SEMAPHORE_USERNAME, and SEMAPHORE_PASSWORD." }],
+          content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!semaphore.kmmConfigured) {
+        return {
+          content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }],
           isError: true,
         };
       }
@@ -1097,13 +1109,14 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           taskName: task_name,
         });
 
+        const modelName = model_uri.replace(/^model:/, "");
         const publishTarget = task_name ? `${model_uri} (task: ${task_name})` : model_uri;
         const lines = [
           "SEMAPHORE PUBLISH TRIGGERED",
           "─".repeat(50),
           "",
           `  Target:      ${publishTarget}`,
-          task_name ? `  Source:      task working copy (urn:x-evn-tag:${model_uri.replace(/^model:/, "")}:${task_name})` : `  Source:      master graph (urn:x-evn-master:${model_uri.replace(/^model:/, "")})`,
+          task_name ? `  Source:      task working copy (urn:x-evn-tag:${modelName}:${task_name})` : `  Source:      master graph (urn:x-evn-master:${modelName})`,
           `  Language:    ${language ?? "en"}`,
           config       ? `  Config:      ${config}` : "",
           environment  ? `  Environment: ${environment}` : "",
@@ -1126,9 +1139,8 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
             // The pak-size heuristic is unreliable for small taxonomies (≤ ~25 concepts) — their
             // paks are legitimately small. Use KMM concept count to distinguish a true 1-rule
             // failure from a correctly published small taxonomy.
-            const modelName = model_uri.replace(/^model:/, "").toLowerCase();
             const [ruleCount, kmmCount] = await Promise.all([
-              semaphore.clsRuleCount(modelName),
+              semaphore.clsRuleCount(modelName.toLowerCase()),
               semaphore.kmmConceptCount(model_uri),
             ]);
             lines.push(`  Rules loaded in CLS: ${ruleCount >= 0 ? ruleCount : "(unknown)"}`);
@@ -1141,7 +1153,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
               lines.push("⚠  WARNING: Only 1 rule loaded — this strongly suggests a publisher config problem.");
               lines.push("   Root cause: the default publisher config uses SKOS-XL label queries that hit");
               lines.push("   the empty default graph of the global SPARQL endpoint. Each model's data lives");
-              lines.push(`   in the named graph urn:x-evn-master:${model_uri.replace(/^model:/, "")}.`);
+              lines.push(`   in the named graph urn:x-evn-master:${modelName}.`);
               lines.push("   Fix: run  semaphore_publish_config_fix_plain_skos  then re-publish.");
             } else if (ruleCount > 1) {
               lines.push("✓ Publish completed successfully.");

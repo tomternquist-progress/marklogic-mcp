@@ -1269,7 +1269,6 @@ export class SemaphoreClient {
         for (const m of otherModels) {
           try {
             const sysPath = `sys/${m.id}/user:${username}`;
-            const permProps = "sempubpermissions:publishMaster%2Csempubpermissions:publishTask";
             const sysData = await this.kmmGet<{ "@graph"?: Array<Record<string, unknown>> }>(
               `/kmm/api?path=${sysPath}&properties=${permProps}&language=${lang}`
             );
