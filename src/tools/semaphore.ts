@@ -537,13 +537,17 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "  ✗ DO NOT list child concept names as altLabels on a parent concept — this is a flat anti-pattern\n" +
     "    (e.g. putting 'EC2', 'Lambda', 'S3' as altLabels on an 'AWS' top concept is WRONG)\n" +
     "  ✓ USE skos:related for cross-cutting relationships between sibling branches\n" +
-    "  ✓ Tag ALL labels with @en (or relevant language tag) — required for Semaphore CLS publishing\n\n" +
+    "  ✓ Tag ALL labels with @en (or relevant language tag) — required for Semaphore CLS publishing\n" +
+    "  ✗ Do NOT add dcterms:created, dcterms:description or other Dublin Core properties to the\n" +
+    "    ConceptScheme — KMM rejects these with domain/range warnings. Use skos:definition instead.\n\n" +
     "  RECOMMENDED STRUCTURE per concept:\n" +
     "    <ns:EC2> a skos:Concept ;\n" +
     "        skos:inScheme <ns:MyScheme> ;\n" +
     "        skos:broader <ns:Compute> ;\n" +
     "        skos:prefLabel \"Amazon EC2\"@en ;\n" +
     "        skos:altLabel \"EC2\"@en, \"Elastic Compute Cloud\"@en, \"virtual machine\"@en .\n\n" +
+    "  After loading, run semaphore_kmm_sparql_update with the SKOS-XL backfill query to make\n" +
+    "  labels appear in Studio's 'Preferred Labels' managed section (not just raw Metadata).\n\n" +
     "  Use semaphore_taxonomy_scaffold to generate a properly structured SKOS skeleton,\n" +
     "  and semaphore_taxonomy_validate to check an existing model for structural issues.\n\n" +
     "CRITICAL — CONCEPTSCHEME URI CONVENTION:\n" +
@@ -2009,9 +2013,27 @@ LIMIT 500`;
       const literal = `"${escaped}"@${lang}`;
       const triple = `${conceptRef} ${predicate} ${literal}`;
 
+      // Build SKOS-XL reification so labels appear in Studio "Preferred/Alternative Labels"
+      // managed sections rather than only in the raw Metadata view.
+      // hiddenLabel has no skosxl equivalent — only reify prefLabel and altLabel.
+      const xlLabelType = label_type === "prefLabel" ? "prefLabel"
+                        : label_type === "altLabel"  ? "altLabel"
+                        : null;
+      const xlTriples: string[] = [];
+      if (xlLabelType && uri.startsWith("http")) {
+        const typeSlug = label_type === "prefLabel" ? "pref" : "alt";
+        const labelNodeUri = `${uri}/xlabels/${lang}/${typeSlug}/${encodeURIComponent(label_value)}`;
+        xlTriples.push(
+          `<${labelNodeUri}> a <http://www.w3.org/2008/05/skos-xl#Label> .`,
+          `<${labelNodeUri}> <http://www.w3.org/2008/05/skos-xl#literalForm> ${literal} .`,
+          `${conceptRef} <http://www.w3.org/2008/05/skos-xl#${xlLabelType}> <${labelNodeUri}> .`,
+        );
+      }
+
+      const allTriples = [triple, ...xlTriples].join(" ");
       const sparql = action === "add"
-        ? `INSERT DATA { ${triple} }`
-        : `DELETE DATA { ${triple} }`;
+        ? `INSERT DATA { ${allTriples} }`
+        : `DELETE DATA { ${allTriples} }`;
 
       try {
         await semaphore.kmmSparqlUpdate(model_uri, sparql);
@@ -2294,12 +2316,19 @@ LIMIT 500`;
     "Generate a properly structured SKOS Turtle skeleton for a new taxonomy, following best practices. " +
     "Returns ready-to-load Turtle text that can be passed directly to semaphore_kmm_skos_load.\n\n" +
     "WHAT THIS GENERATES:\n" +
-    "  - A skos:ConceptScheme with skos:hasTopConcept links\n" +
+    "  - A skos:ConceptScheme with skos:hasTopConcept links and skos:definition (no dcterms:* metadata)\n" +
     "  - Top-level concepts with skos:topConceptOf and skos:narrower links\n" +
     "  - Narrower (child) concepts with skos:broader back-links\n" +
     "  - Placeholder skos:definition on top concepts\n" +
     "  - All labels tagged with the specified language (default: @en)\n" +
     "  - skos:altLabel stubs on child concepts (to be filled in with synonyms, NOT child names)\n\n" +
+    "IMPORTANT — AVOID dcterms:* METADATA ON ConceptScheme:\n" +
+    "  Do NOT add dcterms:created, dcterms:description, or other Dublin Core properties to the\n" +
+    "  skos:ConceptScheme node. KMM's domain/range validation rejects these with 'Definition\n" +
+    "  incomplete — domain or range not valid' warnings. Use instead:\n" +
+    "    skos:definition  — for descriptions (replaces dcterms:description)\n" +
+    "    skos:note        — for general notes\n" +
+    "  Do NOT add any dcterms:created timestamp — KMM tracks creation internally.\n\n" +
     "SKOS BEST PRACTICES REMINDER:\n" +
     "  ✓ skos:narrower/skos:broader = hierarchy (child concept IS-A parent)\n" +
     "  ✓ skos:altLabel = synonyms/abbreviations for THAT concept only\n" +
@@ -2394,6 +2423,14 @@ LIMIT 500`;
       const turtle = lines.join("\n");
       const conceptCount = top_concepts.length + top_concepts.reduce((sum, tc) => sum + (tc.narrower?.length ?? 0), 0);
 
+      const skosXlBackfillSparql =
+        `PREFIX skos: <http://www.w3.org/2004/02/skos/core#> ` +
+        `PREFIX skosxl: <http://www.w3.org/2008/05/skos-xl#> ` +
+        `INSERT { ?c skosxl:prefLabel ?n . ?n a skosxl:Label . ?n skosxl:literalForm ?l . } ` +
+        `WHERE { ?c a skos:Concept ; skos:prefLabel ?l . ` +
+        `BIND(IRI(CONCAT(STR(?c),"/xlabels/",LANG(?l),"/pref/",ENCODE_FOR_URI(STR(?l)))) AS ?n) ` +
+        `FILTER NOT EXISTS { ?n a skosxl:Label } }`;
+
       const output = [
         "TAXONOMY SCAFFOLD GENERATED",
         "─".repeat(50),
@@ -2414,8 +2451,11 @@ LIMIT 500`;
         "  3. Replace any TODO placeholders",
         "  4. semaphore_kmm_skos_load  model_uri='<your-model>'  skos_content='<turtle above>'",
         "  5. semaphore_taxonomy_validate  model_uri='<your-model>'  (check structure)",
-        "  6. semaphore_publish_config_fix_plain_skos  model_uri='<your-model>'",
-        "  7. semaphore_publish  model_uri='<your-model>'",
+        "  6. Add SKOS-XL reification so Studio shows labels in 'Preferred Labels' managed section:",
+        `     semaphore_kmm_sparql_update  model_uri='<your-model>'`,
+        `     sparql='${skosXlBackfillSparql}'`,
+        "  7. semaphore_publish_config_fix_plain_skos  model_uri='<your-model>'",
+        "  8. semaphore_publish  model_uri='<your-model>'",
       ];
 
       return { content: [{ type: "text", text: output.join("\n") }] };
