@@ -29,6 +29,16 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
         "     excludes nulls since null never satisfies a comparison.\n" +
         "  3. Use ml_eval_javascript with the SJS Optic API: require('/MarkLogic/optic') and filter\n" +
         "     with Array.from(q.result()).filter(r => r['schema.view.col'] !== null).\n\n" +
+        "JOINS — COLUMN REFERENCES AFTER joinInner:\n" +
+        "  After op.fromView('schema','view','alias'), use op.viewCol('alias','col') in ALL subsequent\n" +
+        "  operators (where, groupBy, select, orderBy). Using op.col('alias.col') FAILS with SQL-NOCOLUMN.\n" +
+        "  Example:\n" +
+        "    var e = op.fromView('gdelt','events','e');\n" +
+        "    var g = op.fromView('gdelt','gkg','g');\n" +
+        "    e.joinInner(g, op.on(op.viewCol('e','SOURCEURL'), op.viewCol('g','DocId')))\n" +
+        "     .groupBy(op.viewCol('e','Country'), [op.count('cnt', op.viewCol('e','ID'))])\n" +
+        "  Result column names use the alias prefix: r['e.Country'], r['g.DocId'], r['cnt'].\n" +
+        "  Without an alias, columns are schema.view.col (e.g. r['gdelt.events.Country']).\n\n" +
         "OPTIC IN EVAL: The 'op' module is NOT a global in ml_eval_javascript. You must require it:\n" +
         "  var op = require('/MarkLogic/optic');\n" +
         "  However, prefer ml_optic_query for analytics — it handles the require and serialization."
@@ -52,6 +62,11 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         let msg = appendTdeHint(toToolError(err));
+        if (msg.includes("SQL-NOCOLUMN") && msg.includes("Column not found")) {
+          const colMatch = msg.match(/Column not found:\s*(\S+)/);
+          const col = colMatch?.[1] ?? "unknown";
+          msg += `\nHint: "${col}" was not resolved. After a joinInner with aliases (e.g. op.fromView('s','v','e')), you must use op.viewCol('e','colName') — NOT op.col('e.colName'). The dotted form only works in result row keys, not as operator arguments.`;
+        }
         if (msg.includes("OPTIC-INVALARGS") && msg.includes("orderBy")) {
           msg += "\nHint: order-by accepts exactly 1 argument. For a single sort key use: {\"ns\":\"op\",\"fn\":\"order-by\",\"args\":[{\"ns\":\"op\",\"fn\":\"desc\",\"args\":[\"col\"]}]}. For MULTIPLE sort keys, wrap them in a nested array as the single argument: {\"ns\":\"op\",\"fn\":\"order-by\",\"args\":[[{\"ns\":\"op\",\"fn\":\"asc\",\"args\":[\"col1\"]},{\"ns\":\"op\",\"fn\":\"desc\",\"args\":[\"col2\"]}]]}.";
         }
