@@ -2369,12 +2369,14 @@ LIMIT 500`;
       const ns = namespace.endsWith("/") || namespace.endsWith("#") ? namespace : namespace + "/";
       const prefix = scheme_id.toLowerCase().replace(/[^a-z0-9]/g, "");
       const lang = language ?? "en";
+      // Strip trailing "Taxonomy" from scheme_id to avoid doubled suffix (e.g. "FooTaxonomyTaxonomy")
+      const schemeBase = scheme_id.replace(/Taxonomy$/i, "");
 
       const lines: string[] = [
         `@prefix skos: <http://www.w3.org/2004/02/skos/core#> .`,
         `@prefix ${prefix}: <${ns}> .`,
         "",
-        `${prefix}:${scheme_id}Taxonomy a skos:ConceptScheme ;`,
+        `${prefix}:${schemeBase}Taxonomy a skos:ConceptScheme ;`,
         `    skos:prefLabel "${scheme_name}"@${lang} ;`,
         `    skos:definition "Hierarchical taxonomy of ${scheme_name}"@${lang} ;`,
       ];
@@ -2390,8 +2392,8 @@ LIMIT 500`;
         lines.push(`# ── TOP CONCEPT: ${tc.label.toUpperCase()} ${"─".repeat(Math.max(0, 50 - tc.label.length))}`);
         lines.push("");
         lines.push(`${prefix}:${tc.id} a skos:Concept ;`);
-        lines.push(`    skos:inScheme ${prefix}:${scheme_id}Taxonomy ;`);
-        lines.push(`    skos:topConceptOf ${prefix}:${scheme_id}Taxonomy ;`);
+        lines.push(`    skos:inScheme ${prefix}:${schemeBase}Taxonomy ;`);
+        lines.push(`    skos:topConceptOf ${prefix}:${schemeBase}Taxonomy ;`);
         lines.push(`    skos:prefLabel "${tc.label}"@${lang} ;`);
         if (tc.definition) {
           lines.push(`    skos:definition "${tc.definition.replace(/"/g, '\\"')}"@${lang} ;`);
@@ -2408,7 +2410,7 @@ LIMIT 500`;
         for (const child of (tc.narrower ?? [])) {
           const altLabels = (child.alt_labels ?? []).map(a => `"${a.replace(/"/g, '\\"')}"@${lang}`);
           lines.push(`${prefix}:${child.id} a skos:Concept ;`);
-          lines.push(`    skos:inScheme ${prefix}:${scheme_id}Taxonomy ;`);
+          lines.push(`    skos:inScheme ${prefix}:${schemeBase}Taxonomy ;`);
           lines.push(`    skos:broader ${prefix}:${tc.id} ;`);
           lines.push(`    skos:prefLabel "${child.label}"@${lang} ;`);
           if (altLabels.length > 0) {
@@ -2427,7 +2429,8 @@ LIMIT 500`;
         `PREFIX skos: <http://www.w3.org/2004/02/skos/core#> ` +
         `PREFIX skosxl: <http://www.w3.org/2008/05/skos-xl#> ` +
         `INSERT { ?c skosxl:prefLabel ?n . ?n a skosxl:Label . ?n skosxl:literalForm ?l . } ` +
-        `WHERE { ?c a skos:Concept ; skos:prefLabel ?l . ` +
+        `WHERE { { ?c a skos:Concept } UNION { ?c a skos:ConceptScheme } ` +
+        `?c skos:prefLabel ?l . ` +
         `BIND(IRI(CONCAT(STR(?c),"/xlabels/",LANG(?l),"/pref/",ENCODE_FOR_URI(STR(?l)))) AS ?n) ` +
         `FILTER NOT EXISTS { ?n a skosxl:Label } }`;
 
@@ -2451,7 +2454,9 @@ LIMIT 500`;
         "  3. Replace any TODO placeholders",
         "  4. semaphore_kmm_skos_load  model_uri='<your-model>'  skos_content='<turtle above>'",
         "  5. semaphore_taxonomy_validate  model_uri='<your-model>'  (check structure)",
-        "  6. Add SKOS-XL reification so Studio shows labels in 'Preferred Labels' managed section:",
+        "  6. ⚠️  REQUIRED — Add SKOS-XL reification IMMEDIATELY after loading.",
+        "     Without this step, Semaphore Studio shows 'No preferred labels' / 'Create a preferred label'",
+        "     even though the plain skos:prefLabel triples exist. Studio manages SKOS-XL labels, not plain SKOS.",
         `     semaphore_kmm_sparql_update  model_uri='<your-model>'`,
         `     sparql='${skosXlBackfillSparql}'`,
         "  7. semaphore_publish_config_fix_plain_skos  model_uri='<your-model>'",

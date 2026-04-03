@@ -511,6 +511,8 @@ function classify(task: string): ToolRecipe[] {
     /classif|semaphore|categori|tag|taxonom|concept|label|automat.*tag|enrichment|metadata.*enrich|nlp|named.entity|annotation/.test(t);
   const isTaxonomyLoad =
     /load.*taxon|import.*skos|skos.*load|import.*vocab|vocab.*import|publish.*taxon|taxon.*publish|iptc|eurovoc|agrovoc|unesco.*thesaur|media.*topic/.test(t);
+  const isTaxonomyCreate =
+    /create.*taxon|new.*taxon|build.*taxon|generat.*taxon|taxon.*creat|taxon.*from.scratch|scaffold.*taxon|taxon.*scaffold/.test(t);
   const isBulkClassification =
     isClassification && (isBulkImport || /bulk|all docs|collection|reprocess|pipeline/.test(t));
   const isTemplateDesign =
@@ -606,6 +608,68 @@ function classify(task: string): ToolRecipe[] {
         "(2) missed match → add altLabel synonyms; (3) abbreviation matching → add hiddenLabel for the abbreviation.",
       not_this_tool:
         "If the quality problem is systematic (affects most/all concepts, not just one), use template tuning instead.",
+    });
+  }
+
+  // ── Create new taxonomy from scratch ────────────────────────────────────────
+  if (isTaxonomyCreate) {
+    results.push({
+      tool: "semaphore_taxonomy_scaffold → semaphore_kmm_model_create → semaphore_kmm_skos_load → semaphore_kmm_sparql_update (SKOS-XL) → semaphore_publish_config_fix_plain_skos → semaphore_publish",
+      description: "End-to-end pipeline to create a new taxonomy from scratch and publish it to the Classification Server",
+      use_when: ["create-taxonomy", "new-taxonomy", "build-taxonomy", "scaffold-taxonomy"],
+      recipe: {
+        step1_scaffold: {
+          tool: "semaphore_taxonomy_scaffold",
+          scheme_name: "<e.g. 'AWS Services Taxonomy'>",
+          scheme_id: "<CamelCase e.g. 'AWSServices'>",
+          namespace: "<e.g. 'http://example.com/taxonomy/aws/'>",
+          top_concepts: "<array of { id, label, narrower: [{ id, label, alt_labels }] }>",
+          note: "Generates SKOS Turtle with skos:prefLabel and skos:altLabel stubs on every concept. Edit the output to add real synonyms before loading.",
+        },
+        step2_create_model: {
+          tool: "semaphore_kmm_model_create",
+          name: "<same as scheme_id>",
+          default_namespace: "<same namespace as scaffold>",
+        },
+        step3_load_skos: {
+          tool: "semaphore_kmm_skos_load",
+          model_uri: "model:<ModelName>",
+          skos_content: "<Turtle from step 1>",
+        },
+        step4_skosxl_backfill: {
+          tool: "semaphore_kmm_sparql_update",
+          model_uri: "model:<ModelName>",
+          sparql: "PREFIX skos: <http://www.w3.org/2004/02/skos/core#> PREFIX skosxl: <http://www.w3.org/2008/05/skos-xl#> INSERT { ?c skosxl:prefLabel ?n . ?n a skosxl:Label . ?n skosxl:literalForm ?l . } WHERE { { ?c a skos:Concept } UNION { ?c a skos:ConceptScheme } ?c skos:prefLabel ?l . BIND(IRI(CONCAT(STR(?c),\"/xlabels/\",LANG(?l),\"/pref/\",ENCODE_FOR_URI(STR(?l)))) AS ?n) FILTER NOT EXISTS { ?n a skosxl:Label } }",
+          note: "REQUIRED — without this, Studio shows 'No preferred labels' / 'Create a preferred label' on every concept even though skos:prefLabel triples exist. Studio's Preferred Labels panel manages SKOS-XL labels, not plain SKOS.",
+        },
+        step5_fix_publisher_config: {
+          tool: "semaphore_publish_config_fix_plain_skos",
+          model_uri: "model:<ModelName>",
+          note: "Adds GRAPH clause + plain SKOS label queries. Required to avoid the '1 rule only' silent failure.",
+        },
+        step6_publish: {
+          tool: "semaphore_publish",
+          model_uri: "model:<ModelName>",
+          wait_for_completion: true,
+        },
+        step7_test: {
+          tool: "semaphore_classify",
+          content: "<sample text mentioning concepts from the taxonomy>",
+          threshold: 0,
+        },
+      },
+      rationale:
+        "Creating a taxonomy from scratch requires the SKOS-XL backfill (step 4) immediately after loading. " +
+        "This is the most commonly skipped step: the scaffold generates correct skos:prefLabel triples, " +
+        "but Semaphore Studio's 'Preferred Labels' panel displays SKOS-XL labels (skosxl:prefLabel), not plain skos:prefLabel. " +
+        "Without the backfill, Studio shows 'No preferred labels' / 'Create a preferred label' on every concept " +
+        "even though the data is correct — leading to the false impression that the taxonomy was not generated properly. " +
+        "The SKOS-XL backfill SPARQL creates skosxl:Label nodes from the existing skos:prefLabel triples.",
+      warnings: [
+        "SKOS-XL backfill (step 4) is MANDATORY for new taxonomies — do not skip it.",
+        "If you see 'Create a preferred label' in Studio after loading, run the SKOS-XL backfill SPARQL.",
+        "semaphore_publish_config_fix_plain_skos is also required to avoid the '1 rule only' publish failure.",
+      ],
     });
   }
 
