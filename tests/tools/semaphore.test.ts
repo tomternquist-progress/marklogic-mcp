@@ -50,9 +50,20 @@ function createMockSemaphore(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createMockDocuments() {
+  return {
+    get: vi.fn(),
+    list: vi.fn(),
+    put: vi.fn(),
+    del: vi.fn(),
+    patchDocument: vi.fn(),
+  };
+}
+
 function createMockClients(semaphoreOverrides?: Record<string, unknown>) {
   return {
     semaphore: createMockSemaphore(semaphoreOverrides),
+    documents: createMockDocuments(),
   };
 }
 
@@ -75,6 +86,7 @@ describe("registerSemaphoreTools – registration", () => {
       "semaphore_classes",
       "semaphore_cls_languages",
       "semaphore_classify",
+      "semaphore_classify_batch",
       "semaphore_kmm_models_list",
       "semaphore_kmm_model_create",
       "semaphore_kmm_skos_load",
@@ -327,6 +339,123 @@ describe("semaphore_classify handler", () => {
     (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("CLS unreachable"));
     const result = await tools.get("semaphore_classify")!({ content: "test" });
     expect(result.isError).toBe(true);
+  });
+});
+
+// ─── semaphore_classify_batch ────────────────────────────────────────────────
+
+describe("semaphore_classify_batch handler", () => {
+  it("returns error when Semaphore is not configured", async () => {
+    const { tools } = setup({ configured: false });
+    const result = await tools.get("semaphore_classify_batch")!({ uris: ["/doc/a.json"] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("not configured");
+  });
+
+  it("returns error when neither uris nor collection is provided", async () => {
+    const { tools } = setup();
+    const result = await tools.get("semaphore_classify_batch")!({});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("at least one of");
+  });
+
+  it("classifies each URI and returns per-document results", async () => {
+    const { tools, clients } = setup();
+    (clients.documents.get as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ content: "Document about football." })
+      .mockResolvedValueOnce({ content: "Document about climate change." });
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce({ categories: [{ className: "IPTC", label: "Sports", id: "u1", score: 0.9 }] })
+      .mockResolvedValueOnce({ categories: [{ className: "IPTC", label: "Environment", id: "u2", score: 0.85 }] });
+
+    const result = await tools.get("semaphore_classify_batch")!({
+      uris: ["/doc/a.json", "/doc/b.json"],
+    });
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("Documents classified: 2/2");
+    expect(text).toContain("Total categories:     2");
+    expect(text).toContain("/doc/a.json");
+    expect(text).toContain("/doc/b.json");
+  });
+
+  it("lists collection documents then classifies each one", async () => {
+    const { tools, clients } = setup();
+    (clients.documents.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      uris: ["/col/x.json", "/col/y.json"],
+    });
+    (clients.documents.get as ReturnType<typeof vi.fn>).mockResolvedValue({ content: "some text" });
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({ categories: [] });
+
+    await tools.get("semaphore_classify_batch")!({ collection: "my-col" });
+
+    expect(clients.documents.list).toHaveBeenCalledWith(
+      expect.objectContaining({ collection: "my-col" })
+    );
+    expect(clients.semaphore.classify).toHaveBeenCalledTimes(2);
+  });
+
+  it("passes threshold and publish_sets through to the classifier", async () => {
+    const { tools, clients } = setup();
+    (clients.documents.get as ReturnType<typeof vi.fn>).mockResolvedValue({ content: "text" });
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({ categories: [] });
+
+    await tools.get("semaphore_classify_batch")!({
+      uris: ["/doc/a.json"],
+      threshold: 60,
+      publish_sets: ["iptcmediatopics", "unescothesaurus"],
+    });
+
+    expect(clients.semaphore.classify).toHaveBeenCalledWith(
+      "text",
+      60,
+      undefined,
+      ["iptcmediatopics", "unescothesaurus"]
+    );
+  });
+
+  it("records document fetch errors without aborting the whole batch", async () => {
+    const { tools, clients } = setup();
+    (clients.documents.get as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("404 not found"))
+      .mockResolvedValueOnce({ content: "good doc" });
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({
+      categories: [{ className: "C", label: "L", id: "x", score: 0.5 }],
+    });
+
+    const result = await tools.get("semaphore_classify_batch")!({
+      uris: ["/missing.json", "/good.json"],
+    });
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("Documents classified: 1/2");
+    expect(text).toContain("ERRORS:");
+    expect(text).toContain("/missing.json");
+  });
+
+  it("returns 'no documents' when collection is empty", async () => {
+    const { tools, clients } = setup();
+    (clients.documents.list as ReturnType<typeof vi.fn>).mockResolvedValue({ uris: [] });
+
+    const result = await tools.get("semaphore_classify_batch")!({ collection: "empty-col" });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("No documents found");
+  });
+
+  it("serialises object document content to string before classifying", async () => {
+    const { tools, clients } = setup();
+    const docContent = { title: "AI in healthcare", body: "Machine learning ..." };
+    (clients.documents.get as ReturnType<typeof vi.fn>).mockResolvedValue({ content: docContent });
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({ categories: [] });
+
+    await tools.get("semaphore_classify_batch")!({ uris: ["/doc/a.json"] });
+
+    const calledWith = (clients.semaphore.classify as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(typeof calledWith).toBe("string");
+    expect(calledWith).toContain("AI in healthcare");
   });
 });
 

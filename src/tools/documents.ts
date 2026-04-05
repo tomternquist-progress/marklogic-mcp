@@ -127,6 +127,16 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
       },
       async ({ uri, content, content_type, collections, database }) => {
         try {
+          // Normalize content_type shorthands. z.preprocess handles this when the MCP SDK
+          // validates args through Zod, but the mock test harness calls handlers directly
+          // without schema parsing, so we also normalize here for test correctness.
+          const CONTENT_TYPE_SHORTCUTS: Record<string, string> = {
+            json: "application/json", xml: "application/xml", text: "text/plain",
+            javascript: "application/javascript", js: "application/javascript",
+            xquery: "application/xquery", xqy: "application/xquery",
+          };
+          const effectiveContentType = CONTENT_TYPE_SHORTCUTS[(content_type as string)?.toLowerCase()] ?? content_type;
+
           // Auto-inject the TDE collection when storing to the Schemas DB under /tde/.
           // ml_document_put does NOT auto-add this collection, so TDE templates end up without it
           // and op.fromView() returns SQL-TABLENOTFOUND even though the template file exists.
@@ -135,7 +145,7 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
           const effectiveCollections = isTdeWrite && !collections?.includes(TDE_COLLECTION)
             ? [...(collections ?? []), TDE_COLLECTION]
             : collections;
-          await clients.documents.put(uri, content, content_type, { collections: effectiveCollections, database });
+          await clients.documents.put(uri, content, effectiveContentType, { collections: effectiveCollections, database });
 
           // Static-check SJS modules written to the Modules database
           const isModulesDb = (database ?? "").toLowerCase() === "modules";

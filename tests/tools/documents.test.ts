@@ -54,7 +54,7 @@ describe("registerDocumentTools – tool registration", () => {
     expect(tools.has("ml_document_patch")).toBe(false);
   });
 
-  it("registers all 5 tools when readonly=false", () => {
+  it("registers all write tools when readonly=false", () => {
     const { server, tools } = createMockServer();
     registerDocumentTools(server as never, createMockClients() as never, false);
 
@@ -63,6 +63,13 @@ describe("registerDocumentTools – tool registration", () => {
     expect(tools.has("ml_document_put")).toBe(true);
     expect(tools.has("ml_document_delete")).toBe(true);
     expect(tools.has("ml_document_patch")).toBe(true);
+    expect(tools.has("ml_document_patch_batch")).toBe(true);
+  });
+
+  it("does not register ml_document_patch_batch when readonly=true", () => {
+    const { server, tools } = createMockServer();
+    registerDocumentTools(server as never, createMockClients() as never, true);
+    expect(tools.has("ml_document_patch_batch")).toBe(false);
   });
 });
 
@@ -329,5 +336,139 @@ describe("ml_document_patch handler (readonly=false)", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("409");
+  });
+});
+
+// ─── ml_document_put content_type shorthands ──────────────────────────────
+
+describe("ml_document_put content_type shorthand normalization", () => {
+  const shorthands: Array<[string, string]> = [
+    ["json", "application/json"],
+    ["xml", "application/xml"],
+    ["text", "text/plain"],
+    ["javascript", "application/javascript"],
+    ["js", "application/javascript"],
+    ["xquery", "application/xquery"],
+    ["xqy", "application/xquery"],
+  ];
+
+  for (const [shorthand, mime] of shorthands) {
+    it(`normalises "${shorthand}" → "${mime}"`, async () => {
+      const { server, tools } = createMockServer();
+      const clients = createMockClients();
+      registerDocumentTools(server as never, clients as never, false);
+      clients.documents.put.mockResolvedValue(undefined);
+
+      const result = await tools.get("ml_document_put")!({
+        uri: "/data/doc",
+        content: "{}",
+        content_type: shorthand,
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(clients.documents.put).toHaveBeenCalledWith(
+        "/data/doc",
+        "{}",
+        mime,
+        expect.any(Object)
+      );
+    });
+  }
+});
+
+// ─── ml_document_patch_batch ──────────────────────────────────────────────
+
+describe("ml_document_patch_batch handler (readonly=false)", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerDocumentTools(mock.server as never, clients as never, false);
+    tools = mock.tools;
+  });
+
+  const patch = { patch: [{ insert: { context: "/node()", position: "last-child", content: { enriched: true } } }] };
+
+  it("returns error when neither uris nor collection is provided", async () => {
+    const result = await tools.get("ml_document_patch_batch")!({ patch });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("at least one of");
+  });
+
+  it("patches all URIs in the provided list and reports success count", async () => {
+    clients.documents.patchDocument.mockResolvedValue(undefined);
+    const result = await tools.get("ml_document_patch_batch")!({
+      uris: ["/doc/a.json", "/doc/b.json", "/doc/c.json"],
+      patch,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(clients.documents.patchDocument).toHaveBeenCalledTimes(3);
+    const text = result.content[0].text;
+    expect(text).toContain("Attempted: 3");
+    expect(text).toContain("Succeeded: 3");
+    expect(text).toContain("Failed:    0");
+  });
+
+  it("lists collection documents then patches each one", async () => {
+    clients.documents.list.mockResolvedValue({ uris: ["/col/x.json", "/col/y.json"] });
+    clients.documents.patchDocument.mockResolvedValue(undefined);
+
+    const result = await tools.get("ml_document_patch_batch")!({
+      collection: "my-collection",
+      patch,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(clients.documents.list).toHaveBeenCalledWith(
+      expect.objectContaining({ collection: "my-collection" })
+    );
+    expect(clients.documents.patchDocument).toHaveBeenCalledTimes(2);
+    expect(result.content[0].text).toContain("Succeeded: 2");
+  });
+
+  it("deduplicates URIs when a URI appears in both uris list and collection", async () => {
+    clients.documents.list.mockResolvedValue({ uris: ["/doc/a.json", "/doc/b.json"] });
+    clients.documents.patchDocument.mockResolvedValue(undefined);
+
+    await tools.get("ml_document_patch_batch")!({
+      uris: ["/doc/a.json"],
+      collection: "col",
+      patch,
+    });
+
+    // /doc/a.json appears in both — should only be patched once
+    expect(clients.documents.patchDocument).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports per-document failures without short-circuiting", async () => {
+    clients.documents.patchDocument
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new MarkLogicError("not found", 404))
+      .mockResolvedValueOnce(undefined);
+
+    const result = await tools.get("ml_document_patch_batch")!({
+      uris: ["/doc/a.json", "/doc/b.json", "/doc/c.json"],
+      patch,
+    });
+
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("Succeeded: 2");
+    expect(text).toContain("Failed:    1");
+    expect(text).toContain("/doc/b.json");
+  });
+
+  it("returns 'no documents' when collection is empty", async () => {
+    clients.documents.list.mockResolvedValue({ uris: [] });
+    const result = await tools.get("ml_document_patch_batch")!({
+      collection: "empty-col",
+      patch,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("No documents found");
   });
 });
