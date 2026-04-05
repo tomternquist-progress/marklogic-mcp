@@ -33,6 +33,19 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients,
     "  Cross-graph joins (querying 2+ GRAPH <uri> clauses) are especially prone to cartesian\n" +
     "  explosions when predicate patterns overlap. Add LIMIT 100 to all exploratory queries.\n" +
     "  Example: SELECT ... WHERE { GRAPH <g1> { ... } GRAPH <g2> { ... } } LIMIT 100\n\n" +
+    "TDE TRIPLE EXTRACTION — DEBUGGING EMPTY SPARQL RESULTS:\n" +
+    "  TDE templates can extract triples from documents. If SPARQL returns empty after installing a TDE\n" +
+    "  template that includes a 'triples' section, check all three of the following before concluding the query is wrong:\n" +
+    "  1. TRIPLE INDEX: verify it is ON for the database. Run ml_eval_javascript:\n" +
+    "       xdmp.databaseTripleIndex(xdmp.database())\n" +
+    "     Returns true/false. If false, enable it in Admin UI: Databases → <db> → triple-index=true → OK.\n" +
+    "  2. REINDEX IN PROGRESS: TDE triple extraction requires a full reindex after the template is installed.\n" +
+    "     Check ml_reindex_status — if a reindex is running, wait for it to finish before querying.\n" +
+    "  3. TRIPLE SYNTAX IN TDE: triple subject/predicate/object must use {\"val\": \"<XPath-expr>\"} — using\n" +
+    "     {\"column\": \"<name>\"} in a triple section installs silently but extracts no triples.\n" +
+    "  4. ANY TRIPLES AT ALL: run a broad query to see if any triples exist:\n" +
+    "       SELECT * WHERE { ?s ?p ?o } LIMIT 10\n" +
+    "     Empty result confirms no triples have been materialized yet (index or reindex issue).\n\n" +
     "COMBINING WITH DOCUMENTS (multi-model): Join op.fromSPARQL() with op.fromView() in ml_eval_javascript.\n" +
     "Use p.on(leftCol, rightCol) for equi-joins — both args must be direct column refs, not expressions.\n" +
     "Key column-naming rules after a fromView+fromSPARQL join:\n" +

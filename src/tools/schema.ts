@@ -122,7 +122,15 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
     "  1. Triple subject/object must use { \"val\": \"<XPath>\" }, NOT { \"column\": \"<name>\" }\n" +
     "     Correct: { \"subject\": { \"val\": \"sem:iri(fn:concat('http://.../', id))\" } }\n" +
     "  2. Parent axis (../id) does NOT work in JSON sub-templates — use fn:root()/parentElement/field\n" +
-    "  3. scalarType 'IRI' is NOT valid for row columns — use 'string' and construct IRIs in triples section",
+    "  3. scalarType 'IRI' is NOT valid for row columns — use 'string' and construct IRIs in triples section\n\n" +
+    "COLLECTION-SCOPED TEMPLATES (apply TDE to a subset of documents):\n" +
+    "  The 'collections' filter inside a TDE template must use an ARRAY — a bare string value silently\n" +
+    "  installs without error but the view will not exist (SQL-TABLENOTFOUND on every query):\n" +
+    "    WRONG: \"collections\": {\"collection\": \"my-col\"}         ← string, silently broken\n" +
+    "    RIGHT: \"collections\": {\"collection\": [\"my-col\"]}       ← array required\n" +
+    "  Full example:\n" +
+    "    { \"template\": { \"context\": \"/\", \"collections\": {\"collection\": [\"my-col\"]},\n" +
+    "                     \"rows\": [{\"schemaName\": \"s\", \"viewName\": \"v\", \"columns\": [...]}] } }",
     {
       uri: z.string().describe("URI for the TDE template in the Schemas database, e.g. /tde/my-template.json"),
       content: z.string().describe("TDE template content (JSON or XML)"),

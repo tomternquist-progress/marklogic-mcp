@@ -99,14 +99,29 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
       {
         uri: z.string().describe("Document URI. For Modules database, this is the require/invoke path, e.g. /lib/utils.sjs"),
         content: z.string().describe("Document content as string (JSON, XML, plain text, JavaScript, or XQuery)"),
-        content_type: z.enum([
-          "application/json",
-          "application/xml",
-          "text/plain",
-          "application/javascript",
-          "application/xquery",
-          "application/vnd.marklogic-js-module",
-        ]).describe("Content type. Use 'application/javascript' for .sjs modules (works in all versions), 'application/vnd.marklogic-js-module' for the proper MarkLogic MIME type (required in some versions for correct require() resolution), 'application/xquery' for .xqy modules."),
+        content_type: z.preprocess(
+          (v) => {
+            if (typeof v !== "string") return v;
+            const shortcuts: Record<string, string> = {
+              json: "application/json",
+              xml: "application/xml",
+              text: "text/plain",
+              javascript: "application/javascript",
+              js: "application/javascript",
+              xquery: "application/xquery",
+              xqy: "application/xquery",
+            };
+            return shortcuts[v.toLowerCase()] ?? v;
+          },
+          z.enum([
+            "application/json",
+            "application/xml",
+            "text/plain",
+            "application/javascript",
+            "application/xquery",
+            "application/vnd.marklogic-js-module",
+          ])
+        ).describe("Content MIME type. Accepts full MIME types or shorthands: 'json'→application/json, 'xml'→application/xml, 'text'→text/plain, 'javascript'/'js'→application/javascript, 'xquery'/'xqy'→application/xquery. Use 'application/vnd.marklogic-js-module' for the proper MarkLogic MIME type (required in some versions for correct require() resolution)."),
         collections: z.array(z.string()).optional().describe("Collection URIs to add document to. For TDE templates use 'http://marklogic.com/xdmp/tde'. Each entry becomes a separate collection."),
         database: z.string().optional().describe("Database name. Use 'Schemas' for TDE templates, 'Modules' for executable SJS/XQuery modules."),
       },
@@ -195,6 +210,93 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
         try {
           await clients.documents.patchDocument(uri, patch, database);
           return { content: [{ type: "text", text: `Document patched: ${uri}` }] };
+        } catch (err) {
+          return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        }
+      }
+    );
+
+    server.tool(
+      "ml_document_patch_batch",
+      "Apply the same patch operation to multiple MarkLogic documents in one call. Requires ML_READONLY=false.\n\n" +
+      "Accepts either a list of explicit URIs or a collection URI (or both). For a collection, up to 500\n" +
+      "documents are patched per call — use pagination (start parameter) to process larger sets.\n\n" +
+      "USE THIS TOOL WHEN:\n" +
+      "  - Enriching a document set with classification metadata after semaphore_classify_batch\n" +
+      "  - Stamping a status field onto all documents in a collection\n" +
+      "  - Adding a missing field to every document matching a collection\n\n" +
+      "The same patch descriptor is applied to every document. For per-document patches, use ml_document_patch.\n\n" +
+      "PATCH FORMAT: same as ml_document_patch — a MarkLogic patch descriptor object.",
+      {
+        uris: z.array(z.string()).max(200).optional().describe(
+          "Explicit list of document URIs to patch (max 200). Provide this OR collection (or both)."
+        ),
+        collection: z.string().optional().describe(
+          "Patch all documents in this collection (up to page_length per call). " +
+          "Use start to paginate through large collections."
+        ),
+        start: z.number().int().positive().optional().describe(
+          "Pagination start for collection listing (default: 1). Ignored when only uris is provided."
+        ),
+        page_length: z.number().int().positive().max(500).optional().describe(
+          "Number of documents to fetch from collection per call (default: 100, max: 500)."
+        ),
+        patch: z.record(z.unknown()).describe(
+          "MarkLogic patch descriptor to apply to every document. Same format as ml_document_patch.\n" +
+          "Example — add a field to all documents:\n" +
+          "  { \"patch\": [{ \"insert\": { \"context\": \"/node()\", \"position\": \"last-child\", \"content\": { \"enriched\": true } } }] }"
+        ),
+        database: z.string().optional().describe("Database name"),
+      },
+      async ({ uris, collection, start, page_length, patch, database }) => {
+        if (!uris?.length && !collection) {
+          return {
+            content: [{ type: "text", text: "Provide at least one of: uris (list of document URIs) or collection." }],
+            isError: true,
+          };
+        }
+        try {
+          const targetUris: string[] = [...(uris ?? [])];
+
+          if (collection) {
+            const listing = await clients.documents.list({
+              collection,
+              start: start ?? 1,
+              pageLength: page_length ?? 100,
+              database,
+            });
+            for (const u of listing.uris ?? []) {
+              if (!targetUris.includes(u)) targetUris.push(u);
+            }
+          }
+
+          if (targetUris.length === 0) {
+            return { content: [{ type: "text", text: "No documents found to patch." }] };
+          }
+
+          let succeeded = 0;
+          const failures: string[] = [];
+          for (const u of targetUris) {
+            try {
+              await clients.documents.patchDocument(u, patch, database);
+              succeeded++;
+            } catch (err) {
+              failures.push(`${u}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+
+          const lines = [
+            `BATCH PATCH COMPLETE`,
+            `  Attempted: ${targetUris.length}`,
+            `  Succeeded: ${succeeded}`,
+            `  Failed:    ${failures.length}`,
+          ];
+          if (failures.length > 0) {
+            lines.push("", "FAILURES:");
+            for (const f of failures.slice(0, 20)) lines.push(`  • ${f}`);
+            if (failures.length > 20) lines.push(`  … and ${failures.length - 20} more`);
+          }
+          return { content: [{ type: "text", text: lines.join("\n") }] };
         } catch (err) {
           return { content: [{ type: "text", text: toToolError(err) }], isError: true };
         }

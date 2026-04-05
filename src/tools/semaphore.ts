@@ -1478,11 +1478,16 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
 
           if (suspiciouslyMany && !allIdentical) {
             lines.push(`  HIGH CATEGORY COUNT (${cats.length} categories)`);
-            lines.push("    This may indicate over-matching — too many concepts firing on a single document.");
-            lines.push("    Common causes: nearlist noise, overly-broad altLabels, or aggressive associative propagation.");
+            lines.push("    This may indicate over-matching, OR you are classifying against all available taxonomies");
+            lines.push("    when you only need results from a specific subset.");
             lines.push("");
-            lines.push("    FIX OPTIONS (try in order):");
-            lines.push("      1. Inspect the unexpected concepts → semaphore_concept_get on the low-scoring categories");
+            lines.push("    SCOPE RESULTS TO SPECIFIC TAXONOMIES (most effective first step):");
+            lines.push("      Re-run with publish_sets=[\"name1\",\"name2\"] to restrict classification to the");
+            lines.push("      taxonomies you actually need. Use semaphore_publish_sets to list available names.");
+            lines.push("      Example: publish_sets=[\"iptcmediatopics\",\"unescothesaurus\",\"unsdg\"]");
+            lines.push("");
+            lines.push("    IF STILL TOO MANY AFTER SCOPING (over-matching within a taxonomy):");
+            lines.push("      1. Inspect unexpected concepts → semaphore_concept_get on the low-scoring categories");
             lines.push("      2. Remove over-broad labels → semaphore_concept_labels_update  action=remove");
             lines.push("      3. Reduce nearlist contribution → semaphore_kid_template_set  preset=precision");
             lines.push("      4. Disable associative propagation → semaphore_kid_template_set  associative_cap=0");
@@ -1506,6 +1511,143 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         lines.push("    3. Velocity template tuning (semaphore_kid_template_set preset=...)  — global weight change");
         lines.push("    4. Custom template (semaphore_kid_template_set content=...)  — advanced XML");
         lines.push("  Run: semaphore_kid_template_diagnose  symptom=<symptom>  for a guided action plan.");
+
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_classify_batch ──────────────────────────────────────────────────
+  server.tool(
+    "semaphore_classify_batch",
+    "Classify multiple MarkLogic documents against a controlled-vocabulary taxonomy in one call.\n\n" +
+    "Accepts a list of document URIs or a collection URI (or both). For each document, retrieves\n" +
+    "its content from MarkLogic and classifies it against the Semaphore CLS. Returns an array of\n" +
+    "per-document classification results.\n\n" +
+    "USE THIS TOOL WHEN:\n" +
+    "  - You need to classify a set of documents (up to ~50) and store the results back in MarkLogic\n" +
+    "  - Building a classification enrichment pipeline over a small corpus\n" +
+    "  - Verifying classification quality across multiple documents at once\n\n" +
+    "FOR LARGER CORPORA (100+ documents):\n" +
+    "  Use flux_import or flux_reprocess with classify_with_semaphore=true instead — Flux handles\n" +
+    "  parallel classification at scale and writes results directly back to the documents.\n\n" +
+    "SCOPE TO SPECIFIC TAXONOMIES:\n" +
+    "  Pass publish_sets=[\"name1\",\"name2\"] to restrict which taxonomies are queried.\n" +
+    "  Without this, ALL active publish sets are used — which can produce hundreds of results per document.\n" +
+    "  Use semaphore_publish_sets to list available names.\n\n" +
+    "RESULTS FORMAT:\n" +
+    "  An array of objects: { uri, categories: [{className, label, id, score}], error? }\n" +
+    "  Documents that could not be retrieved or classified include an 'error' field.",
+    {
+      uris: z.array(z.string()).max(50).optional().describe(
+        "List of document URIs to classify (max 50). Provide this OR collection (or both)."
+      ),
+      collection: z.string().optional().describe(
+        "Classify all documents in this collection (up to page_length). " +
+        "Use semaphore_classify_batch multiple times with start to process larger collections."
+      ),
+      start: z.number().int().positive().optional().describe(
+        "Pagination start for collection listing (default: 1)."
+      ),
+      page_length: z.number().int().positive().max(50).optional().describe(
+        "Number of documents to fetch from the collection (default: 20, max: 50)."
+      ),
+      threshold: z.number().int().min(0).max(100).optional().describe(
+        "Minimum confidence threshold 0–100 (default: 0). Same scale as semaphore_classify."
+      ),
+      publish_set: z.string().optional().describe(
+        "Restrict to a single publish set (e.g. 'iptcmediatopics'). " +
+        "Run semaphore_publish_sets to discover available names."
+      ),
+      publish_sets: z.array(z.string()).optional().describe(
+        "Restrict to a list of publish sets (e.g. ['iptcmediatopics', 'unescothesaurus']). " +
+        "Strongly recommended when classifying against many active taxonomies — without this " +
+        "every document is classified against all publish sets, which is slow and noisy. " +
+        "Takes precedence over publish_set when both are provided."
+      ),
+      database: z.string().optional().describe("Database name for document retrieval"),
+    },
+    async ({ uris, collection, start, page_length, threshold, publish_set, publish_sets, database }) => {
+      if (!semaphore.configured) {
+        return {
+          content: [{ type: "text", text: "Semaphore is not configured. Set SEMAPHORE_URL in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!uris?.length && !collection) {
+        return {
+          content: [{ type: "text", text: "Provide at least one of: uris (list of document URIs) or collection." }],
+          isError: true,
+        };
+      }
+      try {
+        // Build target URI list
+        const targetUris: string[] = [...(uris ?? [])];
+        if (collection) {
+          const listing = await clients.documents.list({
+            collection,
+            start: start ?? 1,
+            pageLength: page_length ?? 20,
+            database,
+          });
+          for (const u of listing.uris ?? []) {
+            if (!targetUris.includes(u)) targetUris.push(u);
+          }
+        }
+
+        if (targetUris.length === 0) {
+          return { content: [{ type: "text", text: "No documents found to classify." }] };
+        }
+
+        // Classify each document
+        const results: Array<{
+          uri: string;
+          categories?: Array<{ className: string; label: string; id: string; score: number }>;
+          error?: string;
+        }> = [];
+
+        for (const uri of targetUris) {
+          try {
+            const doc = await clients.documents.get(uri, database, false);
+            const textContent = typeof doc.content === "string"
+              ? doc.content
+              : JSON.stringify(doc.content);
+            const clsResult = await semaphore.classify(textContent, threshold ?? 0, publish_set, publish_sets);
+            results.push({ uri, categories: clsResult.categories });
+          } catch (err) {
+            results.push({ uri, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+
+        const succeeded = results.filter(r => !r.error);
+        const failed = results.filter(r => r.error);
+        const totalCats = succeeded.reduce((n, r) => n + (r.categories?.length ?? 0), 0);
+
+        const lines = [
+          "SEMAPHORE BATCH CLASSIFICATION RESULTS",
+          "─".repeat(50),
+          `  Documents classified: ${succeeded.length}/${targetUris.length}`,
+          `  Total categories:     ${totalCats}`,
+          `  Avg per document:     ${succeeded.length > 0 ? (totalCats / succeeded.length).toFixed(1) : "—"}`,
+          "",
+        ];
+
+        for (const r of succeeded) {
+          const top = r.categories?.slice(0, 3).map(c => `${c.label} [${c.score.toFixed(2)}]`).join(", ") ?? "";
+          lines.push(`  ${r.uri}`);
+          lines.push(`    ${r.categories?.length ?? 0} categories — top: ${top || "(none)"}`);
+        }
+
+        if (failed.length > 0) {
+          lines.push("", "ERRORS:");
+          for (const r of failed) lines.push(`  • ${r.uri}: ${r.error}`);
+        }
+
+        lines.push("", "─".repeat(50));
+        lines.push("Full results as JSON:");
+        lines.push(JSON.stringify(results, null, 2));
 
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
