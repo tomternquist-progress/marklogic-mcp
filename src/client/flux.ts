@@ -25,14 +25,17 @@ export interface FluxRunResult {
 export class FluxClient {
   private readonly http: AxiosInstance;
   readonly configured: boolean;
+  /** The base URL the client is configured to reach the flux runner at. */
+  readonly runnerUrl: string;
 
   constructor(
     runnerUrl: string | undefined,
     private readonly mlConfig: ConnectionConfig
   ) {
     this.configured = !!runnerUrl;
+    this.runnerUrl = runnerUrl ?? "http://flux-runner:8080";
     this.http = axios.create({
-      baseURL: runnerUrl ?? "http://flux-runner:8080",
+      baseURL: this.runnerUrl,
       // Flux jobs can be long — use a generous timeout; the runner also enforces its own
       timeout: 35 * 60 * 1000,
     });

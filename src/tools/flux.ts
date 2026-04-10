@@ -132,7 +132,7 @@ export function registerFluxTools(
         "import-mlcp-archive",
         "import-rdf-files",
       ]).describe("Flux import subcommand. Use 'import-aggregate-json-files' for: (a) a JSON file containing an array of records (e.g. openFDA results[], Socrata JSON), or (b) JSONL / JSON Lines files (one JSON object per line) — add '--json-lines' via extra_args. Use 'import-files' for individual JSON or XML files where each file becomes one document — it does NOT parse JSONL (each line would be treated as a separate file path, not a JSON record)."),
-      path: z.string().optional().describe("Path to read from — either a path on the flux-runner container filesystem or an S3 URI (s3a://bucket/key). For local files: if you wrote the file on the host (e.g. via a Python script), copy it into the flux-runner container first with 'docker cp /tmp/file.jsonl flux-runner-httpurl-test:/tmp/file.jsonl', then set path='/tmp/file.jsonl'. For import-jdbc, omit this. Use http_url instead to download from a URL directly."),
+      path: z.string().optional().describe("Path to read from — an S3 URI (s3a://bucket/key) or a path on the flux-runner container filesystem. ⚠ VOLUME-MOUNT CAVEAT: Files placed into the runner container via Docker volume mounts (e.g. -v /data:/data) may NOT be visible to Flux, because the runner's HTTP API spawns Flux as a Spark subprocess that does not inherit the same filesystem context. This causes Spark PATH_NOT_FOUND errors even though 'docker exec ls' confirms the file exists. RECOMMENDED: Use http_url instead — serve the file over HTTP and let the runner download it. This is the most reliable approach for local data. Only use path for S3 URIs or files baked into the runner image. For import-jdbc, omit this."),
       http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals). NOTE: The URL must be reachable from the flux runner host, not your local machine. .gz files are passed to Flux as-is and decompressed by Spark natively. ZIP (.zip) files are automatically extracted by the runner — all files inside the ZIP are extracted to a temp directory and that directory is passed as --path. WARNING: Socrata /rows.json endpoints return an array-of-arrays format (not an array of objects) — use /rows.csv with import-delimited-files instead for one-document-per-record imports."),
       collections: z.array(z.string()).optional().describe("MarkLogic collections to assign to imported documents"),
       permissions: z.string().optional().describe("Comma-separated role:capability pairs, e.g. 'rest-reader:read,rest-writer:update'. Valid MarkLogic capabilities: read, insert, update, execute, node-update. Must be lowercase."),
@@ -351,14 +351,13 @@ export function registerFluxTools(
       // ── PATH_NOT_FOUND: explain runner-local paths ──
       if (!result.success && condensedOutput.includes("PATH_NOT_FOUND")) {
         const enhanced = condensedOutput +
-          "\n\nHint: --path must exist on the flux runner host (inside the flux runner container), " +
-          "not your local machine or the MCP server container.\n" +
-          "  • Files written by shell commands land on the host OS, not inside either container.\n" +
-          "  • Files placed via 'docker cp' into the runner container ARE visible to the runner's\n" +
-          "    filesystem (docker exec ls confirms this), but the runner's HTTP API spawns the Flux\n" +
-          "    subprocess with a different classpath context that may not resolve the same path.\n" +
-          "    Workaround: run Flux directly with 'docker exec <runner-container> /flux/bin/flux ...'\n" +
-          "  • Best alternative for local data: serve the file over HTTP and use http_url instead.";
+          "\n\nHint: The Flux runner's HTTP API spawns Flux as a Spark subprocess that does NOT " +
+          "inherit Docker volume mounts or docker-cp'd files — even if 'docker exec ls' shows the file.\n" +
+          "  ➜ RECOMMENDED: Serve the file over HTTP and use http_url instead of path.\n" +
+          "    This is the most reliable approach for local data.\n" +
+          "  • path works reliably only for S3 URIs (s3a://...) or files baked into the runner image.\n" +
+          "  • If you must use a local file: run Flux directly via 'docker exec <runner> /flux/bin/flux ...'\n" +
+          "    (bypasses the HTTP API and sees the container filesystem).";
         return { content: [{ type: "text", text: preflightNote + formatResult({ ...result, output: enhanced }) }], isError: true };
       }
 
@@ -835,25 +834,26 @@ export function registerFluxTools(
   // ── flux_status ──────────────────────────────────────────────────────────────
   server.tool(
     "flux_status",
-    "Check whether the Flux runner sidecar is reachable and return its version.",
+    "Check whether the Flux runner sidecar is reachable and return its version. Reports the configured runner URL so you can verify it points to the correct host.",
     {},
     async () => {
+      const runnerUrl = flux.runnerUrl;
       if (!flux.configured) {
         return {
-          content: [{ type: "text", text: "Flux runner is not configured. Set the FLUX_RUNNER_URL environment variable." }],
+          content: [{ type: "text", text: `Flux runner is not configured. Set the FLUX_RUNNER_URL environment variable.\nConfigured URL: ${runnerUrl}` }],
           isError: true,
         };
       }
       const healthy = await flux.healthCheck();
       if (!healthy) {
         return {
-          content: [{ type: "text", text: "Flux runner is not reachable. Ensure the flux-runner service is running and FLUX_RUNNER_URL is correct." }],
+          content: [{ type: "text", text: `Flux runner is not reachable at ${runnerUrl}.\nEnsure the flux-runner service is running and FLUX_RUNNER_URL points to the correct host.\nIf you are connected to a remote MCP server, the runner URL should be reachable from that server, not from your local machine.` }],
           isError: true,
         };
       }
       const result = await flux.run(["version"]);
       return {
-        content: [{ type: "text", text: `Flux runner is healthy.\n\n${result.output}` }],
+        content: [{ type: "text", text: `Flux runner is healthy.\nRunner URL: ${runnerUrl}\n\n${result.output}` }],
       };
     }
   );
