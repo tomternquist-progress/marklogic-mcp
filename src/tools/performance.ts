@@ -128,8 +128,20 @@ export function registerPerformanceTools(
     "• Stand count approaching 64 → merge urgently needed (forest unavailable at 64 stands)\n" +
     "• Fragment count approaching 96 million → add forests and rebalance\n" +
     "• deletedFragmentPct > 20% → significant fragmentation; background merge will reclaim space\n" +
+    "  After bulk deletes, deleted fragments inflate disk and memory metrics — use ml_force_merge " +
+    "  to reclaim space before capacity projections.\n" +
     "• mergeInProgress = true → normal background activity; heavy I/O is expected\n" +
     "• XDMP-INMMTREEFULL / XDMP-INMMLISTFULL in error log → increase in-memory stand settings\n\n" +
+    "MEMORY METRICS CAVEATS:\n" +
+    "• memory-forest-size (host level) includes cached on-disk stand pages that get compressed " +
+    "during merges. It is NOT proportional to document count — do not use bytes/doc for linear " +
+    "capacity projections. Use disk-size for point-in-time projection (validated to ~4% accuracy).\n" +
+    "• Per-index memory from forestStatus('memoryDetail') only reports cache-warmed data, not " +
+    "total resident pages. Newly added or unqueried indexes show 0. Use stand-level " +
+    "memorySummary.rangeIndexesBytes for the aggregate across all range indexes.\n\n" +
+    "FRAGMENT COUNTS NOTE (for ml_eval_xquery users):\n" +
+    "xdmp:forest-counts() returns fragment counts nested under stands-counts/stand-counts, " +
+    "NOT as direct children. This tool handles the summation internally.\n\n" +
     "Uses the Management API (port 8002) for state. Fragment/stand counts require ML_ALLOW_EVAL=true (uses xdmp:forest-counts XQuery).",
     {
       database: z.string().optional().describe(
@@ -179,6 +191,42 @@ export function registerPerformanceTools(
       }
     }
   );
+
+  // ── ml_force_merge (eval-gated) ───────────────────────────────────────────────
+
+  if (allowEval) {
+    server.tool(
+      "ml_force_merge",
+      "Force a background merge on all forests of a MarkLogic database. Use after bulk deletes " +
+      "to reclaim disk space and memory from deleted fragments, or when ml_forest_metrics shows " +
+      "high fragmentation (deletedFragmentPct > 20%). Merges run asynchronously — the tool " +
+      "returns immediately after triggering.\n\n" +
+      "WHEN TO USE:\n" +
+      "• After bulk deletes: deleted fragments inflate disk/memory metrics and skew capacity projections\n" +
+      "• High stand count: if stands are accumulating faster than background merge can consolidate\n" +
+      "• Before capacity analysis: force merge first so metrics reflect actual live data\n\n" +
+      "NOTE: Merges are I/O intensive. Avoid triggering during peak query load.\n" +
+      "Requires ML_ALLOW_EVAL=true (uses xdmp:merge() internally).",
+      {
+        database: z.string().describe("Database name whose forests should be merged"),
+      },
+      async ({ database }) => {
+        try {
+          const result = await clients.performance.forceMerge(database);
+          const forests = result.merged ?? [];
+          return {
+            content: [{
+              type: "text",
+              text: `Merge triggered for database "${database}" on ${forests.length} forest(s): [${forests.join(", ")}]. ` +
+                `Merges run asynchronously — use ml_forest_metrics to monitor progress (mergeInProgress flag).`,
+            }],
+          };
+        } catch (err) {
+          return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        }
+      }
+    );
+  }
 
   // ── ml_profile_query (eval-gated) ─────────────────────────────────────────────
 

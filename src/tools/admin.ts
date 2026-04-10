@@ -34,7 +34,12 @@ export function registerAdminTools(server: McpServer, clients: MarkLogicClients)
 
   server.tool(
     "ml_database_statistics",
-    "Get document counts, forest sizes, and index sizes for a MarkLogic database.",
+    "Get document counts, forest sizes, and index sizes for a MarkLogic database. " +
+    "Returns the full /manage/v2/databases/{name}?view=status response which includes " +
+    "in-memory-size (active write buffer — useful for understanding ingestion state), " +
+    "document-count, data-size, and forest-level statistics.\n\n" +
+    "NOTE: This is the only way to get database-level status — xdmp:database-status() does " +
+    "not exist in XQuery. Use this tool instead of ml_eval_xquery for database metrics.",
     { database: z.string().describe("Database name") },
     async ({ database }) => {
       try {
@@ -113,7 +118,10 @@ export function registerAdminTools(server: McpServer, clients: MarkLogicClients)
 
   server.tool(
     "ml_cluster_status",
-    "Get MarkLogic cluster health status — version, host info, and cluster configuration.",
+    "Get MarkLogic cluster health status — version, host info, and cluster configuration.\n\n" +
+    "CONTAINER NOTE: In Docker/Kubernetes environments, memory-system-total, memory-process-rss, " +
+    "and memory-process-swap-size from host status may return null/empty because cgroup isolation " +
+    "prevents reading /proc/meminfo. Use memory-size (the ML configured limit) as the ceiling instead.",
     {},
     async () => {
       try {

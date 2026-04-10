@@ -45,6 +45,7 @@ function defaultPerformanceMock() {
     searchDebug: vi.fn(),
     getForestStatus: vi.fn(),
     getForestCounts: vi.fn(),
+    forceMerge: vi.fn(),
     profileXQuery: vi.fn(),
     profileJavaScript: vi.fn(),
     profileSparql: vi.fn(),
@@ -66,15 +67,17 @@ describe("registerPerformanceTools – registration", () => {
     expect(tools.has("ml_explain_optic")).toBe(true);
     expect(tools.has("ml_search_query_plan")).toBe(true);
     expect(tools.has("ml_forest_metrics")).toBe(true);
+    expect(tools.has("ml_force_merge")).toBe(false);
     expect(tools.has("ml_profile_query")).toBe(false);
     expect(tools.size).toBe(3);
   });
 
-  it("registers 4 tools with allowEval=true", () => {
+  it("registers 5 tools with allowEval=true", () => {
     const { server, tools } = createMockServer();
     registerPerformanceTools(server as never, createMockClients() as never, true);
+    expect(tools.has("ml_force_merge")).toBe(true);
     expect(tools.has("ml_profile_query")).toBe(true);
-    expect(tools.size).toBe(4);
+    expect(tools.size).toBe(5);
   });
 });
 
@@ -347,6 +350,52 @@ describe("ml_forest_metrics handler", () => {
     const result = await tools.get("ml_forest_metrics")!({});
     expect(result.content[0].text).toContain("ALERTS");
     expect(result.content[0].text).toContain("stand");
+  });
+});
+
+// ─── ml_force_merge ──────────────────────────────────────────────────────────
+
+describe("ml_force_merge handler (allowEval=true)", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const { server, tools: t } = createMockServer();
+    clients = createMockClients();
+    registerPerformanceTools(server as never, clients as never, true);
+    tools = t;
+  });
+
+  it("triggers merge and returns forest names", async () => {
+    clients.performance.forceMerge.mockResolvedValue({ merged: ["Forest1", "Forest2"] });
+    const result = await tools.get("ml_force_merge")!({ database: "Documents" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("Merge triggered");
+    expect(result.content[0].text).toContain("Documents");
+    expect(result.content[0].text).toContain("Forest1");
+    expect(result.content[0].text).toContain("Forest2");
+    expect(result.content[0].text).toContain("2 forest(s)");
+    expect(clients.performance.forceMerge).toHaveBeenCalledWith("Documents");
+  });
+
+  it("handles empty forest list gracefully", async () => {
+    clients.performance.forceMerge.mockResolvedValue({ merged: [] });
+    const result = await tools.get("ml_force_merge")!({ database: "EmptyDB" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("0 forest(s)");
+  });
+
+  it("returns isError on client failure", async () => {
+    clients.performance.forceMerge.mockRejectedValue(new MarkLogicError("db not found", 404));
+    const result = await tools.get("ml_force_merge")!({ database: "Missing" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("404");
+  });
+
+  it("is not registered when allowEval is false", () => {
+    const { server, tools: t } = createMockServer();
+    registerPerformanceTools(server as never, createMockClients() as never, false);
+    expect(t.has("ml_force_merge")).toBe(false);
   });
 });
 

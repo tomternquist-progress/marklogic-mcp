@@ -8,7 +8,22 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
 
   server.tool(
     "ml_eval_xquery",
-    "Execute an XQuery expression on the MarkLogic server and return results. Requires ML_ALLOW_EVAL=true.",
+    "Execute an XQuery expression on the MarkLogic server and return results. Requires ML_ALLOW_EVAL=true.\n\n" +
+    "COMMON XQUERY GOTCHAS:\n" +
+    "• AMPERSAND IN STRINGS: '&' is an XML entity delimiter in XQuery. A URL like " +
+    "'?view=status&format=json' causes XDMP-ENTITYREF. Use fn:concat() to build URLs " +
+    "or escape as '&amp;' inside element constructors.\n" +
+    "• xdmp:database-status() DOES NOT EXIST: Database-level status (in-memory-size, " +
+    "reindex state) is only available via the Management REST API — use ml_database_statistics " +
+    "instead. For forest-level status use xdmp:forest-status($forestId).\n" +
+    "• xdmp:forest-counts() NESTED STRUCTURE: Fragment counts (active-fragment-count, " +
+    "deleted-fragment-count) live under stands-counts/stand-counts, NOT at the forest " +
+    "level. Only document-count is a direct child. Sum across stands: " +
+    "fn:sum($fc//fs:active-fragment-count). Use ml_forest_metrics instead for a simpler interface.\n" +
+    "• xdmp:merge() SIGNATURE: Takes an <options xmlns=\"xdmp:merge\"> element, NOT a forest ID. " +
+    "Forest IDs go inside <forests><forest>{$id}</forest></forests>. Use ml_force_merge for a simpler interface.\n" +
+    "• xdmp:host-size() takes NO arguments — always returns the current host's size. " +
+    "For a specific host, use xdmp:host-status($host)/*:host-size instead.",
     {
       xquery: z.string().describe("XQuery expression to evaluate on the server"),
       vars: z.record(z.unknown()).optional().describe("External variable bindings as key/value pairs"),

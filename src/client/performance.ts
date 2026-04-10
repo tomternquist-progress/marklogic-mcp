@@ -101,6 +101,42 @@ export class PerformanceClient {
     return null;
   }
 
+  /** Force a merge on all forests of a database via xdmp:merge(). Requires ML_ALLOW_EVAL=true. */
+  async forceMerge(database: string): Promise<{ merged: string[] }> {
+    const xq = `
+      xquery version "1.0-ml";
+      let $forests := xdmp:database-forests(xdmp:database("${database.replace(/"/g, '\\"')}"))
+      return (
+        for $f in $forests
+        return xdmp:merge(
+          <options xmlns="xdmp:merge">
+            <forests><forest>{$f}</forest></forests>
+          </options>
+        ),
+        xdmp:to-json(map:new(
+          map:entry("merged", json:to-array(
+            for $f in $forests
+            return xdmp:forest-name($f)
+          ))
+        ))
+      )`;
+    const body = new URLSearchParams();
+    body.append("xquery", xq);
+    const res = await this.base.http.post("/v1/eval", body.toString(), {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "multipart/mixed",
+      },
+      responseType: "text",
+    });
+    const parts = parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
+    if (parts.length > 0) {
+      const val = typeof parts[0].value === "string" ? JSON.parse(parts[0].value) : parts[0].value;
+      return val as { merged: string[] };
+    }
+    return { merged: [] };
+  }
+
   /** Profile XQuery code via xdmp:query-meters + elapsed time. Requires ML_ALLOW_EVAL=true. */
   async profileXQuery(code: string, database?: string): Promise<EvalResult[]> {
     return this._evalProfile("xquery", buildXQueryMetersWrapper(code), database);

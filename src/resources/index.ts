@@ -183,8 +183,9 @@ X see doc Y?")
 Query performance    Performance diagnostic      ml_explain_optic          ml_indexes_list
 / bottleneck         tools + advisor            ml_search_query_plan      ml_views_list
 diagnosis            (filtered vs unfiltered,   ml_forest_metrics         ml_collections_list
-                     range index coverage,      ml_profile_query (eval)   ml_reindex_status
-                     Optic/SPARQL/ingest)       performance_advisor (prompt)
+                     range index coverage,      ml_force_merge (eval)     ml_reindex_status
+                     Optic/SPARQL/ingest)       ml_profile_query (eval)
+                                                performance_advisor (prompt)
 
 Query planning       Query approach advisor     query_approach_advisor    ml_views_list
 (cts.search/Optic)                                                         ml_indexes_list
@@ -452,6 +453,7 @@ INGEST PERFORMANCE CHECKLIST:
   3. XDMP-INMMTREEFULL / XDMP-INMMLISTFULL in error log → increase in-memory stand settings
      in Admin UI (Databases → {name} → in-memory tree/list/range-index size).
   4. Fragmentation > 20% → normal during heavy ingest; merge handles it automatically.
+     After bulk deletes, use ml_force_merge to reclaim space before capacity projections.
   5. For maximum ingest throughput: use flux_import (parallel batching, not ml_document_put loop).
 
 
@@ -668,9 +670,9 @@ DHF (3–4, DHF-install-dependent):
                dhf_status, dhf_flows_list, dhf_job_status
                [allowEval + write-enabled] dhf_flow_run
 
-Performance (3–4, eval-dependent):
+Performance (3–5, eval-dependent):
                ml_explain_optic, ml_search_query_plan, ml_forest_metrics
-               [eval-enabled] ml_profile_query
+               [eval-enabled] ml_force_merge, ml_profile_query
 
 Planning (1):  ml_suggest_approach
 

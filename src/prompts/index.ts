@@ -683,7 +683,7 @@ Available tools (use only these):
               dhf_flow_run (allowEval + write-enabled; async — returns job ID)
   Security:   ml_users_list, ml_roles_list, ml_document_permissions
   Performance: ml_explain_optic, ml_search_query_plan, ml_forest_metrics,
-              ml_profile_query (eval-gated)
+              ml_force_merge (eval-gated), ml_profile_query (eval-gated)
   Planning:   ml_suggest_approach
   Prompts:    uri_designer, xquery_function_generator, sjs_module_generator,
               tde_schema_generator, rest_extension_generator, structured_query_builder,
@@ -2677,7 +2677,8 @@ INGEST HEALTH (ml_forest_metrics)
   Stand count → max 64 per forest; forest unavailable if it hits 64.
   Fragment count → warn at 96 million per forest; hard limit ~160 million.
   deletedFragmentPct > 20% → significant fragmentation (normal during heavy ingest;
-    background merges reclaim automatically).
+    background merges reclaim automatically). After bulk deletes, use ml_force_merge
+    to reclaim space before capacity projections.
   Merge in progress → expected during heavy ingest; high background I/O is normal.
   In-memory stand full errors (XDMP-INMMTREEFULL, XDMP-INMMLISTFULL, etc.) → increase
     in-memory stand settings for the database in the Admin UI.
@@ -2689,6 +2690,8 @@ DIAGNOSTIC TOOLS AVAILABLE
   ml_profile_query      — Runtime metrics (eval-gated). Elapsed time, cache stats, filter activity.
                           language: "xquery" | "javascript" | "sparql"
   ml_forest_metrics     — Forest health (no eval). Fragment counts, stand count, merge status.
+  ml_force_merge        — Force merge on all forests of a database (eval-gated). Use after bulk
+                          deletes to reclaim space from deleted fragments.
 
   Also useful in XQuery/SJS (via ml_eval_xquery / ml_profile_query):
     xdmp:plan(search_expr)     — query plan showing which indexes will be used
