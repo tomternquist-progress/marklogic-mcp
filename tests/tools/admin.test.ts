@@ -28,10 +28,13 @@ function createMockClients() {
       getDatabaseProperties: vi.fn(),
       getDatabaseStatistics: vi.fn(),
       listForests: vi.fn(),
+      setDatabaseForests: vi.fn(),
       listServers: vi.fn(),
       getServerProperties: vi.fn(),
       getClusterStatus: vi.fn(),
       getReindexStatus: vi.fn(),
+      listLogFiles: vi.fn(),
+      readLogs: vi.fn(),
     },
   };
 }
@@ -283,5 +286,138 @@ describe("ml_reindex_status handler", () => {
     expect(result.isError).toBeUndefined();
     expect(JSON.parse(result.content[0].text)).toEqual(status);
     expect(clients.admin.getReindexStatus).toHaveBeenCalledWith("Documents");
+  });
+});
+
+// ─── ml_database_set_forests ───────────────────────────────────────────────
+
+describe("ml_database_set_forests handler", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerAdminTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("calls setDatabaseForests and returns success message", async () => {
+    clients.admin.setDatabaseForests.mockResolvedValue(undefined);
+
+    const result = await tools.get("ml_database_set_forests")!({
+      database: "Documents",
+      forests: ["Forest1", "Forest2"],
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("Forest list updated");
+    expect(result.content[0].text).toContain("Documents");
+    expect(result.content[0].text).toContain("Forest1");
+    expect(result.content[0].text).toContain("Forest2");
+    expect(clients.admin.setDatabaseForests).toHaveBeenCalledWith("Documents", ["Forest1", "Forest2"]);
+  });
+
+  it("sets isError on failure", async () => {
+    clients.admin.setDatabaseForests.mockRejectedValue(new MarkLogicError("forbidden", 403));
+    const result = await tools.get("ml_database_set_forests")!({
+      database: "Documents",
+      forests: ["Forest1"],
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("403");
+  });
+});
+
+// ─── ml_logs_list ──────────────────────────────────────────────────────────
+
+describe("ml_logs_list handler", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerAdminTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("returns list of log files", async () => {
+    const files = ["ErrorLog.txt", "8000_AccessLog.txt"];
+    clients.admin.listLogFiles.mockResolvedValue(files);
+
+    const result = await tools.get("ml_logs_list")!({});
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toEqual(files);
+    expect(clients.admin.listLogFiles).toHaveBeenCalledWith(undefined);
+  });
+
+  it("passes host filter", async () => {
+    clients.admin.listLogFiles.mockResolvedValue([]);
+    await tools.get("ml_logs_list")!({ host: "ml-host-1" });
+
+    expect(clients.admin.listLogFiles).toHaveBeenCalledWith("ml-host-1");
+  });
+
+  it("sets isError on failure", async () => {
+    clients.admin.listLogFiles.mockRejectedValue(new MarkLogicError("error", 500));
+    const result = await tools.get("ml_logs_list")!({});
+
+    expect(result.isError).toBe(true);
+  });
+});
+
+// ─── ml_logs_read ──────────────────────────────────────────────────────────
+
+describe("ml_logs_read handler", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerAdminTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("returns log content", async () => {
+    clients.admin.readLogs.mockResolvedValue({ filename: "ErrorLog.txt", content: "2026-04-10 INFO Server started" });
+
+    const result = await tools.get("ml_logs_read")!({ filename: "ErrorLog.txt" });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("Server started");
+  });
+
+  it("passes all parameters to client", async () => {
+    clients.admin.readLogs.mockResolvedValue({ filename: "ErrorLog.txt", content: "" });
+
+    await tools.get("ml_logs_read")!({
+      filename: "ErrorLog.txt",
+      host: "ml-host-1",
+      start: "2026-04-10T00:00:00",
+      end: "2026-04-10T23:59:59",
+      regex: "XDMP-.*",
+      tail: 100,
+    });
+
+    expect(clients.admin.readLogs).toHaveBeenCalledWith({
+      filename: "ErrorLog.txt",
+      host: "ml-host-1",
+      start: "2026-04-10T00:00:00",
+      end: "2026-04-10T23:59:59",
+      regex: "XDMP-.*",
+      tail: 100,
+    });
+  });
+
+  it("sets isError on failure", async () => {
+    clients.admin.readLogs.mockRejectedValue(new MarkLogicError("not found", 404));
+    const result = await tools.get("ml_logs_read")!({ filename: "MissingLog.txt" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("404");
   });
 });

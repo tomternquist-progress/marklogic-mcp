@@ -139,6 +139,24 @@ describe("ml_explain_optic handler", () => {
     const result = await tools.get("ml_explain_optic")!({ plan: {} });
     expect(result.content[0].text).toContain("LIMIT");
   });
+
+  it("analysis notes document expansion", async () => {
+    clients.performance.explainOptic.mockResolvedValue({ plan: { kind: "document", limit: true } });
+    const result = await tools.get("ml_explain_optic")!({ plan: {} });
+    expect(result.content[0].text).toContain("document expansion");
+  });
+
+  it("analysis notes join in plan", async () => {
+    clients.performance.explainOptic.mockResolvedValue({ plan: { kind: "join-inner", lexicon: true, limit: true } });
+    const result = await tools.get("ml_explain_optic")!({ plan: {} });
+    expect(result.content[0].text).toContain("join");
+  });
+
+  it("analysis notes order-by in plan", async () => {
+    clients.performance.explainOptic.mockResolvedValue({ plan: { "order-by": "date", lexicon: true, limit: true } });
+    const result = await tools.get("ml_explain_optic")!({ plan: {} });
+    expect(result.content[0].text).toContain("ORDER BY");
+  });
 });
 
 // ─── ml_search_query_plan ─────────────────────────────────────────────────────
@@ -538,6 +556,64 @@ describe("ml_profile_query handler (allowEval=true)", () => {
     expect(text).toContain("/doc/0.json");
     expect(text).toContain("/doc/2.json");
     expect(text).not.toContain("truncated");
+  });
+
+  it("analysis flags list cache misses", async () => {
+    clients.performance.profileXQuery.mockResolvedValue([{
+      value: { elapsedMs: 200, resultCount: 50, filterMisses: 0, filterHits: 0, listCacheMisses: 100 },
+    }]);
+    const result = await tools.get("ml_profile_query")!({ language: "xquery", code: "test" });
+    expect(result.content[0].text).toContain("LIST CACHE");
+    expect(result.content[0].text).toContain("100");
+  });
+
+  it("analysis flags expanded tree cache misses", async () => {
+    clients.performance.profileXQuery.mockResolvedValue([{
+      value: { elapsedMs: 300, resultCount: 10, filterMisses: 0, filterHits: 0, expandedTreeCacheMisses: 25 },
+    }]);
+    const result = await tools.get("ml_profile_query")!({ language: "xquery", code: "test" });
+    expect(result.content[0].text).toContain("EXPANDED TREE CACHE");
+    expect(result.content[0].text).toContain("25");
+  });
+
+  it("analysis shows SPARQL slow hint for sparql language with high elapsed", async () => {
+    clients.performance.profileSparql.mockResolvedValue([{
+      value: { elapsedMs: 1500, rowCount: 100 },
+    }]);
+    const result = await tools.get("ml_profile_query")!({
+      language: "sparql",
+      code: "SELECT * WHERE { ?s ?p ?o }",
+    });
+    expect(result.content[0].text).toContain("SPARQL NOTE");
+    expect(result.content[0].text).toContain("E-node");
+  });
+
+  it("analysis shows healthy fallback when no standard metrics present", async () => {
+    // Provide metrics with no elapsedMs, no filter info, no cache info — triggers empty hints fallback
+    clients.performance.profileXQuery.mockResolvedValue([{
+      value: { resultCount: 1 },
+    }]);
+    const result = await tools.get("ml_profile_query")!({ language: "xquery", code: "1" });
+    expect(result.content[0].text).toContain("healthy");
+    expect(result.content[0].text).toContain("xdmp:plan");
+  });
+
+  it("analysis shows filtered search with zero false positives as GOOD", async () => {
+    clients.performance.profileXQuery.mockResolvedValue([{
+      value: { elapsedMs: 10, resultCount: 5, filterMisses: 0, filterHits: 5 },
+    }]);
+    const result = await tools.get("ml_profile_query")!({ language: "xquery", code: "test" });
+    expect(result.content[0].text).toContain("GOOD");
+    expect(result.content[0].text).toContain("0 false positives");
+  });
+
+  it("handles raw string value when JSON parsing fails", async () => {
+    clients.performance.profileXQuery.mockResolvedValue([{
+      value: "raw text output that is not JSON",
+    }]);
+    const result = await tools.get("ml_profile_query")!({ language: "xquery", code: "test" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("raw text output");
   });
 
   it("truncates fragments[] array alongside documents[]", async () => {

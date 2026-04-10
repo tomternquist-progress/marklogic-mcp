@@ -524,6 +524,52 @@ describe("flux_import handler – error message enrichment", () => {
     expect(result.content[0].text).toContain("Hint:");
   });
 
+  it("appends 403 hint when http_url returns 403", async () => {
+    const { tools, clients } = setup();
+    (clients.flux.run as ReturnType<typeof vi.fn>).mockResolvedValue(
+      failResult("FAILED (exit 1)\nHTTP 403 Forbidden")
+    );
+
+    const result = await tools.get("flux_import")!({
+      subcommand: "import-delimited-files",
+      http_url: "https://example.com/protected.csv",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("403");
+    expect(result.content[0].text).toContain("API key");
+  });
+
+  it("appends PATH_NOT_FOUND hint with http_url recommendation", async () => {
+    const { tools, clients } = setup();
+    (clients.flux.run as ReturnType<typeof vi.fn>).mockResolvedValue(
+      failResult("FAILED (exit 1)\nPATH_NOT_FOUND: /data/missing.csv")
+    );
+
+    const result = await tools.get("flux_import")!({
+      subcommand: "import-delimited-files",
+      path: "/data/missing.csv",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("PATH_NOT_FOUND");
+    expect(result.content[0].text).toContain("http_url");
+    expect(result.content[0].text).toContain("volume mounts");
+  });
+
+  it("appends pre-processing failed hint", async () => {
+    const { tools, clients } = setup();
+    (clients.flux.run as ReturnType<typeof vi.fn>).mockResolvedValue(
+      failResult("FAILED (exit 1)\nPre-processing failed: null")
+    );
+
+    const result = await tools.get("flux_import")!({
+      subcommand: "import-aggregate-json-files",
+      http_url: "https://example.com/data.jsonl",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Pre-processing failed");
+    expect(result.content[0].text).toContain("Java HttpClient");
+  });
+
   it("appends TDE note when output contains TDE- errors", async () => {
     const { tools, clients } = setup();
     (clients.flux.run as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -538,5 +584,67 @@ describe("flux_import handler – error message enrichment", () => {
       collections: ["sales"],
     });
     expect(result.content[0].text).toContain("TDE ERROR NOTE");
+  });
+
+  it("does not append 404 hint when no http_url was used", async () => {
+    const { tools, clients } = setup();
+    (clients.flux.run as ReturnType<typeof vi.fn>).mockResolvedValue(
+      failResult("FAILED (exit 1)\nHTTP 404 Not Found")
+    );
+
+    const result = await tools.get("flux_import")!({
+      subcommand: "import-files",
+      path: "/data/",
+    });
+    expect(result.isError).toBe(true);
+    // Should not have the Socrata-specific hint since no http_url was used
+    expect(result.content[0].text).not.toContain("Socrata resource ID");
+  });
+});
+
+describe("flux_import handler – local_file upload", () => {
+  it("uploads local_file and passes runner path", async () => {
+    const { tools, clients } = setup();
+    (clients.flux.upload as ReturnType<typeof vi.fn>).mockResolvedValue("/tmp/data.csv");
+    (clients.flux.run as ReturnType<typeof vi.fn>).mockResolvedValue(successResult());
+
+    await tools.get("flux_import")!({
+      subcommand: "import-delimited-files",
+      local_file: "/host/path/data.csv",
+      collections: ["my-data"],
+    });
+
+    expect(clients.flux.upload).toHaveBeenCalledWith("/host/path/data.csv");
+    const calledArgs = (clients.flux.run as ReturnType<typeof vi.fn>).mock.calls[0][0] as string[];
+    expect(calledArgs).toContain("--path");
+    expect(calledArgs).toContain("/tmp/data.csv");
+    expect(calledArgs).not.toContain("--http-url");
+  });
+
+  it("returns error with hint when upload fails with File not found", async () => {
+    const { tools, clients } = setup();
+    (clients.flux.upload as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("File not found on MCP server: /missing.csv"));
+
+    const result = await tools.get("flux_import")!({
+      subcommand: "import-delimited-files",
+      local_file: "/missing.csv",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("File not found");
+    expect(result.content[0].text).toContain("http_url");
+  });
+
+  it("returns error without path hint on non-file-not-found upload errors", async () => {
+    const { tools, clients } = setup();
+    (clients.flux.upload as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Connection refused"));
+
+    const result = await tools.get("flux_import")!({
+      subcommand: "import-delimited-files",
+      local_file: "/data.csv",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Connection refused");
   });
 });

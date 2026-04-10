@@ -333,4 +333,166 @@ describe("ml_namespaces_list handler", () => {
     expect(result.isError).toBeUndefined();
     expect(JSON.parse(result.content[0].text)).toEqual(ns);
   });
+
+  it("sets isError on failure", async () => {
+    clients.schema.listNamespaces.mockRejectedValue(new MarkLogicError("db error", 500));
+    const result = await tools.get("ml_namespaces_list")!({});
+    expect(result.isError).toBe(true);
+  });
+});
+
+// ─── ml_tde_validate – TDE-INVALIDTEMPLATEPROPNODE hint ────────────────────
+
+describe("ml_tde_validate – INVALIDTEMPLATEPROPNODE hint", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerSchemaTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("returns INVALIDTEMPLATEPROPNODE hint on that error", async () => {
+    clients.schema.validateTde.mockRejectedValue(
+      new MarkLogicError("TDE-INVALIDTEMPLATEPROPNODE: invalid property 'column' in triple", 400)
+    );
+
+    const result = await tools.get("ml_tde_validate")!({
+      tde_uri: "/tde/bad.json",
+      collection: "test",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("INVALIDTEMPLATEPROPNODE");
+    expect(result.content[0].text).toContain('{ "val":');
+    expect(result.content[0].text).toContain("fn:root()");
+  });
+});
+
+// ─── ml_tde_install ────────────────────────────────────────────────────────
+
+describe("ml_tde_install handler", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerSchemaTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("installs TDE to Schemas database with correct collection", async () => {
+    clients.documents.put.mockResolvedValue(undefined);
+
+    const result = await tools.get("ml_tde_install")!({
+      uri: "/tde/my-template.json",
+      content: '{"template":{"rows":[]}}',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("TDE TEMPLATE INSTALLED");
+    expect(result.content[0].text).toContain("/tde/my-template.json");
+    expect(result.content[0].text).toContain("Schemas");
+    expect(clients.documents.put).toHaveBeenCalledWith(
+      "/tde/my-template.json",
+      '{"template":{"rows":[]}}',
+      "application/json",
+      {
+        collections: ["http://marklogic.com/xdmp/tde"],
+        database: "Schemas",
+      }
+    );
+  });
+
+  it("passes content_type when specified", async () => {
+    clients.documents.put.mockResolvedValue(undefined);
+
+    await tools.get("ml_tde_install")!({
+      uri: "/tde/my-template.xml",
+      content: "<template/>",
+      content_type: "application/xml",
+    });
+
+    expect(clients.documents.put).toHaveBeenCalledWith(
+      "/tde/my-template.xml",
+      "<template/>",
+      "application/xml",
+      expect.objectContaining({ database: "Schemas" })
+    );
+  });
+
+  it("sets isError on failure", async () => {
+    clients.documents.put.mockRejectedValue(new MarkLogicError("permission denied", 403));
+
+    const result = await tools.get("ml_tde_install")!({
+      uri: "/tde/test.json",
+      content: "{}",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("403");
+  });
+});
+
+// ─── ml_schema_get_tde – error path ────────────────────────────────────────
+
+describe("ml_schema_get_tde – error handling", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerSchemaTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("sets isError on failure", async () => {
+    clients.schema.getTdeSchemas.mockRejectedValue(new MarkLogicError("not found", 404));
+    const result = await tools.get("ml_schema_get_tde")!({ schema_name: "/tde/missing.json" });
+    expect(result.isError).toBe(true);
+  });
+});
+
+// ─── ml_indexes_list – error path ──────────────────────────────────────────
+
+describe("ml_indexes_list – error handling", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerSchemaTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("sets isError on failure", async () => {
+    clients.schema.listIndexes.mockRejectedValue(new MarkLogicError("db error", 500));
+    const result = await tools.get("ml_indexes_list")!({ database: "Documents" });
+    expect(result.isError).toBe(true);
+  });
+});
+
+// ─── ml_collections_list – error path ──────────────────────────────────────
+
+describe("ml_collections_list – error handling", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerSchemaTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("sets isError on failure", async () => {
+    clients.schema.listCollections.mockRejectedValue(new MarkLogicError("error", 500));
+    const result = await tools.get("ml_collections_list")!({});
+    expect(result.isError).toBe(true);
+  });
 });

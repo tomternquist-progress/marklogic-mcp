@@ -166,6 +166,101 @@ describe("ml_eval_javascript handler", () => {
   });
 });
 
+// ─── ml_sparql ───────────────────────────────────────────────────────────
+
+describe("ml_sparql handler", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockEvalClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockEvalClients();
+    registerEvalTools(mock.server as never, clients as never, true);
+    tools = mock.tools;
+  });
+
+  it("wraps SPARQL in XQuery boilerplate and calls evalXQuery", async () => {
+    const mockResults = [{ value: [{ title: "Inception" }] }];
+    clients.eval.evalXQuery.mockResolvedValue(mockResults);
+
+    const result = await tools.get("ml_sparql")!({
+      sparql: "SELECT ?s WHERE { ?s ?p ?o } LIMIT 5",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(clients.eval.evalXQuery).toHaveBeenCalledTimes(1);
+    const xquery = clients.eval.evalXQuery.mock.calls[0][0] as string;
+    expect(xquery).toContain("sem:sparql");
+    expect(xquery).toContain("SELECT ?s WHERE");
+  });
+
+  it("passes IRI bindings as sem:iri() calls", async () => {
+    clients.eval.evalXQuery.mockResolvedValue([]);
+
+    await tools.get("ml_sparql")!({
+      sparql: "SELECT ?name WHERE { ?person schema:name ?name }",
+      bindings: { person: "http://example.org/person/1" },
+    });
+
+    const xquery = clients.eval.evalXQuery.mock.calls[0][0] as string;
+    expect(xquery).toContain('sem:iri("http://example.org/person/1")');
+    expect(xquery).toContain('sem:binding("person"');
+  });
+
+  it("passes non-IRI bindings as string literals", async () => {
+    clients.eval.evalXQuery.mockResolvedValue([]);
+
+    await tools.get("ml_sparql")!({
+      sparql: "SELECT ?s WHERE { ?s schema:name ?name }",
+      bindings: { name: "Alice" },
+    });
+
+    const xquery = clients.eval.evalXQuery.mock.calls[0][0] as string;
+    expect(xquery).toContain('"Alice"');
+    expect(xquery).not.toContain("sem:iri");
+  });
+
+  it("uses empty binding tuple when no bindings provided", async () => {
+    clients.eval.evalXQuery.mockResolvedValue([]);
+
+    await tools.get("ml_sparql")!({
+      sparql: "SELECT * WHERE { ?s ?p ?o } LIMIT 1",
+    });
+
+    const xquery = clients.eval.evalXQuery.mock.calls[0][0] as string;
+    // The bindings arg should be "()" when no bindings
+    expect(xquery).toMatch(/sem:sparql\(\s*".*",\s*\(\)/s);
+  });
+
+  it("passes database parameter to evalXQuery", async () => {
+    clients.eval.evalXQuery.mockResolvedValue([]);
+
+    await tools.get("ml_sparql")!({
+      sparql: "SELECT * WHERE { ?s ?p ?o }",
+      database: "MyDB",
+    });
+
+    expect(clients.eval.evalXQuery).toHaveBeenCalledWith(
+      expect.any(String),
+      undefined,
+      "MyDB"
+    );
+  });
+
+  it("returns hint about triple data on error", async () => {
+    clients.eval.evalXQuery.mockRejectedValue(new MarkLogicError("XDMP-NOSEMSTORE", 500));
+
+    const result = await tools.get("ml_sparql")!({
+      sparql: "SELECT * WHERE { ?s ?p ?o }",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Hint:");
+    expect(result.content[0].text).toContain("ml_graphs_list");
+    expect(result.content[0].text).toContain("ml_tde_install");
+  });
+});
+
 // ─── ml_invoke_module ─────────────────────────────────────────────────────
 
 describe("ml_invoke_module handler", () => {
