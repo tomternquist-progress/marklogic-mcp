@@ -203,8 +203,8 @@ describe("ml_document_permissions handler", () => {
     clients.security.getDocumentPermissions.mockResolvedValue([]);
     const result = await tools.get("ml_document_permissions")!({ uri: "/missing.json" });
     expect(result.isError).toBeUndefined();
-    expect(result.content[0].text).toContain("No permissions found");
-    expect(result.content[0].text).toContain("ml_document_list");
+    expect(result.content[0].text).toContain("No explicit permissions found");
+    expect(result.content[0].text).toContain("ml_document_get");
   });
 
   it("returns isError and hint on 401/403 failure", async () => {
