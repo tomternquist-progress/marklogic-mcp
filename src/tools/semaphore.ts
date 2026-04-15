@@ -1258,7 +1258,8 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         // ── Pre-check: verify ConceptScheme URI follows the expected pattern ──
         // The publisher's concept-enumeration query looks for a ConceptScheme at
         // {namespace}{ModelId}Taxonomy. Any other URI will result in 0 concepts found.
-        const modelName = model_uri.replace(/^model:/, "");
+        // Strip both short-form (model:) and full-URI (urn:x-evn-master:) prefixes.
+        const modelName = model_uri.replace(/^model:/, "").replace(/^urn:x-evn-master:/, "");
         const expectedSuffix = `${modelName}Taxonomy`;
         try {
           const schemeRes = await semaphore.kmmSparqlQuery(model_uri,
@@ -1702,7 +1703,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       let lang = language;
       let labelCount = -1;
       try {
-        const modelName = model_uri.replace(/^model:/, "");
+        // Strip both short-form (model:) and full-URI (urn:x-evn-master:) prefixes to get
+        // the bare model name used in GRAPH clauses (e.g. "PSForecastDrivers").
+        const modelName = model_uri.replace(/^model:/, "").replace(/^urn:x-evn-master:/, "");
         if (!lang) {
           const langRes = await semaphore.kmmSparqlQuery(model_uri,
             `PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
@@ -1731,8 +1734,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       lines.push(`  Language:                       @${langLabel}${language ? "" : "  (auto-detected)"}`);
       lines.push(`  Labeled concepts (SPARQL):      ${labelCount >= 0 ? labelCount : "ERROR — could not query"}`);
 
-      // 3. CLS rule count
-      const publishSetName = model_uri.replace(/^model:/, "").toLowerCase();
+      // 3. CLS rule count — strip both prefix forms to get the bare lowercase publish set name
+      const modelShortName = model_uri.replace(/^model:/, "").replace(/^urn:x-evn-master:/, "");
+      const publishSetName = modelShortName.toLowerCase();
       const ruleCount = await semaphore.clsRuleCount(publishSetName);
       lines.push(`  CLS rules loaded:               ${ruleCount >= 0 ? ruleCount : "unknown (CLS not reachable or publish set not found)"}`);
 
@@ -1744,11 +1748,12 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         lines.push("✓ HEALTHY — rule count looks proportionate to concept count.");
         lines.push("  Run semaphore_classify to verify classification quality.");
       } else if (ruleCount >= 0 && ruleCount <= 1 && kmmCount > 0) {
-        lines.push("✗ PROBLEM DETECTED: Only 1 rule loaded despite " + kmmCount + " concepts in KMM.");
+        const ruleCountDesc = ruleCount === 0 ? "0 rules" : "only 1 rule";
+        lines.push(`✗ PROBLEM DETECTED: ${ruleCountDesc} loaded despite ${kmmCount} concepts in KMM.`);
         lines.push("");
         lines.push("  Root cause: the publisher's SPARQL label queries hit the empty default graph.");
         lines.push("  Each model's data lives in the named graph:");
-        lines.push(`    urn:x-evn-master:${model_uri.replace(/^model:/, "")}`);
+        lines.push(`    urn:x-evn-master:${modelShortName}`);
         lines.push("  Without an explicit GRAPH clause, 0 labels are found → 0 concept rules.");
         lines.push("");
         lines.push("  FIX (two steps):");

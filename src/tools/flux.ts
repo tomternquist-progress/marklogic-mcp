@@ -857,6 +857,15 @@ export function registerFluxTools(
         };
       }
       const result = await flux.run(["version"]);
+      if (!result.success) {
+        return {
+          content: [{
+            type: "text",
+            text: `Flux runner HTTP health check passed but command execution failed.\nRunner URL: ${runnerUrl}\n\n${result.output}`,
+          }],
+          isError: true,
+        };
+      }
       return {
         content: [{ type: "text", text: `Flux runner is healthy.\nRunner URL: ${runnerUrl}\n\n${result.output}` }],
       };

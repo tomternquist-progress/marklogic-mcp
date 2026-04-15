@@ -1694,7 +1694,9 @@ export class SemaphoreClient {
     // one rule per concept).
     //
     // Fix: add GRAPH <urn:x-evn-master:{ModelName}> { ... } around all WHERE clauses.
-    const modelName = modelUri.replace(/^model:/, "");
+    // Strip both short-form (model:) and full-URI (urn:x-evn-master:) prefixes to get
+    // the bare model name for the GRAPH clause (e.g. "PSForecastDrivers").
+    const modelName = modelUri.replace(/^model:/, "").replace(/^urn:x-evn-master:/, "");
     const graphUri = `urn:x-evn-master:${modelName}`;
     const alreadyHasAllConcepts = currentXml.includes('parent="AllConcepts"');
     const alreadyHasPlainSkosModel = currentXml.includes("PlainSkosModel");

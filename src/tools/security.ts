@@ -66,6 +66,14 @@ export function registerSecurityTools(server: McpServer, clients: MarkLogicClien
     "ml_document_permissions",
     "Return the read/update/insert/execute permissions assigned to a specific document. " +
     "Requires the 'manage-user' role or that the connecting account can read the document.\n\n" +
+    "DEFAULT DATABASE: When the 'database' parameter is omitted, the request goes to the " +
+    "app server's configured default database — the same default used by ml_document_put. " +
+    "Always pass the same 'database' value you used when writing the document; omitting it " +
+    "on both calls keeps them consistent.\n\n" +
+    "EMPTY RESULT: 'No explicit permissions found' means the document EXISTS but has no ACL " +
+    "entries stored on it (written without a permissions parameter). The document may still be " +
+    "accessible if the connecting user holds a role that grants broad access (e.g. admin). " +
+    "This is different from a 404 error, which means the document was not found.\n\n" +
     "DIAGNOSIS WORKFLOW:\n" +
     "  1. ml_document_permissions — see which roles can access the document\n" +
     "  2. ml_roles_list role_name=<role> — inspect that role's privilege grants\n" +
@@ -78,7 +86,7 @@ export function registerSecurityTools(server: McpServer, clients: MarkLogicClien
     "  execute — user can invoke this document as a module",
     {
       uri: z.string().describe("Document URI (e.g. /entities/person/12345.json)"),
-      database: z.string().optional().describe("Database name (default: configured database)"),
+      database: z.string().optional().describe("Database name. Defaults to the app server's configured database — the same default as ml_document_put. Pass explicitly to avoid ambiguity."),
     },
     async ({ uri, database }) => {
       try {
@@ -87,9 +95,12 @@ export function registerSecurityTools(server: McpServer, clients: MarkLogicClien
           return {
             content: [{
               type: "text",
-              text: `No permissions found for ${uri}.\n` +
-                "Hint: This may mean the document does not exist, or the connecting account lacks " +
-                "permission to read its metadata. Verify the URI with ml_document_list.",
+              text: `No explicit permissions found for ${uri}.\n` +
+                "The document exists but has no ACL entries — it was likely written without a " +
+                "permissions parameter. It may still be accessible via role-level grants on " +
+                "the connecting account (e.g. admin or rest-admin roles).\n" +
+                "To set permissions, re-write the document with ml_document_put and include " +
+                "a permissions array, or verify the document exists first with ml_document_get.",
             }],
           };
         }
