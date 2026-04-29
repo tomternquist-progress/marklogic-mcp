@@ -64,9 +64,20 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
 
   server.tool(
     "ml_values_query",
-    "Query MarkLogic lexicons and range indexes to get facet values, counts, and aggregates. " +
-    "Requires a named values definition in search options (deploy via ml_search_options_put) that references a range index. " +
-    "Pass the options name to target a specific values config; omit it to use the default app-services options.",
+    "Return distinct values (plus frequency and optional aggregate) from a single range-indexed field. " +
+    "Use this for: value-frequency lists (\"top 20 categories by count\"), simple numeric aggregates on a " +
+    "field (sum/avg/min/max/stddev over a range index), and fast counting without scanning documents.\n\n" +
+    "WHEN TO PICK THIS vs ALTERNATIVES:\n" +
+    "  • ml_values_query  → no TDE needed; one field; fastest for simple frequency / 1D aggregate.\n" +
+    "  • ml_facets_query  → multiple facets at once; requires search options with facet constraints.\n" +
+    "  • ml_optic_query   → GROUP BY across multiple columns, joins, or tabular SELECT — requires TDE view.\n" +
+    "  • ml_aggregate_query → single-row totals across filtered documents (no grouping).\n\n" +
+    "PREREQUISITES:\n" +
+    "  1. Range index on the target field — check with ml_indexes_list.\n" +
+    "  2. A named values definition in a search-options set that references the index.\n" +
+    "     Inspect with ml_search_options_get; create with ml_search_options_put.\n" +
+    "  3. If options is omitted, the default app-services options set is used (which typically has\n" +
+    "     no values defined — you'll get an empty result). Always pass an explicit options name.",
     {
       values_name: z.string().describe("Named values/tuples definition configured in search options"),
       query: z.string().optional().describe("Constraining search query to filter values"),

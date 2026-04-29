@@ -107,10 +107,26 @@ export function registerSecurityTools(server: McpServer, clients: MarkLogicClien
         return { content: [{ type: "text", text: JSON.stringify(perms, null, 2) }] };
       } catch (err) {
         const msg = toToolError(err);
-        const note = msg.includes("401") || msg.includes("403")
-          ? "\nHint: The connecting account lacks 'manage-user' or read access to this document. " +
-            "Ask a MarkLogic admin to grant the 'manage-user' role or the appropriate document role."
-          : "";
+        let note = "";
+        if (msg.includes("401") || msg.includes("403")) {
+          note =
+            "\nHint: The connecting account lacks 'manage-user' or read access to this document. " +
+            "Ask a MarkLogic admin to grant the 'manage-user' role or the appropriate document role.";
+        } else if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
+          // ML-1 / ML-2: paired ml_document_put + ml_document_permissions calls often
+          // route to different default databases when neither passes `database` explicitly.
+          // The put goes to the REST app server's content DB; the permissions GET goes to
+          // the same default — but if the user passed `database` to one and not the other,
+          // the URIs land in different databases and the 404 is opaque.
+          note =
+            `\nHint: 404 on permissions usually means the URI is not in the database this call routed to. ` +
+            `Two common causes:\n` +
+            `  1. You passed 'database' to ml_document_put but not here (or vice versa). Pass the SAME ` +
+            `'database' value to both calls so they target the same content DB.\n` +
+            `  2. The document URI was misspelled. Confirm with ml_document_get (using the same database param).\n` +
+            `Note: a document that EXISTS but was written with no permissions returns "No explicit permissions found", ` +
+            `not 404 — so this error means the URI is genuinely not in the targeted database.`;
+        }
         return { content: [{ type: "text", text: msg + note }], isError: true };
       }
     }

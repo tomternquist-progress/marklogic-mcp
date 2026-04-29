@@ -63,13 +63,33 @@ export function appendTdeHint(msg: string): string {
   return msg;
 }
 
+/**
+ * Append generic recovery hints for common HTTP statuses returned by MarkLogic.
+ * Tools may append their own more-specific hints on top (e.g. appendTdeHint,
+ * Optic column hints) — this provides a baseline so bare auth/permission/not-found
+ * errors are always actionable.
+ */
+function appendHttpHint(msg: string, statusCode: number | undefined): string {
+  if (statusCode === 401) {
+    return msg + "\nHint: Authentication failed. Check ML_USERNAME / ML_PASSWORD and that ML_AUTH_TYPE (digest|basic|oauth) matches how the MarkLogic app server is configured.";
+  }
+  if (statusCode === 403) {
+    return msg + "\nHint: Permission denied. The current user lacks the required privilege or role. Use ml_users_list / ml_roles_list to inspect roles, and ml_document_permissions to see per-document ACLs.";
+  }
+  if (statusCode === 404) {
+    return msg + "\nHint: Not found. Verify the URI, collection, or database name. Use ml_document_list to browse available URIs or ml_collections_list to see collection names.";
+  }
+  return msg;
+}
+
 /** Convert any caught error into a human-readable string for MCP tool responses. */
 export function toToolError(err: unknown): string {
   if (err instanceof WriteProtectedError || err instanceof EvalDisabledError) {
     return err.message;
   }
   if (err instanceof MarkLogicError) {
-    return `MarkLogic error${err.statusCode ? ` (HTTP ${err.statusCode})` : ""}${err.mlCode ? ` [${err.mlCode}]` : ""}: ${err.message}`;
+    const base = `MarkLogic error${err.statusCode ? ` (HTTP ${err.statusCode})` : ""}${err.mlCode ? ` [${err.mlCode}]` : ""}: ${err.message}`;
+    return appendHttpHint(base, err.statusCode);
   }
   if (err instanceof Error) return err.message;
   return String(err);

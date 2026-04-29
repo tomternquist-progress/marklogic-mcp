@@ -852,7 +852,25 @@ export function registerFluxTools(
       const healthy = await flux.healthCheck();
       if (!healthy) {
         return {
-          content: [{ type: "text", text: `Flux runner is not reachable at ${runnerUrl}.\nEnsure the flux-runner service is running and FLUX_RUNNER_URL points to the correct host.\n\nCommon causes:\n• Docker hostname (e.g. 'flux-runner') not resolvable — if the MCP server runs outside Docker, use localhost:<port> instead.\n• Port mismatch — the runner may be on a different port than configured (check FLUX_PORT in docker-compose).\n• Network isolation — the MCP server container may not be on the same Docker network as the runner.\n\nTo fix: set FLUX_RUNNER_URL=http://<reachable-host>:<actual-port> in the MCP server .env file.` }],
+          content: [{
+            type: "text",
+            text:
+              `Flux runner is not reachable at ${runnerUrl}.\n\n` +
+              "TO START THE RUNNER (docker compose):\n" +
+              "  docker compose --profile flux up -d flux-runner\n\n" +
+              "TO CHECK IF IT'S RUNNING:\n" +
+              "  docker compose ps flux-runner\n" +
+              "  docker compose logs --tail=50 flux-runner\n\n" +
+              "Once the container reports healthy, re-run flux_status to confirm.\n\n" +
+              "COMMON CAUSES IF IT'S ALREADY RUNNING:\n" +
+              "  • Docker hostname (e.g. 'flux-runner') not resolvable — if the MCP server runs outside\n" +
+              "    Docker, set FLUX_RUNNER_URL=http://localhost:<port> in the MCP server .env file.\n" +
+              "  • Port mismatch — the runner may be on a different port than configured (check FLUX_PORT\n" +
+              "    in docker-compose.yml).\n" +
+              "  • Network isolation — the MCP server container may not share a Docker network with the runner.\n\n" +
+              "WITHOUT THE RUNNER: bulk import is unavailable. Small datasets (<10 docs) can use ml_document_put\n" +
+              "directly, but for CSV / JSON / Parquet ingestion or reprocessing pipelines, the runner is required.",
+          }],
           isError: true,
         };
       }

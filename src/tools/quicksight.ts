@@ -6,15 +6,18 @@ import { toToolError } from "../utils/errors.js";
 export function registerQuickSightTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
     "ml_aggregate_query",
-    "Run a high-level aggregation query on MarkLogic and return tabular results suitable for AWS QuickSight dashboards. Groups documents and computes metrics using range indexes.",
+    "Compute a total document count plus optional aggregates (count/sum/avg/min/max/stddev) over a single " +
+    "field — returns one flat row, not grouped. Suitable for QuickSight KPI tiles.\n\n" +
+    "SCOPE: This tool does NOT support GROUP BY. For grouped aggregation, use one of:\n" +
+    "  • ml_optic_query (group-by over a TDE view) — Prerequisite: ml_views_list to confirm the view exists.\n" +
+    "  • ml_values_query (value frequencies from a range index) — Prerequisite: ml_indexes_list to confirm the index.\n" +
+    "  • ml_facets_query (faceted breakdowns via search options) — Prerequisite: a search-options set with facet constraints.\n\n" +
+    "PREREQUISITES:\n" +
+    "  • Each metric needs a named values definition in a search-options set, backed by a range index.\n" +
+    "  • Call ml_search_options_list / ml_search_options_get first to find valid values_name entries.",
     {
       collection: z.string().optional().describe("Collection to aggregate over"),
       filter_query: z.string().optional().describe("Constraining search query to filter documents before aggregating"),
-      group_by: z.array(z.string()).optional().describe(
-        "Field paths to group by. NOTE: arbitrary field-path grouping is not supported by this tool — " +
-        "supplying this parameter returns an error with guidance. " +
-        "Use ml_optic_query with a group-by operator (requires TDE view) or ml_values_query with a named values definition backed by a range index instead."
-      ),
       metrics: z.array(z.object({
         values_name: z.string().describe("Named values definition in search options"),
         aggregate: z.enum(["count", "sum", "avg", "min", "max", "stddev"]).describe("Aggregate function"),
@@ -22,24 +25,7 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
       })).optional().describe("Aggregate metrics to compute"),
       database: z.string().optional().describe("Database name"),
     },
-    async ({ collection, filter_query, group_by, metrics, database }) => {
-      // group_by is not supported — reject early with actionable guidance
-      if (group_by?.length) {
-        return {
-          content: [{
-            type: "text",
-            text:
-              "group_by is not supported by ml_aggregate_query.\n\n" +
-              "To group documents by a field, use one of:\n" +
-              "  • ml_optic_query — use a group-by operator in an Optic plan (requires a TDE view with the field as a column). " +
-              "Example: add {\"ns\":\"op\",\"fn\":\"group-by\",\"args\":[[col],[{\"ns\":\"op\",\"fn\":\"count\",\"args\":[\"count\",null]}]]} to your plan.\n" +
-              "  • ml_values_query — pass a named values definition backed by a range index to get value frequencies.\n\n" +
-              "Use ml_schema_discover to find available range indexes, or ml_views_list to see TDE views.",
-          }],
-          isError: true,
-        };
-      }
-
+    async ({ collection, filter_query, metrics, database }) => {
       try {
         const results: Record<string, unknown> = {
           query: { collection, filter: filter_query },
@@ -81,7 +67,17 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
 
   server.tool(
     "ml_timeseries_query",
-    "Time-bucketed aggregation query for MarkLogic — returns data suitable for QuickSight time-series charts. Requires a range index on the time field.",
+    "Convenience wrapper around ml_values_query for date/time fields: fetches raw values from a date " +
+    "range index and buckets them by hour/day/week/month/quarter/year. Returns QuickSight-ready " +
+    "time-series points.\n\n" +
+    "WHEN TO PICK THIS vs ALTERNATIVES:\n" +
+    "  • ml_timeseries_query → single date field, fixed bucket sizes, minimal plumbing.\n" +
+    "  • ml_optic_query      → date bucketing combined with joins, other dimensions, or filters\n" +
+    "                          that cannot be expressed as a search query — requires TDE view.\n\n" +
+    "PREREQUISITES:\n" +
+    "  1. A range index on the date/time field (type dateTime or date) — check ml_indexes_list.\n" +
+    "  2. A named values definition pointing to that index, referenced by time_values_name.\n" +
+    "     Inspect with ml_search_options_get.",
     {
       collection: z.string().optional().describe("Collection to query"),
       time_values_name: z.string().describe("Named values definition pointing to the date/time range index"),
@@ -219,7 +215,19 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
 
   server.tool(
     "ml_facets_query",
-    "Return facet breakdowns from MarkLogic search results — suitable for populating QuickSight filter controls and pie/bar charts.",
+    "Return facet breakdowns (e.g. counts by category, status, region) alongside a search total — " +
+    "suitable for QuickSight filter controls, pie/bar charts, and multi-facet dashboards.\n\n" +
+    "WHEN TO PICK THIS vs ALTERNATIVES:\n" +
+    "  • ml_facets_query  → multiple facets in one call; requires a pre-built search-options set.\n" +
+    "  • ml_values_query  → single field, no search options needed (just a values definition).\n" +
+    "  • ml_optic_query   → GROUP BY across joined TDE views.\n\n" +
+    "PREREQUISITES:\n" +
+    "  1. A named search-options set with constraint definitions for each facet you want.\n" +
+    "     Discover existing sets with ml_search_options_list and inspect with ml_search_options_get.\n" +
+    "     Create one with ml_search_options_put (see fasttrack_search_designer prompt for a template).\n" +
+    "  2. Each constraint needs a backing range index — verify with ml_indexes_list.\n" +
+    "  3. Omitting 'options' falls back to the default app-services set, which typically has no\n" +
+    "     facet constraints — results will show total=N but facets={}. Always pass an explicit options name.",
     {
       query: z.string().optional().describe("Constraining search query"),
       collection: z.string().optional().describe("Collection to facet"),

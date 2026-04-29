@@ -67,6 +67,10 @@ export function registerPerformanceTools(
     "Run a search in debug mode to see the resolved CTS query structure and estimate. " +
     "Use to verify that a query resolves correctly (correct cts: query type, correct indexes " +
     "targeted) and to see how many candidates it produces BEFORE filtering.\n\n" +
+    "PREREQUISITES FOR ACCURATE DIAGNOSIS:\n" +
+    "• Call ml_indexes_list first — if your query references a field without a range index, the\n" +
+    "  plan will show a universal-index word query instead of the range query you expected.\n" +
+    "• ml_collections_list confirms the collection URI is correct (a typo silently returns 0 hits).\n\n" +
     "KEY THINGS TO CHECK IN OUTPUT:\n" +
     "• 'total' — estimated result count from index resolution\n" +
     "• 'plan' or 'qtext' — the resolved CTS query that was executed\n" +

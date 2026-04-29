@@ -88,6 +88,16 @@ export interface ViewDescriptor {
   view: string;
   tde_uri: string;
   collections: string[];
+  /**
+   * Registration status (only set when listViews is called with verifyRegistered=true).
+   *  - "live"        — view is queryable; op.fromView returned without error
+   *  - "reindexing"  — the database is still building the view; retry later
+   *  - "missing"     — SQL-TABLENOTFOUND; template installed but never registered (often a
+   *                    silently-broken collections filter shape, see ML-11 in friction log)
+   *  - "error"       — some other error; see statusError for the message
+   */
+  status?: "live" | "reindexing" | "missing" | "error";
+  statusError?: string;
 }
 
 export class SchemaClient {
@@ -326,8 +336,9 @@ export class SchemaClient {
     tdeUri: string;
     collection: string;
     sampleSize?: number;
+    database?: string;
   }): Promise<TdeValidationResult> {
-    const { tdeUri, collection, sampleSize = 5 } = options;
+    const { tdeUri, collection, sampleSize = 5, database } = options;
 
     // Read the TDE template from the Schemas database first, then pass its JSON
     // content as a variable so the eval (which runs against the Documents DB) can
@@ -379,9 +390,17 @@ export class SchemaClient {
     type ViewResult = { schema: string; view: string; rowCount?: number; docCount: number; sampleRows?: unknown[]; error?: string };
     let viewResults: ViewResult[] = [];
 
+    // ML-12: Without an explicit `database` param, /v1/eval routes to the app server's
+    // configured default content DB. For multi-DB topologies (e.g. ps-forecast-content
+    // associated with ps-forecast-schemas), this gives false-negative "0 documents in
+    // collection" because the collection lives in a non-default DB. Pass `database`
+    // through so callers can target the correct content DB.
+    const evalParams: Record<string, string> = {};
+    if (database) evalParams.database = database;
+
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       const res = await this.base.http.post("/v1/eval", body.toString(), {
-        params: {},
+        params: evalParams,
         headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "multipart/mixed" },
         responseType: "text",
       });
@@ -444,10 +463,48 @@ export class SchemaClient {
   }
 
   /**
+   * Validate the structural syntax of a TDE template stored in the Schemas DB by
+   * running tde.validate([cts.doc(uri)], []) — catches errors that MarkLogic accepts
+   * silently on insert but produces no working view (e.g. wrong "collections" shape,
+   * scalarType "IRI", "column" used in triples).
+   *
+   * Bypasses the EvalClient's allowEval gate because this is a read-only validation,
+   * analogous to staticCheckSjs. If the user lacks eval-in privilege the request
+   * will 403 — the caller should treat that as a skip, not a failure.
+   *
+   * Returns null if the template is syntactically valid, or an error message string
+   * (typically containing TDE-INVALIDTEMPLATEPROPNODE / TDE-INVALIDTEMPLATENODE).
+   */
+  async validateTemplateSyntax(tdeUri: string): Promise<string | null> {
+    const javascript = `
+      const errors = tde.validate([cts.doc(uri)], []);
+      const arr = errors ? errors.toArray() : [];
+      arr.length === 0 ? "OK" : arr.map(e => (e && e.message) ? e.message : String(e)).join("\\n");
+    `;
+    const body = new URLSearchParams();
+    body.append("javascript", javascript);
+    body.append("vars", JSON.stringify({ uri: tdeUri }));
+    const res = await this.base.http.post("/v1/eval", body.toString(), {
+      params: { database: "Schemas" },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "multipart/mixed" },
+      responseType: "text",
+    });
+    const parsed = parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
+    const value = parsed[0]?.value;
+    const text = typeof value === "string" ? value : String(value ?? "");
+    return text === "OK" || text === "" ? null : text;
+  }
+
+  /**
    * List all schema.view pairs available for Optic queries by reading TDE templates
    * from the Schemas database and extracting their row definitions.
+   *
+   * When verifyRegistered=true, each view is probed via op.fromView(...).limit(0) to
+   * distinguish "TDE document is on disk" from "SQL view is actually live and queryable"
+   * — the gap that hid silently-broken templates in ML-8 / ML-14 of the friction log.
+   * The probe runs against the supplied content `database` (or the app server's default).
    */
-  async listViews(database?: string): Promise<ViewDescriptor[]> {
+  async listViews(database?: string, verifyRegistered = false): Promise<ViewDescriptor[]> {
     const uris = await this.getTdeSchemas(database) as string[];
     const views: ViewDescriptor[] = [];
 
@@ -479,6 +536,59 @@ export class SchemaClient {
         }
       } catch {
         // skip unavailable or malformed TDE documents
+      }
+    }
+
+    if (verifyRegistered && views.length > 0) {
+      const probe = `
+        const op = require('/MarkLogic/optic');
+        const out = [];
+        for (const {schema, view} of pairs) {
+          try {
+            op.fromView(schema, view).limit(0).result().toArray();
+            out.push({ schema, view, status: "live" });
+          } catch (e) {
+            const msg = String(e && e.message ? e.message : e);
+            let status = "error";
+            if (msg.includes("TABLENOTFOUND")) status = "missing";
+            else if (msg.includes("TABLEREINDEXING") || msg.includes("not available until")) status = "reindexing";
+            out.push({ schema, view, status, error: msg });
+          }
+        }
+        out;
+      `;
+      const probeBody = new URLSearchParams();
+      probeBody.append("javascript", probe);
+      probeBody.append("vars", JSON.stringify({ pairs: views.map((v) => ({ schema: v.schema, view: v.view })) }));
+      const probeParams: Record<string, string> = {};
+      if (database) probeParams.database = database;
+      try {
+        const res = await this.base.http.post("/v1/eval", probeBody.toString(), {
+          params: probeParams,
+          headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "multipart/mixed" },
+          responseType: "text",
+        });
+        const parsed = parseMultipartMixed(res.data as string, res.headers["content-type"] as string);
+        type Probe = { schema: string; view: string; status: ViewDescriptor["status"]; error?: string };
+        const probeResults: Probe[] = [];
+        for (const r of parsed) {
+          if (Array.isArray(r.value)) probeResults.push(...(r.value as Probe[]));
+          else if (r.value && typeof r.value === "object" && "schema" in (r.value as object)) probeResults.push(r.value as Probe);
+        }
+        const byKey = new Map(probeResults.map((p) => [`${p.schema}.${p.view}`, p]));
+        for (const v of views) {
+          const p = byKey.get(`${v.schema}.${v.view}`);
+          if (p) {
+            v.status = p.status;
+            if (p.error) v.statusError = p.error;
+          }
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        for (const v of views) {
+          v.status = "error";
+          v.statusError = `Could not probe view registration (eval-in privilege required): ${msg}`;
+        }
       }
     }
 

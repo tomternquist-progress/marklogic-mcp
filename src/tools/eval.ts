@@ -221,6 +221,12 @@ return
   server.tool(
     "ml_invoke_module",
     "Invoke a stored XQuery or SJS module from the MarkLogic modules database. Requires ML_ALLOW_EVAL=true.\n\n" +
+    "WHEN TO PICK THIS vs ALTERNATIVES:\n" +
+    "  • flux_reprocess    → bulk transforms over many documents (parallel batching, preferred).\n" +
+    "  • ml_document_patch → declarative edits to a single document (no module needed).\n" +
+    "  • ml_extension_call → module deployed as a REST resource extension (stable API endpoint).\n" +
+    "  • ml_invoke_module  → one-off diagnostic invocation of a module that is already deployed,\n" +
+    "                        OR a custom orchestration that is NOT well-served by the above.\n\n" +
     "SJS EXTERNAL VARIABLES (ML 12): In ML 12, the `external` global does NOT exist in SJS modules. " +
     "Variables passed via the vars parameter are available as a JSON string via xdmp.getRequestField('vars'). " +
     "Pattern: var vars = JSON.parse(xdmp.getRequestField('vars') || '{}'); var myVar = vars.myVar || 'default'; " +

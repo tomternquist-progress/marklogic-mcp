@@ -107,19 +107,6 @@ describe("ml_aggregate_query handler", () => {
     expect(parsed.metrics).toHaveLength(1);
   });
 
-  it("returns an error with guidance when group_by is supplied", async () => {
-    const result = await tools.get("ml_aggregate_query")!({
-      group_by: ["status"],
-    });
-
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("group_by is not supported");
-    expect(result.content[0].text).toContain("ml_optic_query");
-    expect(result.content[0].text).toContain("ml_values_query");
-    // Should not make any HTTP calls
-    expect(clients.search.search).not.toHaveBeenCalled();
-  });
-
   it("sets isError on failure", async () => {
     clients.search.search.mockRejectedValue(new MarkLogicError("error", 500));
     const result = await tools.get("ml_aggregate_query")!({});

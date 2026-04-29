@@ -6,7 +6,15 @@ import { toToolError, appendTdeHint } from "../utils/errors.js";
 export function registerOpticTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
     "ml_optic_query",
-    "Execute an Optic query against MarkLogic using a serialized plan (the $optic JSON format). Returns rows and column names.",
+    "Execute an Optic query against MarkLogic using a serialized plan (the $optic JSON format). Returns rows and column names.\n\n" +
+    "PREREQUISITES (check these BEFORE building a plan):\n" +
+    "  1. A TDE view in the Schemas database. Call ml_views_list to confirm the view exists — a missing\n" +
+    "     view produces SQL-TABLENOTFOUND, not an obvious error. If no views exist, install one with\n" +
+    "     ml_tde_install (or flux_import generate_tde=true), then check ml_reindex_status until 0.\n" +
+    "  2. Column names in your plan must match the TDE definition. Call ml_schema_get_tde to inspect.\n" +
+    "  3. For analytics (GROUP BY, joins, tabular export) Optic is the right tool. For full-text or\n" +
+    "     structured keyword filtering, prefer ml_search. For value frequencies without TDE, use\n" +
+    "     ml_values_query.",
     {
       plan: z.union([z.record(z.unknown()), z.string()]).describe(
         "Serialized Optic plan as a JSON object (preferred) or JSON string. Must be the $optic plan format, e.g. {\"$optic\":{\"ns\":\"op\",\"fn\":\"operators\",\"args\":[...]}}.\n\n" +
@@ -155,16 +163,39 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
 
   server.tool(
     "ml_views_list",
-    "List all Optic row views available in MarkLogic — the schema.view pairs you can query with ml_optic_query. Each entry shows the schema name, view name, TDE template URI, and the document collections it covers. Use this to discover queryable views after importing data with generate_tde=true.",
+    "List all Optic row views available in MarkLogic — the schema.view pairs you can query with ml_optic_query. Each entry shows the schema name, view name, TDE template URI, and the document collections it covers. Use this to discover queryable views after importing data with generate_tde=true.\n\n" +
+    "Pass verify_registered=true to probe each view with op.fromView(...).limit(0) and add a `status` field to each entry — distinguishing TDE templates that registered successfully from ones that installed silently but never produced a working SQL view (typically a wrong-shape `collections` filter, see ML-11 / ML-14 in the project friction log). Status values: live | reindexing | missing | error.",
     {
-      database: z.string().optional().describe("Database name (schemas are always read from the Schemas DB)"),
+      database: z.string().optional().describe("Database name to probe registration against (defaults to the app server's content DB). Schemas are always read from the Schemas DB regardless."),
+      verify_registered: z.boolean().optional().describe(
+        "When true, probe each view via op.fromView and report status (live | reindexing | missing | error). " +
+        "Adds one extra eval round-trip; default false. Use after a TDE install to confirm the view is live."
+      ),
     },
-    async ({ database }) => {
+    async ({ database, verify_registered }) => {
       try {
-        const views = await clients.schema.listViews(database);
+        const views = await clients.schema.listViews(database, verify_registered ?? false);
         if (views.length === 0) {
-          return { content: [{ type: "text", text: "No TDE views found. Import data with generate_tde=true or install a TDE template via ml_document_put (database='Schemas', collection='http://marklogic.com/xdmp/tde')." }] };
+          return { content: [{ type: "text", text: "No TDE views found. Import data with generate_tde=true or install a TDE template via ml_tde_install (or ml_document_put with database='Schemas', collection='http://marklogic.com/xdmp/tde')." }] };
         }
+
+        if (verify_registered) {
+          const live = views.filter((v) => v.status === "live").length;
+          const reindexing = views.filter((v) => v.status === "reindexing").length;
+          const missing = views.filter((v) => v.status === "missing").length;
+          const errored = views.filter((v) => v.status === "error").length;
+          const summary =
+            `VIEW REGISTRATION SUMMARY: ${live} live, ${reindexing} reindexing, ${missing} missing, ${errored} error\n` +
+            (missing > 0
+              ? "\nMISSING views had their TDE template document installed but the SQL view was never " +
+                "registered. Most common cause: the template's `collections` filter uses the wrong shape " +
+                "(it must be a JSON array of strings inside { \"collection\": [...] }). Inspect the template " +
+                "with ml_schema_get_tde, fix the shape, and re-install via ml_tde_install — that tool now " +
+                "validates structure on install.\n"
+              : "");
+          return { content: [{ type: "text", text: `${summary}\n${JSON.stringify(views, null, 2)}` }] };
+        }
+
         return { content: [{ type: "text", text: JSON.stringify(views, null, 2) }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };

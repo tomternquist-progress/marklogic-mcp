@@ -124,8 +124,14 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
         ).describe("Content MIME type. Accepts full MIME types or shorthands: 'json'→application/json, 'xml'→application/xml, 'text'→text/plain, 'javascript'/'js'→application/javascript, 'xquery'/'xqy'→application/xquery. Use 'application/vnd.marklogic-js-module' for the proper MarkLogic MIME type (required in some versions for correct require() resolution)."),
         collections: z.array(z.string()).optional().describe("Collection URIs to add document to. For TDE templates use 'http://marklogic.com/xdmp/tde'. Each entry becomes a separate collection."),
         database: z.string().optional().describe("Database name. Use 'Schemas' for TDE templates, 'Modules' for executable SJS/XQuery modules."),
+        verify: z.boolean().optional().describe(
+          "If true, fetch the document's metadata after writing and include the actual stored " +
+          "collections in the response. Catches silent failures where the write returns success " +
+          "but the collection set or database routing was not what the caller intended. Adds one " +
+          "extra round-trip; default false."
+        ),
       },
-      async ({ uri, content, content_type, collections, database }) => {
+      async ({ uri, content, content_type, collections, database, verify }) => {
         try {
           // Normalize content_type shorthands. z.preprocess handles this when the MCP SDK
           // validates args through Zod, but the mock test harness calls handlers directly
@@ -175,6 +181,36 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
           const note = isModulesDb
             ? ` Immediately callable via require('${uri}') or xdmp.invoke('${uri}').`
             : "";
+
+          // ML-4: when verify=true, do a metadata round-trip so the caller can confirm the
+          // collections the document landed with. Failures here do not invalidate the write —
+          // we report the put as successful and append a verify-failure note.
+          if (verify) {
+            try {
+              const verifyDoc = await clients.documents.get(uri, database, true);
+              const meta = verifyDoc.metadata as { collections?: string[]; permissions?: unknown[] } | undefined;
+              const verifyBlock = {
+                uri,
+                database: database ?? "(server default)",
+                stored_collections: meta?.collections ?? [],
+                stored_permissions: meta?.permissions ?? [],
+              };
+              return {
+                content: [{
+                  type: "text",
+                  text: `Document created/updated: ${uri}.${note}\n\nVERIFY:\n${JSON.stringify(verifyBlock, null, 2)}`,
+                }],
+              };
+            } catch (verifyErr) {
+              const vmsg = verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
+              return {
+                content: [{
+                  type: "text",
+                  text: `Document created/updated: ${uri}.${note}\n\nVERIFY FAILED: could not read back metadata — ${vmsg}\nThis usually means the database parameter on the verify GET routed differently than the PUT. Pass the same 'database' value on both calls.`,
+                }],
+              };
+            }
+          }
           return { content: [{ type: "text", text: `Document created/updated: ${uri}.${note}` }] };
         } catch (err) {
           return { content: [{ type: "text", text: toToolError(err) }], isError: true };

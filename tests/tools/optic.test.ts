@@ -274,7 +274,7 @@ describe("ml_views_list handler", () => {
 
     await tools.get("ml_views_list")!({ database: "Analytics" });
 
-    expect(clients.schema.listViews).toHaveBeenCalledWith("Analytics");
+    expect(clients.schema.listViews).toHaveBeenCalledWith("Analytics", false);
   });
 
   it("passes undefined when no database supplied", async () => {
@@ -282,7 +282,15 @@ describe("ml_views_list handler", () => {
 
     await tools.get("ml_views_list")!({});
 
-    expect(clients.schema.listViews).toHaveBeenCalledWith(undefined);
+    expect(clients.schema.listViews).toHaveBeenCalledWith(undefined, false);
+  });
+
+  it("passes verify_registered through to listViews", async () => {
+    clients.schema.listViews.mockResolvedValue([]);
+
+    await tools.get("ml_views_list")!({ verify_registered: true });
+
+    expect(clients.schema.listViews).toHaveBeenCalledWith(undefined, true);
   });
 
   it("sets isError on failure", async () => {

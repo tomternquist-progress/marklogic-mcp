@@ -8,7 +8,7 @@ MARKLOGIC MCP — PROBLEM-FIRST DECISION GUIDE
 
 READ THIS BEFORE CALLING ANY TOOL.
 
-This server exposes 70+ tools across 12 domains. Reaching for the wrong tool wastes
+This server exposes 100+ tools across 16 domains. Reaching for the wrong tool wastes
 round-trips and produces inferior results. Use the decision principles and
 problem→solution table below to identify the MarkLogic-native approach first, then
 select the matching tools.
@@ -49,7 +49,12 @@ pitfalls → alternatives) before any tool is called.
 
 4. SCHEMA AFTER IMPORT, NOT BEFORE
    TDE templates apply at query time — write and fix them after import without
-   re-importing. Use ml_tde_validate to verify; ml_schema_get_tde to inspect.
+   re-importing. ml_tde_install runs tde.validate on insert and rejects structurally
+   broken templates (wrong "collections" shape, scalarType "IRI", "column" in triples)
+   that would otherwise install silently and produce no working view. After install,
+   use ml_views_list with verify_registered=true to confirm each view is live (live |
+   reindexing | missing | error). Use ml_tde_validate (pass database= for multi-DB
+   topologies) to check row counts; ml_schema_get_tde to inspect template content.
 
 5. OPTIC FOR JOINS AND AGGREGATIONS
    For joins across collections, GROUP BY aggregates, or BI export, use Optic API
@@ -152,18 +157,27 @@ Schema discovery     TDE + schema sampling      ml_schema_discover        ml_col
 
 Data transform /     Reprocess pipeline /       flux_reprocess            ml_document_list
 enrichment           SJS module                 ml_document_patch
+                                                ml_document_patch_batch
+                                                (parallel patch of many URIs)
                                                 ml_invoke_module
 
 Content              Semaphore Classification   semaphore_classify        semaphore_status
-classification /     Server (CLS) + KMM         semaphore_publish_sets    semaphore_publish_sets
-auto-tagging         taxonomy authoring         semaphore_classes         semaphore_classes
-(taxonomy /          (Progress Data Platform)   semaphore_kmm_models_list semaphore_kmm_models_list
-concept extraction)  Classify via Flux or       semaphore_kmm_model_create
-                     pre-classify app-side      semaphore_kmm_skos_load
+classification /     Server (CLS) + KMM         semaphore_classify_batch  semaphore_publish_sets
+auto-tagging         taxonomy authoring         semaphore_publish_sets    semaphore_classes
+(taxonomy /          (Progress Data Platform)   semaphore_classes         semaphore_kmm_models_list
+concept extraction)  Classify via Flux or       semaphore_kmm_models_list
+                     pre-classify app-side      semaphore_kmm_model_create
+                                                semaphore_kmm_skos_load
                                                 semaphore_kmm_sparql
                                                 semaphore_kmm_sparql_update
                                                 semaphore_publish
                                                 semaphore_publish_config_fix_plain_skos
+                                                semaphore_kid_template_get / _set /
+                                                  _diagnose (tune CLS rule weights —
+                                                  phrase/near/hierarchy/assoc)
+                                                semaphore_task_list / _create / _commit
+                                                  (governance: working-copy workflow
+                                                   for production taxonomy changes)
                                                 flux_import (classify_with_semaphore:
                                                   true — bulk classification at ingest)
                                                 flux_reprocess
@@ -171,9 +185,26 @@ concept extraction)  Classify via Flux or       semaphore_kmm_model_create
 
 Database admin /     Management API             ml_cluster_status         —
 health                                          ml_databases_list
+                                                ml_database_properties
                                                 ml_database_statistics
                                                 ml_forests_list
                                                 ml_servers_list
+                                                ml_server_properties
+                                                ml_reindex_status
+
+Cluster diagnosis   Management API log files    ml_logs_list              ml_cluster_status
+(read server logs)                              ml_logs_read
+                                                (ErrorLog.txt,
+                                                 8002_AccessLog.txt,
+                                                 8020/8021 for DHF;
+                                                 supports start/end/regex/tail)
+
+Forest recovery     Management API database     ml_database_set_forests   ml_forests_list
+(forest-hang fix)   properties                                            ml_cluster_status
+                    Restrict DB to forests on
+                    available hosts when nodes
+                    are offline (accepts conn
+                    but never responds pattern)
 
 Security / RBAC      Management API +           ml_users_list             ml_roles_list
 audit                REST permissions API        ml_roles_list             ml_users_list
@@ -198,9 +229,10 @@ Code generation      Prompt templates           xquery_function_generator —
 DHF flow execution   Data Hub Framework         dhf_status                dhf_flows_list
 (entity pipelines:   flows/steps API            dhf_flows_list
  ingest → map →      Requires DHF 5.x +         dhf_flow_run              (check flow exists)
- match → master)     allowEval + !readonly       dhf_job_status
-                     Flow runs async — poll
-                     dhf_job_status for result
+ match → master)     allowEval + !readonly       dhf_flow_run_jar
+                     Flow runs async — poll     (jar runner when REST
+                     dhf_job_status for result  runner is unavailable)
+                                                dhf_job_status
 
 Data integration     Envelope pattern           envelope_pattern_advisor  ml_document_sample
 design / diagnosis   (source → headers →        ml_schema_discover        ml_collections_list
@@ -618,15 +650,17 @@ KUBERNETES NETWORK NOTE:
 
 ── TOOL GROUPS AT A GLANCE ─────────────────────────────────────────────────────
 
-Admin (8):     ml_cluster_status, ml_databases_list, ml_database_properties,
-               ml_database_statistics, ml_forests_list, ml_servers_list,
-               ml_server_properties, ml_reindex_status
+Admin (11):    ml_cluster_status, ml_databases_list, ml_database_properties,
+               ml_database_statistics, ml_database_set_forests, ml_forests_list,
+               ml_servers_list, ml_server_properties, ml_reindex_status,
+               ml_logs_list, ml_logs_read
 
 Security (3):  ml_users_list, ml_roles_list, ml_document_permissions
 
-Documents (3–6, config-dependent):
+Documents (3–7, config-dependent):
                ml_document_get, ml_document_list, ml_document_sample
-               [write-enabled] ml_document_put, ml_document_delete, ml_document_patch
+               [write-enabled] ml_document_put, ml_document_delete,
+                               ml_document_patch, ml_document_patch_batch
 
 Search (5):    ml_search, ml_search_qbe, ml_values_query, ml_suggest,
                ml_geospatial_search
@@ -655,20 +689,23 @@ Extensions (3–5, config-dependent):
                ml_extension_list, ml_extension_get, ml_extension_call
                [write-enabled] ml_extension_put, ml_extension_delete
 
-Semaphore (20): semaphore_status, semaphore_studio_status,
+Semaphore (27): semaphore_status, semaphore_studio_status,
                 semaphore_publish_sets, semaphore_classes, semaphore_classify,
-                semaphore_cls_languages, semaphore_kmm_models_list,
-                semaphore_kmm_model_create, semaphore_kmm_model_delete,
-                semaphore_kmm_skos_load, semaphore_kmm_sparql,
-                semaphore_kmm_sparql_update, semaphore_publish,
-                semaphore_publish_config_fix_plain_skos,
+                semaphore_classify_batch, semaphore_cls_languages,
+                semaphore_kmm_models_list, semaphore_kmm_model_create,
+                semaphore_kmm_model_delete, semaphore_kmm_skos_load,
+                semaphore_kmm_sparql, semaphore_kmm_sparql_update,
+                semaphore_publish, semaphore_publish_config_fix_plain_skos,
                 semaphore_publish_diagnose, semaphore_concept_search,
                 semaphore_concept_get, semaphore_concept_labels_update,
-                semaphore_taxonomy_validate, semaphore_taxonomy_scaffold
+                semaphore_taxonomy_validate, semaphore_taxonomy_scaffold,
+                semaphore_kid_template_get, semaphore_kid_template_set,
+                semaphore_kid_template_diagnose,
+                semaphore_task_list, semaphore_task_create, semaphore_task_commit
 
-DHF (3–4, DHF-install-dependent):
+DHF (3–5, DHF-install-dependent):
                dhf_status, dhf_flows_list, dhf_job_status
-               [allowEval + write-enabled] dhf_flow_run
+               [allowEval + write-enabled] dhf_flow_run, dhf_flow_run_jar
 
 Performance (3–5, eval-dependent):
                ml_explain_optic, ml_search_query_plan, ml_forest_metrics
