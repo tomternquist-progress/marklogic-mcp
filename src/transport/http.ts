@@ -29,6 +29,13 @@ export async function startHttpTransport(
   connectionAuthType: "digest" | "basic" | "oauth" = "digest"
 ): Promise<import("http").Server> {
   const app = express();
+  // Trust proxy must be set BEFORE rate-limit middleware so req.ip resolves to the
+  // real client IP rather than the proxy's. Without this, express-rate-limit logs
+  // ERR_ERL_UNEXPECTED_X_FORWARDED_FOR when X-Forwarded-For is present.
+  if (config.trustProxy !== undefined) {
+    app.set("trust proxy", config.trustProxy);
+    logger.info("Express trust proxy enabled", { trustProxy: config.trustProxy });
+  }
   app.use(express.json());
   app.use(cors(config.corsOrigin ? { origin: config.corsOrigin } : undefined));
   app.use(rateLimit({ windowMs: 60_000, max: 500 }));

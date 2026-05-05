@@ -245,6 +245,7 @@ alternative approaches (host network mode, host IP).
 | `ML_SSL_REJECT_UNAUTHORIZED` | `true` | Reject self-signed SSL certificates (`false` for dev environments) |
 | `MCP_HTTP_HOST` | `0.0.0.0` | Bind address for HTTP transport |
 | `MCP_CORS_ORIGIN` | _(all)_ | Restrict CORS to a single origin (default: allow all) |
+| `MCP_TRUST_PROXY` | _(disabled)_ | Express `trust proxy` setting — set when behind a reverse proxy (nginx, ALB, ingress). Use `1` for a single proxy, a number of hops, an IP/subnet list (e.g. `10.0.0.0/8`), or `loopback`. Avoid `true` (spoofable). Required to silence `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR` from `express-rate-limit`. |
 | `ML_OAUTH_TOKEN` | _(none)_ | Static Bearer token; required in `stdio` mode when `ML_AUTH_TYPE=oauth` |
 | `ML_DHF_CLIENT_JAR` | _(none)_ | Absolute path to `marklogic-data-hub-<version>-client.jar` |
 | `ML_DHF_PORT` | _(ML_PORT)_ | DHF staging app server port |

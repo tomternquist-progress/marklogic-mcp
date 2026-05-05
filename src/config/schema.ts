@@ -54,6 +54,25 @@ export const HttpConfigSchema = z.object({
   host: z.string().default("0.0.0.0"),
   apiKey: z.string().optional(),
   corsOrigin: z.preprocess(val => (val === "" ? undefined : val), z.string().optional()),
+  /**
+   * Express `trust proxy` setting — required when running behind a reverse proxy
+   * (nginx, ALB, ingress) so that req.ip and X-Forwarded-For are interpreted correctly
+   * by middleware like express-rate-limit. Accepts:
+   *   - "true" / "false" → boolean
+   *   - a number (e.g. "1") → trust that many hops
+   *   - any other string → passed through to Express (IP list, "loopback", subnet, etc.)
+   * Recommended: set to the exact number of proxies in front of the server (usually "1").
+   * Setting "true" is discouraged because X-Forwarded-For becomes spoofable.
+   */
+  trustProxy: z
+    .preprocess((val) => {
+      if (val === "" || val === undefined || val === null) return undefined;
+      if (typeof val !== "string") return val;
+      if (val === "true") return true;
+      if (val === "false") return false;
+      if (/^\d+$/.test(val)) return Number(val);
+      return val;
+    }, z.union([z.boolean(), z.number().int().nonnegative(), z.string()]).optional()),
 });
 
 export type HttpConfig = z.infer<typeof HttpConfigSchema>;
