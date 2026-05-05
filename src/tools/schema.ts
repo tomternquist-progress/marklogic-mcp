@@ -10,7 +10,7 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
     {
       collection: z.string().optional().describe("Collection URI to sample from"),
       sample_size: z.number().int().positive().max(50).optional().describe("Number of documents to sample (default: 10)"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ collection, sample_size, database }) => {
       try {
@@ -27,7 +27,7 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
     "Retrieve Template Driven Extraction (TDE) schemas registered in the MarkLogic Schemas database. TDE schemas define row views over document data. Pass schema_name as the full URI (e.g. /tde/gdelt/events.json) to retrieve the template content; omit it to list all TDE URIs.",
     {
       schema_name: z.string().optional().describe("Full URI of the TDE template to retrieve (e.g. /tde/gdelt/events.json). Omit to list all TDE template URIs."),
-      database: z.string().optional().describe("Database name (schemas are in the Schemas DB)"),
+      database: z.string().optional().describe("Database name for the TDE template lookup. Schemas are always read from the Schemas DB; this param routes the content DB context. Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ schema_name, database }) => {
       try {
@@ -101,7 +101,7 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
     "List document collections in MarkLogic with their document counts.",
     {
       limit: z.number().int().positive().max(500).optional().describe("Maximum collections to return (default: 50)"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ limit, database }) => {
       try {
@@ -218,7 +218,7 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
     "ml_namespaces_list",
     "List registered XML namespaces in a MarkLogic database. Essential for writing XQuery against XML documents.",
     {
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ database }) => {
       try {

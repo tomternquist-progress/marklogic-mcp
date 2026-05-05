@@ -9,7 +9,7 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
     "Retrieve a document from MarkLogic by URI. Returns content and optionally metadata (collections, permissions).",
     {
       uri: z.string().describe("Document URI, e.g. /data/customers/cust-001.json"),
-      database: z.string().optional().describe("Database name (uses server default if omitted)"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       include_metadata: z.boolean().optional().describe("Include collections, permissions, and properties"),
     },
     async ({ uri, database, include_metadata }) => {
@@ -36,7 +36,7 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
       collection: z.string().describe("Collection to sample documents from"),
       count: z.number().int().positive().max(5).optional().describe("Number of documents to return (default: 3, max: 5)"),
       show_keys_only: z.boolean().optional().describe("Return only top-level field names and value types instead of full document content. Useful for large documents or when you just need the schema shape."),
-      database: z.string().optional().describe("Database name (uses server default if omitted)"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ collection, count = 3, show_keys_only, database }) => {
       try {
@@ -80,7 +80,7 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
       directory: z.string().optional().describe("Filter by directory prefix, e.g. /data/customers/"),
       start: z.number().int().positive().optional().describe("Pagination start (default: 1)"),
       page_length: z.number().int().positive().max(500).optional().describe("Page size (default: 20)"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ collection, directory, start, page_length, database }) => {
       try {
@@ -123,7 +123,7 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
           ])
         ).describe("Content MIME type. Accepts full MIME types or shorthands: 'json'→application/json, 'xml'→application/xml, 'text'→text/plain, 'javascript'/'js'→application/javascript, 'xquery'/'xqy'→application/xquery. Use 'application/vnd.marklogic-js-module' for the proper MarkLogic MIME type (required in some versions for correct require() resolution)."),
         collections: z.array(z.string()).optional().describe("Collection URIs to add document to. For TDE templates use 'http://marklogic.com/xdmp/tde'. Each entry becomes a separate collection."),
-        database: z.string().optional().describe("Database name. Use 'Schemas' for TDE templates, 'Modules' for executable SJS/XQuery modules."),
+        database: z.string().optional().describe("Database name. Use 'Schemas' for TDE templates, 'Modules' for executable SJS/XQuery modules. For project content DBs, run ml_databases_list to discover the right name."),
         verify: z.boolean().optional().describe(
           "If true, fetch the document's metadata after writing and include the actual stored " +
           "collections in the response. Catches silent failures where the write returns success " +
@@ -223,7 +223,7 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
       "Delete a document from MarkLogic by URI. Requires ML_READONLY=false.",
       {
         uri: z.string().describe("Document URI to delete"),
-        database: z.string().optional().describe("Database name"),
+        database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       },
       async ({ uri, database }) => {
         try {
@@ -250,7 +250,7 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
           "  { \"patch\": [{ \"delete\": { \"select\": \"temporaryField\" } }] }\n" +
           "NOTE: If you need to add multiple top-level fields or the patch is complex, consider using ml_document_put to replace the whole document instead."
         ),
-        database: z.string().optional().describe("Database name"),
+        database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       },
       async ({ uri, patch, database }) => {
         try {
@@ -292,7 +292,7 @@ export function registerDocumentTools(server: McpServer, clients: MarkLogicClien
           "Example — add a field to all documents:\n" +
           "  { \"patch\": [{ \"insert\": { \"context\": \"/node()\", \"position\": \"last-child\", \"content\": { \"enriched\": true } } }] }"
         ),
-        database: z.string().optional().describe("Database name"),
+        database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       },
       async ({ uris, collection, start, page_length, patch, database }) => {
         if (!uris?.length && !collection) {

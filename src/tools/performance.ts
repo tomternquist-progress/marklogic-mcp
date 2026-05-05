@@ -26,7 +26,7 @@ export function registerPerformanceTools(
       plan: z.union([z.record(z.unknown()), z.string()]).describe(
         "Serialized Optic plan as a JSON object or JSON string (same format as ml_optic_query)"
       ),
-      database: z.string().optional().describe("Target database (uses server default if omitted)"),
+      database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ plan, database }) => {
       let planObj: Record<string, unknown>;
@@ -85,7 +85,7 @@ export function registerPerformanceTools(
         "Structured query object (same format as ml_search). Used for precise field-level filtering."
       ),
       collection: z.string().optional().describe("Scope search to this collection"),
-      database: z.string().optional().describe("Target database (uses server default if omitted)"),
+      database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       search_options: z.string().optional().describe("Named search options set stored in MarkLogic"),
     },
     async ({ q, structured_query, collection, database, search_options }) => {
@@ -265,7 +265,7 @@ export function registerPerformanceTools(
           "For 'javascript': an expression or IIFE body — result of last expression is captured. " +
           "For 'sparql': a SPARQL query string (SELECT, CONSTRUCT, or ASK)."
         ),
-        database: z.string().optional().describe("Target database (uses server default if omitted)"),
+        database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       },
       async ({ language, code, database }) => {
         try {

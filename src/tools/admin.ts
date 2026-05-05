@@ -6,7 +6,7 @@ import { toToolError } from "../utils/errors.js";
 export function registerAdminTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
     "ml_databases_list",
-    "List all databases in the MarkLogic cluster.",
+    "List all databases in the MarkLogic cluster.\n\nRUN THIS FIRST when starting work on a MarkLogic project. Every MarkLogic application creates its own content database (e.g. 'myapp-content') alongside dedicated Schemas, Modules, and Triggers databases. The built-in 'Documents' database is for ad-hoc sandbox use — project data lives in the app-specific DB. Use the output to determine the correct 'database' parameter for ml_search, ml_optic_query, ml_eval_javascript, and other data-access tools.",
     {},
     async () => {
       try {
@@ -87,7 +87,7 @@ export function registerAdminTools(server: McpServer, clients: MarkLogicClients)
 
   server.tool(
     "ml_servers_list",
-    "List App Servers (HTTP, XDBC, WebDAV, ODBC) in a MarkLogic group.",
+    "List App Servers (HTTP, XDBC, WebDAV, ODBC) in a MarkLogic group. Projects create their own HTTP app server (with a dedicated content database and port) — run this alongside ml_databases_list to understand a project's topology before targeting queries.",
     { group: z.string().optional().describe("Server group name — omit to list all groups") },
     async ({ group }) => {
       try {

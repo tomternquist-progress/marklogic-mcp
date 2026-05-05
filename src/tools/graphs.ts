@@ -67,7 +67,7 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients,
       sparql: z.string().describe("SPARQL query string (SELECT, CONSTRUCT, ASK, or DESCRIBE)"),
       default_graph: z.string().optional().describe("Default named graph URI"),
       base: z.string().optional().describe("Base URI for resolving relative URIs in the query"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ sparql, default_graph, base, database }) => {
       try {
@@ -92,7 +92,7 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients,
     {
       start: z.number().int().positive().optional().describe("Pagination start (default: 1)"),
       page_length: z.number().int().positive().max(200).optional().describe("Results per page (default: 20)"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ start, page_length, database }) => {
       try {
@@ -133,7 +133,7 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients,
         "application/ld+json",
         "application/rdf+xml",
       ]).describe("RDF serialization format of the content"),
-      database: z.string().optional().describe("Target database (uses server default if omitted)"),
+      database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       merge: z.boolean().optional().describe("If true, merge triples into an existing graph (PATCH) instead of replacing it (PUT). Default: false."),
     },
     async ({ graph_uri, content, content_type, database, merge }) => {
@@ -161,7 +161,7 @@ export function registerGraphTools(server: McpServer, clients: MarkLogicClients,
       "NOTE: This tool is disabled in readonly mode.",
       {
         graph_uri: z.string().describe("URI of the named graph to delete, e.g. 'http://example.org/mygraph'"),
-        database: z.string().optional().describe("Database name (uses server default if omitted)"),
+        database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       },
       async ({ graph_uri, database }) => {
         try {

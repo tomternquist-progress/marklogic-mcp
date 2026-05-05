@@ -16,7 +16,7 @@ export function registerFastTrackTools(
     "Use ml_search_options_get to retrieve a specific configuration. " +
     "Use ml_search_options_put to create or update a configuration (requires ML_READONLY=false).",
     {
-      database: z.string().optional().describe("Database name (uses server default if omitted)"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ database }) => {
       try {
@@ -39,7 +39,7 @@ export function registerFastTrackTools(
     "Call ml_search_options_list first to see available option set names.",
     {
       name: z.string().describe("Name of the search options configuration to retrieve"),
-      database: z.string().optional().describe("Database name (uses server default if omitted)"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ name, database }) => {
       try {
@@ -82,7 +82,7 @@ export function registerFastTrackTools(
           "Full search options JSON object. Must include a top-level 'options' key. " +
           "Example: { \"options\": { \"return-facets\": true, \"constraint\": [...], \"extract-document-data\": {...} } }"
         ),
-        database: z.string().optional().describe("Database name (uses server default if omitted)"),
+        database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       },
       async ({ name, options, database }) => {
         try {
@@ -106,7 +106,7 @@ export function registerFastTrackTools(
       "Any FastTrack app component or ml_search call that references this options name will fall back to default search options.",
       {
         name: z.string().describe("Name of the search options configuration to delete"),
-        database: z.string().optional().describe("Database name (uses server default if omitted)"),
+        database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       },
       async ({ name, database }) => {
         try {

@@ -22,7 +22,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
       start: z.number().int().positive().optional().describe("Pagination start position (default: 1)"),
       page_length: z.number().int().positive().max(100).optional().describe("Results per page (default: 10)"),
       options: z.string().optional().describe("Named search options node configured on the server"),
-      database: z.string().optional().describe("Database to search (uses server default if omitted)"),
+      database: z.string().optional().describe("Database to search. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ q, structured_query, collection, directory, start, page_length, options, database }) => {
       try {
@@ -50,7 +50,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
       qbe: z.record(z.unknown()).describe("Example document structure to match against"),
       start: z.number().int().positive().optional().describe("Pagination start (default: 1)"),
       page_length: z.number().int().positive().max(100).optional().describe("Results per page (default: 10)"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ qbe, start, page_length, database }) => {
       try {
@@ -85,7 +85,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
       direction: z.enum(["ascending", "descending"]).optional().describe("Sort direction (default: descending by frequency)"),
       aggregate: z.string().optional().describe("Aggregate function: sum, count, avg, min, max, stddev"),
       options: z.string().optional().describe("Named search options node that contains the values definition (deploy via ml_search_options_put)"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ values_name, query, limit, direction, aggregate, options, database }) => {
       try {
@@ -126,7 +126,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
       // Scope
       collection: z.string().optional().describe("Limit search to this collection URI"),
       page_length: z.number().int().positive().max(100).optional().describe("Max results to return (default: 10)"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ region_type, center_lat, center_lon, radius_km, south, west, north, east, points,
              parent_property, lat_property, lon_property, collection, page_length, database }) => {
@@ -198,7 +198,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
       partial_q: z.string().describe("Partial query string to complete"),
       limit: z.number().int().positive().max(50).optional().describe("Max suggestions to return (default: 10)"),
       options: z.string().optional().describe("Named search options node"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ partial_q, limit, options, database }) => {
       try {

@@ -18,14 +18,50 @@ right approach is not immediately obvious. It will return a structured 6-section
 analysis (classification → native approach → discovery sequence → tool sequence →
 pitfalls → alternatives) before any tool is called.
 
-★ STARTING A NEW PROJECT? Read this first ★
-   Call ml_suggest_approach or invoke the "project_setup_advisor" prompt BEFORE writing
-   any code or running any tools. Key principle: MCP tools are for exploration and
-   prototyping; the canonical, repeatable pipeline uses Gradle + Flux CLI, not MCP calls:
-     • Indexes → src/main/ml-config/databases/content-database.json → gradle mlDeploy
-     • TDE     → src/main/ml-schemas/tde/                           → gradle mlLoadSchemas
-     • Modules → src/main/ml-modules/root/                          → gradle mlLoadModules
-     • Data    → Gradle Exec tasks calling: flux import-files / flux import-rdf-files
+★ STARTING A PROJECT, NOT JUST EXPLORING? Read this first ★
+
+   If the user's goal implies anything that should be REPEATABLE, SOURCE-CONTROLLED,
+   or DEPLOYED TO ANOTHER ENVIRONMENT — call the ml_gradle_scaffold TOOL FIRST,
+   not the MCP write tools. Signals to watch for:
+     • "build me an app / API / service / backend"
+     • "create a new project / repo"
+     • "set up MarkLogic for…"
+     • "add a REST endpoint" / "expose this as an API"
+     • "add an index" / "deploy to production" / "promote to staging"
+     • "I want this in CI/CD" / "version-controlled" / "multi-environment"
+     • Any request that names a custom REST extension, transform, or module path
+
+   ml_gradle_scaffold returns a JSON file map (paths + contents) the agent writes to
+   disk. The user then runs \`gradle mlDeploy\` from the project root. The scaffold bakes
+   in the four most common first-deploy gotchas: pre-emptive Basic auth across the four
+   sub-services (avoids "unsupported auth scheme: [Basic realm=public]"),
+   schemas-database.json and triggers-database.json stubs (avoids CMA-INVALIDPROPERTIES
+   on first deploy), per-file collections.properties syntax (the global "collections="
+   key is silently ignored), and a REST extension stub with services/metadata/<n>.xml
+   plus the rs:-prefix nuance documented inline.
+
+   Why scaffold instead of running ad-hoc tools? MCP write tools (ml_document_put,
+   ml_extension_put, ml_tde_install, flux_import) are great for one-off exploration but
+   leave nothing on disk. The scaffold output is a checked-in artifact the user can
+   re-deploy from CI/CD without the MCP server.
+
+   FLOW for a new-project request:
+     1. ml_gradle_scaffold(app_name, rest_port, …) → file map
+     2. Agent writes each file to disk
+     3. project_setup_advisor prompt (only if the user needs deeper guidance:
+        DHF vs plain, custom indexes, security)
+     4. \`gradle mlDeploy\` → cluster has the app
+     5. Iterate: edit ml-modules/, run \`gradle mlReloadModules\` or \`gradle mlWatch\`
+
+   Canonical filesystem-to-server mapping:
+     • Indexes  → src/main/ml-config/databases/content-database.json → gradle mlDeploy
+     • TDE      → src/main/ml-schemas/tde/<view>.tdej                → gradle mlLoadSchemas
+     • Modules  → src/main/ml-modules/root/                          → gradle mlLoadModules
+     • REST svc → src/main/ml-modules/services/<n>.sjs               → at /v1/resources/<n>
+     • Transform→ src/main/ml-modules/transforms/<n>.sjs             → at ?transform=<n>
+     • Options  → src/main/ml-modules/options/<n>.xml                → at ?options=<n>
+     • Roles    → src/main/ml-config/security/roles/<n>.json         → gradle mlDeployRoles
+     • Data     → Gradle Exec tasks calling: flux import-files / flux import-rdf-files
    See the PROJECT SETUP / DEPLOYMENT (ml-gradle) section below for the full layout.
 
 
@@ -519,14 +555,25 @@ indexes, deploying TDE templates, or structuring a new project, use the
 project_setup_advisor prompt. Key concepts:
 
 STANDARD ml-gradle LAYOUT (src/main/):
-  ml-config/databases/content-database.json  ← range/geospatial indexes, lexicons
+  ml-config/databases/content-database.json   ← range/geospatial indexes, lexicons
+  ml-config/databases/schemas-database.json   ← REQUIRED stub if content-db references %%SCHEMAS_DATABASE%%
+  ml-config/databases/triggers-database.json  ← REQUIRED stub if content-db references %%TRIGGERS_DATABASE%%
   ml-config/security/{roles,users,privileges} ← app security
-  ml-config/servers/                          ← REST/XDBC server config
-  ml-schemas/tde/                             ← TDE templates; auto-assigned to
-                                                http://marklogic.com/xdmp/tde collection
-  ml-modules/root/                            ← XQuery/SJS application modules
-  gradle.properties                           ← mlHost, mlRestPort, mlUsername, etc.
-  gradle-{env}.properties                     ← per-environment overrides
+  ml-config/servers/rest-api-server.json      ← REST API server settings (auth, etc.)
+  ml-schemas/tde/<view>.tdej (or .tde)        ← TDE templates; URIs starting with /tde
+                                                auto-join http://marklogic.com/xdmp/tde
+  ml-modules/services/<name>.sjs              ← REST resource extensions → /v1/resources/<name>
+  ml-modules/services/metadata/<name>.xml     ← optional title/description/param docs
+  ml-modules/transforms/<name>.sjs            ← REST transforms → ?transform=<name>
+  ml-modules/transforms/metadata/<name>.xml   ← optional metadata for transform
+  ml-modules/options/<name>.xml               ← search options → /v1/search?options=<name>
+  ml-modules/root/lib/foo.sjs                 ← library modules at /lib/foo.sjs
+  ml-modules/ext/<dir>/<name>.sjs             ← assets at /ext/<dir>/<name>.sjs
+  ml-data/<dir>/<doc>.json                    ← seed data, loaded by gradle mlLoadData
+  ml-data/<dir>/collections.properties        ← per-file: <filename>=<col1,col2>
+  ml-data/<dir>/permissions.properties        ← per-file: <filename>=<role,cap,role,cap>
+  gradle.properties                           ← mlHost, mlRestPort, mlUsername, mlAuthentication
+  gradle-{env}.properties                     ← per-environment overrides (with net.saliman.properties)
 
 DATA HUB FRAMEWORK (DHF) ADDITIONS:
   entities/            ← .entity.json descriptors; DHF auto-generates TDE from these

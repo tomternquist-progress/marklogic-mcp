@@ -27,7 +27,7 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
     {
       xquery: z.string().describe("XQuery expression to evaluate on the server"),
       vars: z.record(z.unknown()).optional().describe("External variable bindings as key/value pairs"),
-      database: z.string().optional().describe("Target database (uses server default if omitted)"),
+      database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ xquery, vars, database }) => {
       try {
@@ -64,7 +64,7 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
         "is practical for 10–50 documents. For 200+ documents in one transaction, expect timeouts " +
         "— break into batches or use flux_reprocess instead."
       ),
-      database: z.string().optional().describe("Target database"),
+      database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ javascript, vars, database }) => {
       try {
@@ -171,7 +171,7 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
         "Variable bindings to pass to the SPARQL query (mapped to sem:binding() calls). " +
         "Keys are variable names (without '?'), values are strings (treated as IRIs if they start with 'http')."
       ),
-      database: z.string().optional().describe("Target database (uses server default if omitted)"),
+      database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ sparql, bindings, database }) => {
       // Build the XQuery wrapper around sem:sparql()
@@ -234,7 +234,7 @@ return
     {
       module_uri: z.string().describe("URI of the stored module, e.g. /lib/transform.xqy"),
       vars: z.record(z.unknown()).optional().describe("Variable bindings to pass to the module (JSON object; in SJS access via JSON.parse(xdmp.getRequestField('vars')||'{}'))"),
-      database: z.string().optional().describe("Content database"),
+      database: z.string().optional().describe("Content database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       modules_database: z.string().optional().describe("Modules database name (uses server default if omitted)"),
     },
     async ({ module_uri, vars, database, modules_database }) => {

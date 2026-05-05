@@ -23,7 +23,7 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
         aggregate: z.enum(["count", "sum", "avg", "min", "max", "stddev"]).describe("Aggregate function"),
         alias: z.string().optional().describe("Column alias for the result"),
       })).optional().describe("Aggregate metrics to compute"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ collection, filter_query, metrics, database }) => {
       try {
@@ -85,7 +85,7 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
       filter_query: z.string().optional().describe("Constraining search query"),
       from: z.string().optional().describe("Start datetime (ISO 8601)"),
       to: z.string().optional().describe("End datetime (ISO 8601)"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ collection, time_values_name, bucket, filter_query, from, to, database }) => {
       try {
@@ -154,7 +154,7 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
       fields: z.array(z.string()).describe("JSON field paths to extract from each document (e.g. ['customer.name', 'order.total'])"),
       max_rows: z.number().int().positive().max(10000).optional().describe("Maximum rows to export (default: 1000)"),
       format: z.enum(["json-rows", "csv"]).optional().describe("Output format (default: json-rows)"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ query, collection, fields, max_rows, format, database }) => {
       try {
@@ -232,7 +232,7 @@ export function registerQuickSightTools(server: McpServer, clients: MarkLogicCli
       query: z.string().optional().describe("Constraining search query"),
       collection: z.string().optional().describe("Collection to facet"),
       options: z.string().optional().describe("Named search options that define the facets"),
-      database: z.string().optional().describe("Database name"),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ query, collection, options, database }) => {
       try {

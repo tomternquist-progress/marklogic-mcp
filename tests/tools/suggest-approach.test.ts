@@ -237,6 +237,33 @@ describe("ml_suggest_approach – project setup", () => {
     expect(text).toContain("project_setup_advisor");
     expect(text).toContain("ml-gradle");
   });
+
+  it("routes 'create a new project' (without ml-gradle keyword) to ml_gradle_scaffold first", async () => {
+    const text = await suggest("create a new project to store and search customer orders", tools);
+    expect(text).toContain("ml_gradle_scaffold");
+    // Scaffold should appear BEFORE the advisor prompt — it's the actionable first step.
+    expect(text.indexOf("ml_gradle_scaffold")).toBeLessThan(text.indexOf("project_setup_advisor"));
+  });
+
+  it("routes 'build me an app' to ml_gradle_scaffold", async () => {
+    const text = await suggest("build me an app that exposes a custom REST endpoint", tools);
+    expect(text).toContain("ml_gradle_scaffold");
+  });
+
+  it("routes 'add a REST extension' to project setup, not raw ml_extension_put", async () => {
+    const text = await suggest("I want to add a REST extension to my MarkLogic deployment", tools);
+    expect(text).toContain("ml_gradle_scaffold");
+  });
+
+  it("routes 'deploy this to production' to project setup", async () => {
+    const text = await suggest("how do I deploy my application to production", tools);
+    expect(text).toContain("ml_gradle_scaffold");
+  });
+
+  it("does NOT route pure search queries to project setup", async () => {
+    const text = await suggest("search documents mentioning climate change", tools);
+    expect(text).not.toContain("ml_gradle_scaffold");
+  });
 });
 
 describe("ml_suggest_approach – vector / RAG", () => {

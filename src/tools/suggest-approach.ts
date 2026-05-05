@@ -274,25 +274,89 @@ function classify(task: string): ToolRecipe[] {
 
   // ── Project setup / ml-gradle / DHF ────────────────────────────────────────
   // Detect intent to CREATE a new project, set up infrastructure, add indexes, or deploy config.
+  // Broadened to also catch "build me an app", "deploy", "production", "REST extension",
+  // "scaffold", "what should the project look like", and similar phrasings — anything that
+  // implies repeatable / source-controlled / multi-environment work, not one-off exploration.
   const isProjectSetup =
-    /\b(new|create|set.?up|scaffold|bootstrap|build.out|structure|initializ|start).*project\b|\bml.?gradle\b|\bdhf\b|\bdata.hub\b|\bproject.structure\b|\bdeploy.*index|\badd.*index|\bcontent-database\.json\b|\brange.index\b|\bgeopatial.index/.test(t) &&
-    !/query|search|sparql|find|import|load/.test(t);
+    /\b(new|create|set.?up|scaffold|bootstrap|build.out|structure|initializ|start|begin|template).*\b(project|app|application|repo|repository|service|backend|api)\b/.test(t) ||
+    /\b(build|create|develop|stand.?up|spin.?up)\b.{0,30}?\b(a|an|my|our|the|new)\b.*\b(app|application|service|backend|api|endpoint|project|repo)\b/.test(t) ||
+    /\bml.?gradle\b|\bdhf\b|\bdata.hub\b|\bproject.structure\b|\bproject.layout\b/.test(t) ||
+    /\bdeploy(?!ed).*\b(index|indexes|tde|module|schema|extension|app|application|production|prod\b)/.test(t) ||
+    /\badd.*\b(index|range.index|geospatial)|\bcontent-database\.json\b|\brange.index\b|\bgeopatial.index\b/.test(t) ||
+    /\b(rest.extension|resource.extension|rest.transform|rest.service|services\/|transforms\/|metadata.xml)\b/.test(t) ||
+    /\b(production|prod|staging|environment|multi.environment|repeatable|ci\/cd|pipeline|source.control|version.control)\b.*\b(deploy|app|project|config)/.test(t);
 
-  if (isProjectSetup) {
+  // Don't suggest project setup for pure query / search / import-once work.
+  // But DO suggest it when the user mentions both query-ish words AND project words —
+  // e.g. "I want to build an app that searches my docs" — the project intent dominates.
+  const isPureExploration =
+    /^\s*(query|search|find|import|load|fetch|get|show|list|count|aggregate)\b/.test(t) &&
+    !/\b(project|app|application|repo|deploy|scaffold|extension|production|environment)\b/.test(t);
+
+  if (isProjectSetup && !isPureExploration) {
+    results.push({
+      tool: "ml_gradle_scaffold (TOOL — call this first for new projects)",
+      description: "Generate a deploy-ready ml-gradle project as a JSON file map (paths + contents)",
+      use_when: ["new-project", "scaffold", "ml-gradle", "starter", "bootstrap"],
+      recipe: {
+        tool: "ml_gradle_scaffold",
+        app_name: "<lowercase-hyphenated-name>",
+        rest_port: "<unused-port-on-the-cluster, e.g. 8040>",
+        ml_host: "<ML hostname or IP>",
+        include_tde: true,
+        include_rest_extension: true,
+        include_role: false,
+        include_data: true,
+        include_environments: false,
+        next_steps: [
+          "Write each entry from the returned `files` array to disk under a project root.",
+          "Run `gradle mlDeploy` from that root.",
+          "Run `gradle mlLoadData` if include_data was true.",
+          "Iterate: edit modules, run `gradle mlReloadModules` (or `gradle mlWatch` for hot reload).",
+        ],
+      },
+      rationale:
+        "Use `ml_gradle_scaffold` (not the prompt, not raw ml_document_put / ml_extension_put) any time " +
+        "the user is starting a new project, building a custom REST endpoint, or putting MarkLogic config under " +
+        "version control. The tool returns a JSON file map with the four most common first-deploy gotchas " +
+        "already addressed: pre-emptive Basic auth, schemas/triggers DB stubs, per-file collections.properties " +
+        "syntax, and the rs:-prefix nuance for REST extensions. After scaffolding, the project_setup_advisor " +
+        "prompt covers deeper customization (custom roles, env overlays, multi-DB topologies, DHF migration).",
+      not_this_tool:
+        "Do NOT scaffold via ad-hoc ml_document_put / ml_extension_put / flux_import calls when the user " +
+        "needs a repeatable, source-controlled deployment. Those tools are for exploration; ml_gradle_scaffold " +
+        "produces a checked-in artifact you can deploy from CI/CD without the MCP server.",
+      warnings: [
+        "Pick `rest_port` carefully — collisions with existing servers cause cryptic deploy failures. " +
+          "Run ml_servers_list first to see what's already configured.",
+        "If your cluster's Manage server uses Basic auth (returns WWW-Authenticate: Basic), the scaffold's " +
+          "`mlAuthentication=basic` block handles it. If it uses Digest, replace with `mlManageAuthentication=digest`.",
+      ],
+    });
+
     results.push({
       tool: "project_setup_advisor (prompt)",
-      description: "ml-gradle project layout, database config, TDE deployment, index setup",
-      use_when: ["new-project", "ml-gradle", "deploy-indexes", "project-structure", "dhf"],
+      description: "Deeper guidance after scaffolding — DHF vs plain ml-gradle, indexes, custom roles",
+      use_when: ["project-customization", "dhf", "indexes", "security", "post-scaffold"],
       recipe: {
-        step1: "Read marklogic://instructions resource — project setup section covers the standard ml-gradle layout",
-        step2: "Invoke the project_setup_advisor prompt with your domain and requirements",
+        step1: "First run ml_gradle_scaffold to get a working starter project.",
+        step2: "Invoke the project_setup_advisor prompt with your domain and requirements for deeper guidance.",
+        step3: "The prompt covers: framework choice (ml-gradle vs DHF), index design for query patterns, " +
+          "TDE template authoring, security config, and deployment checklist.",
         standard_layout: {
           "src/main/ml-config/databases/content-database.json": "range/geospatial indexes, triple-index, collection-lexicon",
-          "src/main/ml-schemas/tde/": "TDE templates — deploy via 'gradle mlLoadSchemas'",
-          "src/main/ml-modules/root/": "SJS/XQuery application modules",
-          "gradle.properties": "mlHost, mlRestPort, mlUsername, mlPassword, mlAppName",
-          "gradle-{env}.properties": "per-environment overrides (e.g. gradle-dev.properties)",
-          "build.gradle": "ml-gradle plugin + Flux Exec tasks for data loading",
+          "src/main/ml-config/databases/{schemas,triggers}-database.json": "REQUIRED stubs if content-db references them",
+          "src/main/ml-config/security/roles/": "custom app roles (e.g. <app>-reader, <app>-writer)",
+          "src/main/ml-modules/services/<name>.{sjs,xqy}": "REST resource extensions → /v1/resources/<name>",
+          "src/main/ml-modules/services/metadata/<name>.xml": "optional title/description/param docs",
+          "src/main/ml-modules/transforms/<name>.{sjs,xqy,xsl}": "REST transforms → ?transform=<name>",
+          "src/main/ml-modules/options/<name>.xml": "named search options → /v1/search?options=<name>",
+          "src/main/ml-modules/root/lib/foo.sjs": "library modules at /lib/foo.sjs",
+          "src/main/ml-schemas/tde/<view>.tdej": "TDE templates — deploy via 'gradle mlLoadSchemas'",
+          "src/main/ml-data/<dir>/<doc>.json": "seed data — collections.properties is per-file: <filename>=...",
+          "gradle.properties": "mlHost, mlRestPort, mlUsername, mlPassword, mlAppName, mlAuthentication",
+          "gradle-{env}.properties": "per-environment overrides (with net.saliman.properties plugin)",
+          "build.gradle": "ml-gradle plugin + optional Flux Exec tasks for data loading",
         },
         load_data_via_flux: {
           rdf_graphs: "flux import-rdf-files --path data/ontology/*.ttl --graph <uri> --connection-string user:pass@host:port",
@@ -301,11 +365,12 @@ function classify(task: string): ToolRecipe[] {
         },
       },
       rationale:
-        "MarkLogic projects are configured as code via ml-gradle. Indexes live in content-database.json " +
-        "and require a reindex after deployment (check ml_reindex_status). TDE templates in ml-schemas/tde/ " +
-        "are deployed via 'gradle mlLoadSchemas' and are immediately queryable without reimporting data. " +
-        "Data loading belongs in Gradle Exec tasks invoking Flux CLI — not in the MCP session — so the " +
-        "pipeline is reproducible in CI/CD without the MCP server.",
+        "After scaffolding, use this prompt for the parts ml_gradle_scaffold can't decide for you: " +
+        "what indexes to add, whether to use DHF, how to structure security roles, and how to wire " +
+        "Flux data-loading commands into the Gradle build. " +
+        "Indexes live in content-database.json and require a reindex after deployment " +
+        "(check ml_reindex_status). TDE templates in ml-schemas/tde/ are deployed via 'gradle mlLoadSchemas' " +
+        "and are immediately queryable without reimporting data.",
       warnings: [
         "MCP tools (flux_import, ml_document_put) are for exploration and prototyping. " +
           "For a repeatable project pipeline, wire Flux CLI commands into Gradle Exec tasks in build.gradle.",
@@ -859,6 +924,11 @@ export function registerSuggestApproachTool(server: McpServer): void {
       const lines: string[] = [
         `APPROACH RECOMMENDATIONS FOR: "${task}"`,
         `${"─".repeat(60)}`,
+        "",
+        "PROJECT TOPOLOGY NOTE: MarkLogic projects each have their own content database",
+        "(e.g. 'myapp-content'), distinct from the built-in 'Documents' database which is for",
+        "ad-hoc sandbox use. If this task is for a named project, run ml_databases_list and",
+        "ml_servers_list first to discover the correct database and app server before querying.",
         "",
       ];
 

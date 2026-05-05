@@ -1379,7 +1379,17 @@ mlRestPort=<port>
 mlAppName=<name>
 mlUsername=<admin-user>
 mlPassword=<password>        # Never commit — use gradle-local.properties
-mlAuthentication=basic       # ml-gradle 4.5.0+ — sets all four auth sub-properties at once
+
+# Pre-emptive Basic auth across all four sub-services. Required when the cluster's
+# Manage server returns "WWW-Authenticate: Basic realm=public" — the default
+# ml-java-client interceptor cannot complete a Basic challenge-response and throws
+#   "unsupported auth scheme: [Basic realm=public]"
+# Setting this group forces pre-emptive Basic so no challenge round-trip happens.
+mlAuthentication=basic
+mlManageAuthentication=basic
+mlAdminAuthentication=basic
+mlAppServicesAuthentication=basic
+mlRestAuthentication=digest  # REST API server stays on digest by default
 \`\`\`
 
 For DHF projects, always override the default ports (8010 conflicts with other MarkLogic servers):
@@ -1388,6 +1398,99 @@ mlStagingPort=8020
 mlFinalPort=8021
 mlJobsPort=8022
 \`\`\`
+
+---
+
+## Section 5b — First-deploy pitfalls (call these out explicitly)
+
+These four gotchas bite virtually every first-time ml-gradle user. Tell the user about
+them before they try to deploy:
+
+1. **schemas-database.json + triggers-database.json must be present** alongside
+   content-database.json whenever content-database.json references the
+   \`%%SCHEMAS_DATABASE%%\` / \`%%TRIGGERS_DATABASE%%\` tokens. Without those stub files,
+   first deploy fails with:
+   \`\`\`
+   CMA-INVALIDPROPERTIES: ADMIN-NOSUCHDATABASE: No such database <app>-schemas,
+   denote schema-database after it has been created
+   \`\`\`
+   Each stub is a 1-line JSON file:
+   \`\`\`json
+   { "database-name": "%%SCHEMAS_DATABASE%%" }
+   \`\`\`
+
+2. **TDE templates use the .tdej (JSON) or .tde (XML) extension** under
+   \`src/main/ml-schemas/tde/\`. Any URI starting with \`/tde\` is auto-assigned to the
+   \`http://marklogic.com/xdmp/tde\` collection by ml-gradle 4.3.5+ — you do NOT need
+   a special suffix or manual collection assignment.
+
+3. **ml-data collections.properties uses per-file syntax**, not a global key.
+   Right:
+   \`\`\`
+   item-001.json=my-collection,demo
+   item-002.json=my-collection
+   \`\`\`
+   Wrong (silently ignored):
+   \`\`\`
+   collections=my-collection,demo
+   \`\`\`
+   Same per-file format applies to permissions.properties:
+   \`\`\`
+   item-001.json=rest-reader,read,rest-writer,update
+   \`\`\`
+   For applying the same setting to every file in a tree, use \`mlCascadeCollections=true\`
+   / \`mlCascadePermissions=true\` (ml-gradle 4.6.0+).
+
+4. **REST resource extension parameters require the \`rs:\` prefix from the client.**
+   Calling \`/v1/resources/echo?text=hi\` returns
+   \`\`\`
+   REST-UNSUPPORTEDPARAM: invalid parameters: text for echo
+   \`\`\`
+   Use \`/v1/resources/echo?rs:text=hi\` instead. Inside the SJS / XQuery service,
+   read it as \`params['rs:text']\` (SJS) or \`map:get($params, "rs:text")\` (XQuery).
+
+---
+
+## Section 5c — Custom token replacement and environment overlays
+
+ml-gradle replaces \`%%TOKEN%%\` placeholders in any JSON/XML file under \`ml-config/\`
+and \`ml-schemas/\` (modules too, unless \`mlReplaceTokensInModules=false\`). The full
+list of active tokens is shown by:
+\`\`\`bash
+gradle mlPrintTokens
+\`\`\`
+
+Add custom tokens in build.gradle:
+\`\`\`groovy
+ext {
+  mlAppConfig {
+    customTokens.put("%%CATALOG_REGION%%", project.hasProperty('catalogRegion') ? catalogRegion : 'us-east')
+  }
+}
+\`\`\`
+Then use \`%%CATALOG_REGION%%\` in any JSON/XML file or SJS/XQuery module.
+
+For environment-specific config (dev / qa / prod), apply the
+\`net.saliman.properties\` plugin BEFORE ml-gradle — it loads
+\`gradle-\${environmentName}.properties\` on top of \`gradle.properties\`:
+\`\`\`groovy
+plugins {
+  id "net.saliman.properties" version "1.5.2"
+  id "com.marklogic.ml-gradle" version "6.1.0"
+}
+\`\`\`
+Then set \`mlConfigPaths\` in \`gradle-dev.properties\` to add an overlay directory:
+\`\`\`properties
+mlConfigPaths=src/main/ml-config,src/main/dev-config
+\`\`\`
+Files in \`src/main/dev-config/\` deep-merge on top of the base config. Switch with:
+\`\`\`bash
+gradle -PenvironmentName=dev mlDeploy
+\`\`\`
+
+> **Tip:** Instead of producing this layout by hand, call the \`ml_gradle_scaffold\` tool
+> with \`include_environments: true\`. It returns a complete file map with every
+> gotcha above already addressed.
 
 ---
 

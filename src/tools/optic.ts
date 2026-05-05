@@ -51,7 +51,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
         "  var op = require('/MarkLogic/optic');\n" +
         "  However, prefer ml_optic_query for analytics — it handles the require and serialization."
       ),
-      database: z.string().optional().describe("Target database (uses server default if omitted)"),
+      database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       strip_schema_prefix: z.boolean().optional().describe("Strip the 'schema.view.' prefix from result column names. Useful when querying a single view and the fully-qualified names are too verbose. Default: false."),
     },
     async ({ plan, database, strip_schema_prefix }) => {
@@ -104,7 +104,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
       ),
       k: z.number().int().positive().max(1000).optional().describe("Number of nearest neighbours to return (default: 10)"),
       score_column: z.string().optional().describe("Name for the similarity score column in results (default: similarity_score)"),
-      database: z.string().optional().describe("Target database (uses server default if omitted)"),
+      database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       strip_schema_prefix: z.boolean().optional().describe("Strip the 'schema.view.' prefix from result column names (default: true for vector search)"),
     },
     async ({ schema, view, vector_column, query_vector, k, score_column, database }) => {
@@ -166,7 +166,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
     "List all Optic row views available in MarkLogic — the schema.view pairs you can query with ml_optic_query. Each entry shows the schema name, view name, TDE template URI, and the document collections it covers. Use this to discover queryable views after importing data with generate_tde=true.\n\n" +
     "Pass verify_registered=true to probe each view with op.fromView(...).limit(0) and add a `status` field to each entry — distinguishing TDE templates that registered successfully from ones that installed silently but never produced a working SQL view (typically a wrong-shape `collections` filter, see ML-11 / ML-14 in the project friction log). Status values: live | reindexing | missing | error.",
     {
-      database: z.string().optional().describe("Database name to probe registration against (defaults to the app server's content DB). Schemas are always read from the Schemas DB regardless."),
+      database: z.string().optional().describe("Database to probe view registration against (defaults to the app server's content DB). Projects have their own content DBs — run ml_databases_list to discover them. Schemas are always read from the Schemas DB regardless."),
       verify_registered: z.boolean().optional().describe(
         "When true, probe each view via op.fromView and report status (live | reindexing | missing | error). " +
         "Adds one extra eval round-trip; default false. Use after a TDE install to confirm the view is live."
