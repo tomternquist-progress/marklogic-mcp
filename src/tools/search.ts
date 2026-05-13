@@ -192,6 +192,89 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
   );
 
   server.tool(
+    "ml_parse_query",
+    "Parse a MarkLogic string-grammar query into a structured cts.query JSON object WITHOUT executing it.\n\n" +
+    "PRIMARY USE: chat → MarkLogic translation pipeline. Given a natural-language question, an LLM " +
+    "writes a string-grammar query (e.g. 'diabetes AND state:TX AND age GE 65'); ml_parse_query " +
+    "validates and returns the equivalent structured-query JSON; ml_search executes it.\n\n" +
+    "RETURN VALUE: the parsed cts.query is serialized in the SAME JSON shape that ml_search accepts via " +
+    "the structured_query parameter — you can pipe it straight through, store it, or modify it before executing.\n\n" +
+    "WHEN TO USE:\n" +
+    "  • Preview how a user's free-text query is interpreted (operators, phrases, tag bindings)\n" +
+    "  • Detect grammar parse errors before running an expensive search\n" +
+    "  • Convert a string query into a structured query for storage or programmatic manipulation\n" +
+    "  • Round-trip an LLM-written query through MarkLogic's parser to canonicalise it\n\n" +
+    "IMPORTANT — RANGE INDEX REQUIRED FOR EVERY TAGGED BINDING. cts.parse SJS only accepts " +
+    "cts.<kind>Reference bindings, which require a configured range index. For tags on non-indexed " +
+    "fields the parse will fail with XDMP-ELEMRIDXNOTFOUND. For free-text matching on a non-indexed " +
+    "field, use a bareword query against the universal index — e.g. ml_search q='wikipedia' will " +
+    "find documents whose 'source' property equals 'wikipedia' without any range index.\n\n" +
+    "BINDINGS map tag names that appear in qtext to range-indexed fields. Without bindings, only " +
+    "boolean operators (AND, OR, NOT, NEAR/k), quoted phrases, parens, and bare words are recognised — " +
+    "a tag like 'state:TX' becomes a literal word query for the token 'state:TX'.\n\n" +
+    "  Example:\n" +
+    "    qtext='diabetes AND importedAt GE 2024-01-01'\n" +
+    "    bindings={\n" +
+    "      importedAt: { type: 'element-range', name: 'importedAt', scalar_type: 'dateTime' }\n" +
+    "    }\n\n" +
+    "  GRAMMAR (cts.parse SJS only — NOT search-options grammar):\n" +
+    "    tag:value             — equality on the tag's range reference          e.g. importedAt:2026-01-01\n" +
+    "    tag <op> value        — range comparison, op is one of < <= = != > >=   e.g. age >= 65\n" +
+    "    tag <NAMED> value     — range comparison, NAMED is LT|LE|EQ|NE|GE|GT    e.g. age GE 65\n" +
+    "    SPACES are required around <op>/<NAMED>. Forms like 'age:>=65' or 'age:GE:65' are\n" +
+    "    REJECTED with XDMP-UNEXPECTED — the only colon allowed is the equality delimiter.\n" +
+    "    AND / OR / NOT combine clauses; parens group; \"phrase\" matches a phrase.\n\n" +
+    "  Binding types (every one requires a range index; the -range alias is documentation-only):\n" +
+    "    json-property / json-property-range  — JSON property range index\n" +
+    "    element / element-range              — XML element range index (use 'namespace' for non-default)\n" +
+    "    path / path-range                    — path range index ('name' is the XPath expression)\n" +
+    "    field / field-range                  — field range index\n\n" +
+    "DISCOVERY: run ml_search_surface (or ml_indexes_list + ml_schema_discover) first to learn which " +
+    "fields are range-indexed and what scalar types they hold; mis-typed bindings cause XDMP-CTSDIRQUERY " +
+    "at parse time.\n\n" +
+    "NO ML_ALLOW_EVAL REQUIRED — the parser script is fixed; only qtext and bindings flow in as data.",
+    {
+      qtext: z.string().describe("String-grammar query text to parse, e.g. 'diabetes AND state:TX'"),
+      bindings: z.record(z.object({
+        type: z.enum([
+          "json-property",
+          "json-property-range",
+          "element",
+          "element-range",
+          "path",
+          "path-range",
+          "field",
+          "field-range",
+        ]).describe("Reference type — see tool description for selection guidance"),
+        name: z.string().describe("Indexed field name (or path expression for path types)"),
+        scalar_type: z.string().optional().describe("Scalar type for range bindings: 'int', 'long', 'double', 'decimal', 'dateTime', 'date', 'string', etc."),
+        namespace: z.string().optional().describe("XML namespace URI for element bindings (default: empty)"),
+      })).optional().describe(
+        "Tag→reference map. Keys are the tag names that appear in qtext before a colon. " +
+        "Values describe the indexed field. Omit for boolean-only parsing."
+      ),
+      database: z.string().optional().describe("Database context for index resolution. Default: server's content DB. Projects have their own DBs — run ml_databases_list to discover them."),
+    },
+    async ({ qtext, bindings, database }) => {
+      try {
+        const results = await clients.eval.parseCtsQuery(qtext, bindings, database);
+        // evalJavaScript returns an array of EvalResult entries; the cts.query payload is the first/only item.
+        const first = results[0];
+        const payload = first?.value ?? first;
+        return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+      } catch (err) {
+        const msg = toToolError(err);
+        const hint = msg.includes("XDMP-QUERY") || msg.includes("XDMP-PARSE")
+          ? "\nHint: a grammar parse error usually means an unmatched quote, an unknown operator (only AND/OR/NOT/NEAR/-/+ are built in), or a tag without a matching binding. Run ml_parse_query without bindings to confirm the boolean structure parses, then add bindings one at a time."
+          : msg.includes("CTSDIRQUERY") || msg.includes("scalar")
+          ? "\nHint: a binding scalar_type may not match the underlying range index. Verify with ml_indexes_list — find the index and read its scalar-type. Common types: int, long, double, decimal, dateTime, date, string."
+          : "";
+        return { content: [{ type: "text", text: msg + hint }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
     "ml_suggest",
     "Get search query autocomplete suggestions from MarkLogic based on a partial query string.",
     {

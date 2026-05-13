@@ -55,6 +55,70 @@ export class EvalClient {
     }
   }
 
+  /**
+   * Parse a MarkLogic string-grammar query into a cts.query JSON object using cts.parse().
+   * The script is fixed; user input is passed via vars only — no code injection surface —
+   * so this bypasses allowEval, matching the staticCheckSjs precedent.
+   *
+   * The bindings spec maps tag names used in the query text to indexed-field references.
+   * Returns the parsed cts.query serialized as JSON (the same shape ml_search structured_query accepts).
+   */
+  async parseCtsQuery(
+    qtext: string,
+    bindingsSpec?: Record<string, { type: string; name: string; scalar_type?: string; namespace?: string }>,
+    database?: string
+  ): Promise<EvalResult[]> {
+    // cts.parse SJS bindings accept ONLY cts.reference objects or pre-built cts.query.
+    // Function bindings ARE supported in XQuery but silently degenerate in SJS — they get
+    // called with the delimiter character ":" instead of the right-hand value, producing
+    // useless queries. Verified against MarkLogic 12 in CI.
+    //
+    // Implication: every tagged binding here requires a configured range index. For
+    // tags on non-indexed fields, the agent must use bareword search (universal index).
+    // ml_search_surface only emits suggestedBindings for fields that have a range index;
+    // it also lists "barewordFields" so the agent knows what to search via free text.
+    //
+    // The four logical kinds (json-property / element / path / field) each have a
+    // "-range" alias retained for documentation; behaviour is identical because both
+    // forms compile to the same cts.*Reference call.
+    const script = `
+'use strict';
+const bindings = {};
+if (typeof bindingsSpec === 'object' && bindingsSpec !== null) {
+  for (const tag of Object.keys(bindingsSpec)) {
+    const b = bindingsSpec[tag];
+    const opts = ['type=' + (b.scalar_type || 'string')];
+    switch (b.type) {
+      case 'json-property':
+      case 'json-property-range':
+        bindings[tag] = cts.jsonPropertyReference(b.name, opts);
+        break;
+      case 'element':
+      case 'element-range':
+        bindings[tag] = cts.elementReference(fn.QName(b.namespace || '', b.name), opts);
+        break;
+      case 'path':
+      case 'path-range':
+        bindings[tag] = cts.pathReference(b.name, opts);
+        break;
+      case 'field':
+      case 'field-range':
+        bindings[tag] = cts.fieldReference(b.name, opts);
+        break;
+      default:
+        throw new Error('Unknown binding type for tag ' + tag + ': ' + b.type);
+    }
+  }
+}
+const parsed = cts.parse(qtext, bindings);
+parsed;
+`;
+    const body = new URLSearchParams();
+    body.append("javascript", script);
+    body.append("vars", JSON.stringify({ qtext, bindingsSpec: bindingsSpec ?? null }));
+    return this.evalRequest(body, database);
+  }
+
   async invokeModule(moduleUri: string, vars?: Record<string, unknown>, database?: string, modulesDb?: string): Promise<EvalResult[]> {
     if (!this.allowEval) throw new EvalDisabledError();
     const body = new URLSearchParams();

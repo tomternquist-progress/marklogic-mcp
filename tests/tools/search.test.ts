@@ -29,13 +29,16 @@ function createMockClients() {
       values: vi.fn(),
       suggest: vi.fn(),
     },
+    eval: {
+      parseCtsQuery: vi.fn(),
+    },
   };
 }
 
 // ─── Tool registration ─────────────────────────────────────────────────────
 
 describe("registerSearchTools – tool registration", () => {
-  it("registers all 5 search tools", () => {
+  it("registers all 6 search tools", () => {
     const { server, tools } = createMockServer();
     registerSearchTools(server as never, createMockClients() as never);
 
@@ -44,7 +47,8 @@ describe("registerSearchTools – tool registration", () => {
     expect(tools.has("ml_values_query")).toBe(true);
     expect(tools.has("ml_geospatial_search")).toBe(true);
     expect(tools.has("ml_suggest")).toBe(true);
-    expect(tools.size).toBe(5);
+    expect(tools.has("ml_parse_query")).toBe(true);
+    expect(tools.size).toBe(6);
   });
 });
 
@@ -428,5 +432,102 @@ describe("ml_suggest handler", () => {
     const result = await tools.get("ml_suggest")!({ partial_q: "x" });
 
     expect(result.isError).toBe(true);
+  });
+});
+
+// ─── ml_parse_query ─────────────────────────────────────────────────────────
+
+describe("ml_parse_query handler", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerSearchTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("returns the parsed structured query payload on success", async () => {
+    const parsed = { "and-query": { queries: [{ "word-query": { text: ["diabetes"] } }] } };
+    // EvalClient.parseCtsQuery returns an array of EvalResult records — the cts.query lives in .value
+    clients.eval.parseCtsQuery.mockResolvedValue([{ primitive: "object-node()", value: parsed }]);
+
+    const result = await tools.get("ml_parse_query")!({
+      qtext: "diabetes",
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(JSON.parse(result.content[0].text)).toEqual(parsed);
+  });
+
+  it("passes qtext, bindings, and database through to the eval client", async () => {
+    clients.eval.parseCtsQuery.mockResolvedValue([{ primitive: "object-node()", value: {} }]);
+
+    const bindings = { state: { type: "json-property", name: "state" } };
+    await tools.get("ml_parse_query")!({
+      qtext: "state:TX AND diabetes",
+      bindings,
+      database: "MyDB",
+    });
+
+    expect(clients.eval.parseCtsQuery).toHaveBeenCalledWith(
+      "state:TX AND diabetes",
+      bindings,
+      "MyDB"
+    );
+  });
+
+  it("appends a grammar hint when the eval error mentions XDMP-QUERY", async () => {
+    clients.eval.parseCtsQuery.mockRejectedValue(new MarkLogicError("XDMP-QUERY: unmatched quote", 500));
+    const result = await tools.get("ml_parse_query")!({ qtext: 'unmatched "quote' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("grammar parse error");
+  });
+
+  it("sets isError on generic failure", async () => {
+    clients.eval.parseCtsQuery.mockRejectedValue(new Error("network down"));
+    const result = await tools.get("ml_parse_query")!({ qtext: "anything" });
+
+    expect(result.isError).toBe(true);
+  });
+
+  it("forwards every supported binding type unchanged to the eval client", async () => {
+    clients.eval.parseCtsQuery.mockResolvedValue([{ primitive: "object-node()", value: {} }]);
+
+    const bindings = {
+      // every type from the tool's enum
+      p:  { type: "json-property",        name: "p" },
+      pr: { type: "json-property-range",  name: "pr", scalar_type: "int" },
+      e:  { type: "element",              name: "e", namespace: "http://schema.org/" },
+      er: { type: "element-range",        name: "er", scalar_type: "dateTime" },
+      pa: { type: "path",                 name: "/doc/p" },
+      par:{ type: "path-range",           name: "/doc/d", scalar_type: "date" },
+      f:  { type: "field",                name: "f" },
+      fr: { type: "field-range",          name: "fr", scalar_type: "long" },
+    };
+    await tools.get("ml_parse_query")!({ qtext: "x", bindings });
+
+    expect(clients.eval.parseCtsQuery).toHaveBeenCalledWith("x", bindings, undefined);
+  });
+
+  it("appends a range-index hint when the eval error mentions CTSDIRQUERY", async () => {
+    clients.eval.parseCtsQuery.mockRejectedValue(new MarkLogicError("XDMP-CTSDIRQUERY: scalar type mismatch", 500));
+    const result = await tools.get("ml_parse_query")!({ qtext: "age:GE:65", bindings: { age: { type: "json-property-range", name: "age", scalar_type: "int" } } });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("scalar_type");
+    expect(result.content[0].text).toContain("ml_indexes_list");
+  });
+
+  it("returns the parsed JSON even when eval emits a string-only primitive (fallback to first record)", async () => {
+    // Older MarkLogic versions / certain serialisations come back as just text — the tool should still surface .value
+    const fallback = "cts.andQuery([...])"; // not JSON
+    clients.eval.parseCtsQuery.mockResolvedValue([{ primitive: "string", value: fallback }]);
+
+    const result = await tools.get("ml_parse_query")!({ qtext: "boolean only" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("cts.andQuery");
   });
 });

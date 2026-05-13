@@ -28,6 +28,49 @@ const MGMT = `http://${HOST}:${MGMT_PORT}`;
 
 const md5 = (s) => createHash("md5").update(s).digest("hex");
 
+/**
+ * Retry a transient-failure-prone operation with exponential backoff.
+ *
+ * A fresh MarkLogic container reports healthy on /admin/v1/timestamp and
+ * /v1/search BEFORE it has finished applying admin-config-reload restarts —
+ * those produce a brief 503 "Service Unavailable -- Restarting to reload
+ * server config" window in which any write hits a hard error. Likewise, the
+ * Management API port can briefly drop the TCP connection (ECONNRESET) while
+ * the security forest re-attaches.
+ *
+ * We retry up to 8 times with delays of 1s, 2s, 4s, 8s, 16s, 30s, 30s, 30s
+ * (~2 minutes of total tolerance) for these transient signals only. Other
+ * errors (400, 401, 403, 404, 5xx that are not 503) fail fast.
+ */
+async function withRetry(operation, label) {
+  const delays = [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000];
+  let lastErr;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      return await operation();
+    } catch (err) {
+      lastErr = err;
+      const status = err.response?.status;
+      const body = err.response?.data ? JSON.stringify(err.response.data) : "";
+      const transient =
+        status === 503 ||
+        status === 502 ||
+        status === 504 ||
+        err.code === "ECONNRESET" ||
+        err.code === "ECONNREFUSED" ||
+        err.code === "ETIMEDOUT" ||
+        body.includes("Restarting") ||
+        body.includes("not available") ||
+        body.includes("Service Unavailable");
+      if (!transient || attempt === delays.length) throw err;
+      const delay = delays[attempt];
+      console.log(`  ↻ ${label}: transient ${status ?? err.code} — retrying in ${delay / 1000}s (attempt ${attempt + 1}/${delays.length})`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastErr;
+}
+
 /** Build a Digest Authorization header from a WWW-Authenticate challenge. */
 function buildDigestAuth(method, urlStr, wwwAuthenticate) {
   const realm  = wwwAuthenticate.match(/realm="([^"]+)"/)?.[1] ?? "";
@@ -61,40 +104,66 @@ async function digestPut(uri, body, collection) {
   const url = `${BASE}/v1/documents?uri=${encodeURIComponent(uri)}&collection=${encodeURIComponent(collection)}`;
   const content = JSON.stringify(body);
 
-  let challenge;
-  try {
-    await axios.put(url, content, { headers: { "Content-Type": "application/json" } });
-    console.log(`  ✓ ${uri} (no auth needed)`);
-    return;
-  } catch (err) {
-    if (err.response?.status !== 401) throw new Error(`PUT ${uri}: ${err.message}`);
-    challenge = err.response.headers["www-authenticate"];
-  }
-
-  const authHeader = buildDigestAuth("PUT", url, challenge);
-  try {
+  await withRetry(async () => {
+    let challenge;
+    try {
+      await axios.put(url, content, { headers: { "Content-Type": "application/json" } });
+      console.log(`  ✓ ${uri} (no auth needed)`);
+      return;
+    } catch (err) {
+      // 401 is the expected initial response — challenge follows. Any other
+      // non-success bubbles to withRetry, which retries on transient signals.
+      if (err.response?.status !== 401) throw err;
+      challenge = err.response.headers["www-authenticate"];
+    }
+    const authHeader = buildDigestAuth("PUT", url, challenge);
     await axios.put(url, content, {
       headers: { "Content-Type": "application/json", Authorization: authHeader },
     });
     console.log(`  ✓ ${uri}`);
-  } catch (err) {
-    throw new Error(`PUT ${uri} failed ${err.response?.status}: ${JSON.stringify(err.response?.data)}`);
-  }
+  }, `PUT ${uri}`);
 }
 
 /** GET database properties from the Management API. */
 async function mgmtGet(path) {
   const url = `${MGMT}${path}?format=json`;
+  return withRetry(async () => {
+    let challenge;
+    try {
+      const res = await axios.get(url, { headers: { Accept: "application/json" } });
+      return res.data;
+    } catch (err) {
+      if (err.response?.status !== 401) throw err;
+      challenge = err.response.headers["www-authenticate"];
+    }
+    const auth = buildDigestAuth("GET", url, challenge);
+    const res = await axios.get(url, { headers: { Accept: "application/json", Authorization: auth } });
+    return res.data;
+  }, `GET ${path}`);
+}
+
+/**
+ * POST a small SJS script to /v1/eval with Digest auth. Returns the raw
+ * response body. Used as the index-readiness probe — see waitUntilIndexesAreQueryable.
+ */
+async function digestEval(javascript) {
+  const url = `${BASE}/v1/eval`;
+  const body = new URLSearchParams({ javascript }).toString();
+  const headers = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    Accept: "multipart/mixed",
+  };
+
   let challenge;
   try {
-    const res = await axios.get(url, { headers: { Accept: "application/json" } });
+    const res = await axios.post(url, body, { headers });
     return res.data;
   } catch (err) {
-    if (err.response?.status !== 401) throw new Error(`GET ${path}: ${err.message}`);
+    if (err.response?.status !== 401) throw err;
     challenge = err.response.headers["www-authenticate"];
   }
-  const auth = buildDigestAuth("GET", url, challenge);
-  const res = await axios.get(url, { headers: { Accept: "application/json", Authorization: auth } });
+  const auth = buildDigestAuth("POST", url, challenge);
+  const res = await axios.post(url, body, { headers: { ...headers, Authorization: auth } });
   return res.data;
 }
 
@@ -102,26 +171,20 @@ async function mgmtGet(path) {
 async function mgmtPut(path, body) {
   const url = `${MGMT}${path}?format=json`;
   const content = JSON.stringify(body);
-
-  let challenge;
-  try {
-    await axios.put(url, content, { headers: { "Content-Type": "application/json" } });
-    return;
-  } catch (err) {
-    if (err.response?.status !== 401) {
-      throw new Error(`PUT ${path} failed ${err.response?.status}: ${JSON.stringify(err.response?.data)}`);
+  await withRetry(async () => {
+    let challenge;
+    try {
+      await axios.put(url, content, { headers: { "Content-Type": "application/json" } });
+      return;
+    } catch (err) {
+      if (err.response?.status !== 401) throw err;
+      challenge = err.response.headers["www-authenticate"];
     }
-    challenge = err.response.headers["www-authenticate"];
-  }
-
-  const auth = buildDigestAuth("PUT", url, challenge);
-  try {
+    const auth = buildDigestAuth("PUT", url, challenge);
     await axios.put(url, content, {
       headers: { "Content-Type": "application/json", Authorization: auth },
     });
-  } catch (err) {
-    throw new Error(`PUT ${path} failed ${err.response?.status}: ${JSON.stringify(err.response?.data)}`);
-  }
+  }, `PUT ${path}`);
 }
 
 /** Wait until fn() returns true, polling every intervalMs up to maxMs. */
@@ -192,8 +255,13 @@ async function configureIndexes() {
     console.log("  ✓ Added geospatial-element-pair-index for location");
   }
 
-  // Wait until both indexes appear in a fresh GET (ML applies config asynchronously)
-  console.log("  Waiting for index configuration to take effect...");
+  // Two-stage wait — config-visible THEN queryable.
+  //
+  // Stage 1: the management-API GET shows the index in the database properties.
+  // This proves the cluster persisted the config change, but doesn't mean the
+  // indexer has loaded the new index yet — cts.elementReference() will still
+  // throw XDMP-ELEMRIDXNOTFOUND for several seconds after the GET succeeds.
+  console.log("  Waiting for index configuration to be visible...");
   await pollUntil(async () => {
     const updated = await mgmtGet(DB_PATH);
     const ri = updated["range-element-index"] ?? [];
@@ -206,7 +274,31 @@ async function configureIndexes() {
       : true;
     return okRange && okGeo;
   });
-  console.log("  ✓ Indexes confirmed active");
+  console.log("  ✓ Index config visible");
+
+  // Stage 2: probe with cts.elementReference until it RESOLVES — the only signal
+  // that proves the indexer has actually picked up the new range index and a
+  // tagged cts.parse query against it will succeed.
+  console.log("  Waiting for indexes to become queryable (cts.elementReference probe)...");
+  const probe = `
+'use strict';
+try {
+  cts.elementReference(fn.QName('', 'importedAt'), ['type=dateTime']);
+  'ok';
+} catch (e) {
+  'not-ready:' + (e.message || String(e));
+}
+`;
+  await pollUntil(async () => {
+    try {
+      const body = await digestEval(probe);
+      // /v1/eval returns multipart; the result body contains 'ok' on success.
+      return typeof body === "string" && body.includes("ok") && !body.includes("not-ready");
+    } catch {
+      return false;
+    }
+  }, 60_000, 1_000);
+  console.log("  ✓ Indexes are queryable");
 }
 
 async function main() {

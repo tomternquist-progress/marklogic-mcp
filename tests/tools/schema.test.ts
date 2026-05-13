@@ -34,13 +34,16 @@ function createMockClients() {
     documents: {
       put: vi.fn(),
     },
+    fasttrack: {
+      listSearchOptions: vi.fn(),
+    },
   };
 }
 
 // ─── Tool registration ─────────────────────────────────────────────────────
 
 describe("registerSchemaTools – tool registration", () => {
-  it("registers all 7 schema tools", () => {
+  it("registers all 8 schema tools", () => {
     const { server, tools } = createMockServer();
     registerSchemaTools(server as never, createMockClients() as never);
 
@@ -51,7 +54,8 @@ describe("registerSchemaTools – tool registration", () => {
     expect(tools.has("ml_indexes_list")).toBe(true);
     expect(tools.has("ml_collections_list")).toBe(true);
     expect(tools.has("ml_namespaces_list")).toBe(true);
-    expect(tools.size).toBe(7);
+    expect(tools.has("ml_search_surface")).toBe(true);
+    expect(tools.size).toBe(8);
   });
 });
 
@@ -494,5 +498,184 @@ describe("ml_collections_list – error handling", () => {
     clients.schema.listCollections.mockRejectedValue(new MarkLogicError("error", 500));
     const result = await tools.get("ml_collections_list")!({});
     expect(result.isError).toBe(true);
+  });
+});
+
+// ─── ml_search_surface ─────────────────────────────────────────────────────
+
+describe("ml_search_surface handler", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerSchemaTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("aggregates discovery + options-list and builds suggestedBindings", async () => {
+    clients.schema.discoverSchema.mockResolvedValue({
+      documentCount: 42,
+      inferredFields: [
+        { path: "state", type: "string", nullable: false, cardinality: "single", exampleValues: ["TX"], hasRangeIndex: false },
+        { path: "age",   type: "number", nullable: false, cardinality: "single", exampleValues: [70],   hasRangeIndex: true  },
+      ],
+      rangeIndexes: [
+        { type: "range-element", localname: "age", scalarType: "int" },
+      ],
+      tdeSchemas: [],
+    });
+    clients.fasttrack.listSearchOptions.mockResolvedValue([{ name: "customers-opts" }]);
+
+    const result = await tools.get("ml_search_surface")!({ collection: "customers", database: "MyDB" });
+
+    expect(result.isError).toBeUndefined();
+    const surface = JSON.parse(result.content[0].text);
+
+    expect(surface.documentCount).toBe(42);
+    expect(surface.searchOptionsNames).toEqual(["customers-opts"]);
+    // Range-indexed 'age' should pick the typed range binding
+    expect(surface.suggestedBindings.age).toEqual({ type: "element-range", name: "age", scalar_type: "int" });
+    // Non-indexed 'state' must NOT appear in suggestedBindings (cts.parse SJS needs a range index)
+    expect(surface.suggestedBindings.state).toBeUndefined();
+    // …but it should be advertised as a bareword search candidate
+    expect(surface.barewordFields).toEqual(["state"]);
+    // nextSteps is present and references the new pipeline
+    expect(surface.nextSteps.join(" ")).toContain("ml_parse_query");
+  });
+
+  it("survives listSearchOptions failure and returns empty searchOptionsNames", async () => {
+    clients.schema.discoverSchema.mockResolvedValue({
+      documentCount: 0,
+      inferredFields: [],
+      rangeIndexes: [],
+      tdeSchemas: [],
+    });
+    clients.fasttrack.listSearchOptions.mockRejectedValue(new Error("403 forbidden"));
+
+    const result = await tools.get("ml_search_surface")!({ database: "MyDB" });
+
+    expect(result.isError).toBeUndefined();
+    const surface = JSON.parse(result.content[0].text);
+    expect(surface.searchOptionsNames).toEqual([]);
+  });
+
+  it("sets isError when discovery itself fails", async () => {
+    clients.schema.discoverSchema.mockRejectedValue(new MarkLogicError("db unreachable", 500));
+    const result = await tools.get("ml_search_surface")!({ collection: "x" });
+    expect(result.isError).toBe(true);
+  });
+
+  it("derives a path-range binding using the leaf path step as the tag name", async () => {
+    clients.schema.discoverSchema.mockResolvedValue({
+      documentCount: 5,
+      inferredFields: [],
+      // Path range index — leaf is "ageYears"
+      rangeIndexes: [
+        { type: "range-path", pathExpression: "/customer/profile/ageYears", scalarType: "int" },
+      ],
+      tdeSchemas: [],
+    });
+    clients.fasttrack.listSearchOptions.mockResolvedValue([]);
+
+    const result = await tools.get("ml_search_surface")!({ collection: "customers" });
+    const surface = JSON.parse(result.content[0].text);
+
+    expect(surface.suggestedBindings.ageYears).toEqual({
+      type: "path-range",
+      name: "/customer/profile/ageYears",
+      scalar_type: "int",
+    });
+  });
+
+  it("derives a field-range binding from a range-field index", async () => {
+    clients.schema.discoverSchema.mockResolvedValue({
+      documentCount: 0,
+      inferredFields: [],
+      rangeIndexes: [
+        { type: "range-field", localname: "fullText", scalarType: "string" },
+      ],
+      tdeSchemas: [],
+    });
+    clients.fasttrack.listSearchOptions.mockResolvedValue([]);
+
+    const result = await tools.get("ml_search_surface")!({});
+    const surface = JSON.parse(result.content[0].text);
+
+    expect(surface.suggestedBindings.fullText).toEqual({
+      type: "field-range",
+      name: "fullText",
+      scalar_type: "string",
+    });
+  });
+
+  it("range-indexed field gets a suggestedBinding and is NOT also in barewordFields", async () => {
+    clients.schema.discoverSchema.mockResolvedValue({
+      documentCount: 1,
+      inferredFields: [
+        { path: "age", type: "number", nullable: false, cardinality: "single", exampleValues: [70], hasRangeIndex: true },
+      ],
+      rangeIndexes: [
+        { type: "range-element", localname: "age", scalarType: "int" },
+      ],
+      tdeSchemas: [],
+    });
+    clients.fasttrack.listSearchOptions.mockResolvedValue([]);
+
+    const surface = JSON.parse((await tools.get("ml_search_surface")!({})).content[0].text);
+    expect(surface.suggestedBindings.age.type).toBe("element-range");
+    expect(surface.suggestedBindings.age.scalar_type).toBe("int");
+    // 'age' is range-indexed → not in barewordFields (it's tag-bindable instead)
+    expect(surface.barewordFields).not.toContain("age");
+  });
+
+  it("non-indexed top-level fields land in barewordFields; nested paths are skipped entirely", async () => {
+    clients.schema.discoverSchema.mockResolvedValue({
+      documentCount: 1,
+      inferredFields: [
+        { path: "state", type: "string", nullable: false, cardinality: "single", exampleValues: ["TX"], hasRangeIndex: false },
+        { path: "classification/topCategory/label", type: "string", nullable: false, cardinality: "single", exampleValues: ["health"], hasRangeIndex: false },
+      ],
+      rangeIndexes: [],
+      tdeSchemas: [],
+    });
+    clients.fasttrack.listSearchOptions.mockResolvedValue([]);
+
+    const surface = JSON.parse((await tools.get("ml_search_surface")!({})).content[0].text);
+    // Top-level non-indexed "state" is a bareword-search candidate
+    expect(surface.barewordFields).toEqual(["state"]);
+    // No tag binding for an unindexed field — cts.parse SJS would fail
+    expect(surface.suggestedBindings.state).toBeUndefined();
+    // Nested path skipped from barewordFields too (only top-level fields surface here)
+    expect(surface.barewordFields).not.toContain("classification/topCategory/label");
+  });
+
+  it("returns a surface even when collection is omitted (whole-database mode)", async () => {
+    clients.schema.discoverSchema.mockResolvedValue({
+      documentCount: 100,
+      inferredFields: [{ path: "id", type: "string", nullable: false, cardinality: "single", exampleValues: ["abc"], hasRangeIndex: false }],
+      rangeIndexes: [],
+      tdeSchemas: [],
+    });
+    clients.fasttrack.listSearchOptions.mockResolvedValue([{ name: "default" }]);
+
+    const result = await tools.get("ml_search_surface")!({ database: "Documents" });
+    expect(result.isError).toBeUndefined();
+    const surface = JSON.parse(result.content[0].text);
+    expect(surface.collection).toBeNull();
+    expect(surface.database).toBe("Documents");
+    expect(surface.searchOptionsNames).toEqual(["default"]);
+  });
+
+  it("normalises plain-string option entries into searchOptionsNames", async () => {
+    clients.schema.discoverSchema.mockResolvedValue({
+      documentCount: 0, inferredFields: [], rangeIndexes: [], tdeSchemas: [],
+    });
+    // Some FastTrack listings return [{name}], others bare strings — handle both.
+    clients.fasttrack.listSearchOptions.mockResolvedValue(["customers-opts", { name: "products-opts" }] as never);
+
+    const surface = JSON.parse((await tools.get("ml_search_surface")!({})).content[0].text);
+    expect(surface.searchOptionsNames).toEqual(["customers-opts", "products-opts"]);
   });
 });
