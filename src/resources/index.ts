@@ -465,12 +465,18 @@ PIPELINE EXAMPLE
            → fields: [state, age, notes], rangeIndexes: [age:int, state:string],
              searchOptionsNames: ["customers-opts"], suggestedBindings: {...}
   Stage 2: nl_to_search_query(natural_language="...", surface=<from 1>, options_name="customers-opts")
-           → qtext='state:TX AND age:GE:65 AND diabetes'
+           → qtext='state:TX AND age:>=65 AND diabetes'
              bindings={state:{type:'json-property',name:'state'},
                        age:{type:'json-property-range',name:'age',scalar_type:'int'}}
   Stage 3: ml_parse_query(qtext=..., bindings=...)
            → structured_query JSON
-  Stage 4: ml_search(q='state:TX AND age:GE:65 AND diabetes', options='customers-opts', collection='customers')
+  Stage 4: ml_search(q='state:TX AND age:>=65 AND diabetes', options='customers-opts', collection='customers')
+
+GRAMMAR NOTE — cts.parse range syntax
+  Operators (>=, <=, =, !=, >, <) follow the colon IMMEDIATELY: 'age:>=65', NOT 'age:GE:65'.
+  cts.parse rejects 'age:GE:65' with XDMP-UNEXPECTED (the second colon is unexpected).
+  Equality on a json-property/element/field tag uses the universal index and does NOT need
+  a range index — bind via type:'json-property' (no -range suffix).
 
 WHEN TO PREFER STRING GRAMMAR vs STRUCTURED QUERY
   String grammar  → easiest for LLMs to write; readable; debuggable; round-trippable through ml_parse_query

@@ -254,9 +254,11 @@ Write a single MarkLogic string-grammar query that captures the question. Rules:
   • Grouping: ( … )
   • Negation prefix: - or NOT
   • Tagged constraints (only if the surface includes a binding or options_name defines the tag):
-        state:TX             → equality on a json-property binding
-        age:GE:65            → range comparison; operators LT LE EQ NE GE GT
-        enrolledOn:GE:2024-01-01
+        state:TX                       → equality on a json-property binding
+        age:>=65                       → range comparison; operators >= <= = != > <
+        enrolledOn:>=2024-01-01        → range on a dateTime binding (date strings auto-coerce)
+    GRAMMAR RULE — the comparison operator goes IMMEDIATELY after the colon. No second colon
+    after the operator. "age:GE:65" is INVALID — cts.parse rejects it with XDMP-UNEXPECTED.
   • If options_name is set, prefer the tag syntax for any field bound by that options set.
   • If no binding exists for a needed field, fall back to a bareword and call it out in section 4.
 

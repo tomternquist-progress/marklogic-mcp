@@ -79,7 +79,8 @@ describeIfLive("chat → MarkLogic pipeline (live)", () => {
 
     it("parses a range tag against the seeded importedAt dateTime range index", async () => {
       // importedAt has a range-element-index of scalarType dateTime (configured by integration-seed.mjs)
-      const res = await clients.eval.parseCtsQuery("importedAt:GE:2025-01-01T00:00:00Z", {
+      // cts.parse range syntax is "field:>=value" — operator immediately after the colon, no second colon.
+      const res = await clients.eval.parseCtsQuery("importedAt:>=2025-01-01", {
         importedAt: { type: "element-range", name: "importedAt", scalar_type: "dateTime" },
       });
       const dump = JSON.stringify(res[0].value).toLowerCase();
@@ -191,8 +192,9 @@ describeIfLive("chat → MarkLogic pipeline (live)", () => {
       const importedAtBinding = surface.suggestedBindings.importedAt;
       expect(importedAtBinding).toBeDefined();
 
-      // A range query that should match BOTH seed docs (their importedAt is 2026-01-01)
-      const qtext = "importedAt:GE:2025-01-01T00:00:00Z";
+      // A range query that should match BOTH seed docs (their importedAt is 2026-01-01).
+      // Grammar: operator immediately after colon — no second colon between op and value.
+      const qtext = "importedAt:>=2025-01-01";
       const parseResp = await tools.get("ml_parse_query")!({
         qtext, bindings: { importedAt: importedAtBinding },
       });

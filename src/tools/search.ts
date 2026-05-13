@@ -195,7 +195,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
     "ml_parse_query",
     "Parse a MarkLogic string-grammar query into a structured cts.query JSON object WITHOUT executing it.\n\n" +
     "PRIMARY USE: chat → MarkLogic translation pipeline. Given a natural-language question, an LLM " +
-    "writes a string-grammar query (e.g. \"diabetes AND state:TX AND age:GE:65\"); ml_parse_query " +
+    "writes a string-grammar query (e.g. \"diabetes AND state:TX AND age:>=65\"); ml_parse_query " +
     "validates and returns the equivalent structured-query JSON; ml_search executes it.\n\n" +
     "RETURN VALUE: the parsed cts.query is serialized in the SAME JSON shape that ml_search accepts via " +
     "the structured_query parameter — you can pipe it straight through, store it, or modify it before executing.\n\n" +
@@ -208,19 +208,25 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
     "operators (AND, OR, NOT), quoted phrases, and bare words are recognised — a tag like 'state:TX' " +
     "becomes a literal word query for the string 'state:TX'.\n\n" +
     "  Example:\n" +
-    "    qtext='state:TX AND age:GE:65 AND diabetes'\n" +
+    "    qtext='state:TX AND age:>=65 AND diabetes'\n" +
     "    bindings={\n" +
     "      state: { type: 'json-property',       name: 'state' },\n" +
     "      age:   { type: 'json-property-range', name: 'age', scalar_type: 'int' }\n" +
     "    }\n\n" +
+    "  GRAMMAR — range operators go IMMEDIATELY after the colon, no second colon:\n" +
+    "    age:65          (equality)\n" +
+    "    age:>=65        (range — requires a *-range binding type)\n" +
+    "    age:<18         (range)\n" +
+    "    age:!=0         (range)\n" +
+    "    NOT age:GE:65   (WRONG — cts.parse rejects the second colon with XDMP-UNEXPECTED)\n\n" +
     "  Binding types:\n" +
-    "    json-property        — bareword equality against a JSON property (universal index)\n" +
-    "    json-property-range  — range comparison (LT/LE/EQ/GE/GT) on a JSON property — requires range index\n" +
-    "    element              — XML element equality\n" +
+    "    json-property        — equality on a JSON property (universal index, NO range index required)\n" +
+    "    json-property-range  — range comparison (>=, <=, =, !=, >, <) on a JSON property — requires range index\n" +
+    "    element              — XML element equality (universal index, no range index required)\n" +
     "    element-range        — XML element range — requires range index\n" +
-    "    path                 — path equality — requires path range index when used with range ops\n" +
+    "    path                 — path equality — requires path range index\n" +
     "    path-range           — path range — requires path range index\n" +
-    "    field                — equality against a configured field\n" +
+    "    field                — equality against a configured field (no range index required)\n" +
     "    field-range          — range against a configured field — requires field range index\n\n" +
     "DISCOVERY: run ml_search_surface (or ml_indexes_list + ml_schema_discover) first to learn which " +
     "fields are indexed and what scalar types they hold; mis-typed bindings cause XDMP-CTSDIRQUERY at " +
