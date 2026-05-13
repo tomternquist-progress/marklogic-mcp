@@ -262,9 +262,17 @@ Write a single MarkLogic string-grammar query that captures the question. Rules:
         - Comparison operators take SPACES on both sides: "age >= 65", NOT "age:>=65".
         - Forms like "age:GE:65" are INVALID — cts.parse rejects with XDMP-UNEXPECTED.
         - The ONLY colon allowed is the equality delimiter in "tag:value".
-  • For fields listed in surface.barewordFields (not range-indexed): DO NOT tag them.
-    Drop the field name and use the value as a bareword token — the universal index will
-    match it ("wikipedia" matches docs where source="wikipedia" without any index work).
+  • For fields in surface.valueQueryableFields / wordQueryableFields (no range index):
+    DO NOT tag them in the string grammar (cts.parse would reject) — but DO NOT fall back to
+    a bareword if the user's intent is "field equals value". A bareword matches anywhere in
+    the document. Instead, capture the field-scoped constraint in section 3 (structured-query
+    fallback) using a value-query / word-query, then AND it with the string-grammar clause:
+        { and-query: { queries: [
+            <parsed string query from section 2>,
+            { value-query: { json-property: 'state', text: ['TX'] } }
+        ] } }
+    Use bareword tokens ONLY for true free-text concepts the user didn't pin to a specific
+    field (e.g. "diabetes" in the user's question "customers who mentioned diabetes").
   • If options_name is set, prefer the tag syntax for any field bound by that options set.
 
 Output the query as a single line. Then on a new line: "Pass this as: ml_search q='<query>'\${optionsLine}"
@@ -324,13 +332,20 @@ Do not hedge with generic advice. Do not call any tools — this is a planning s
 
 **Find:** ${natural_language}
 **Collection:** ${collection ?? "(any)"}
-**Available range indexes:** ${available_indexes ?? "(unknown — use word-query for text fields)"}
+**Available range indexes:** ${available_indexes ?? "(unknown — use value-query for exact match; range-query only on indexed fields)"}
 
-Output a valid MarkLogic structured query JSON object using the search:query format. Include:
-- word-query for full-text matching
-- range-query for numeric/date comparisons (only if range index exists)
-- collection-query if collection is specified
-- and-query / or-query / not-query for combining conditions
+Output a valid MarkLogic structured query JSON object using the search:query format. Pick the right
+constructor per concept — these all work WITHOUT a range index:
+- value-query  for EXACT match on a JSON property / element / field
+    { value-query: { json-property: 'incidentType', text: ['Hurricane'] } }
+    Multi-value OR: { value-query: { json-property: 'state', text: ['FL','TX','LA'] } }
+- word-query   for tokenised free-text scoped to a property/field
+    { word-query: { json-property: 'description', text: ['hurricane'] } }
+- term-query / cts word-query equivalent for free-text across the whole document
+- collection-query if a collection is specified
+- and-query / or-query / not-query to combine
+These REQUIRE a range index on the bound field:
+- range-query  for numeric / date comparisons (use only if 'available range indexes' lists the field)
 
 Output only the JSON object, no explanation.`,
         },

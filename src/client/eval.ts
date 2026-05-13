@@ -73,10 +73,12 @@ export class EvalClient {
     // called with the delimiter character ":" instead of the right-hand value, producing
     // useless queries. Verified against MarkLogic 12 in CI.
     //
-    // Implication: every tagged binding here requires a configured range index. For
-    // tags on non-indexed fields, the agent must use bareword search (universal index).
-    // ml_search_surface only emits suggestedBindings for fields that have a range index;
-    // it also lists "barewordFields" so the agent knows what to search via free text.
+    // Implication: every tagged binding here requires a configured range index. This is
+    // a limitation of cts.parse, NOT of MarkLogic — for exact-value filtering on a
+    // non-range-indexed field, the agent should bypass cts.parse entirely and pass a
+    // structured value-query to ml_search (json property value index is on by default).
+    // ml_search_surface emits suggestedBindings (range-indexed only) plus
+    // valueQueryableFields / wordQueryableFields to guide that choice.
     //
     // The four logical kinds (json-property / element / path / field) each have a
     // "-range" alias retained for documentation; behaviour is identical because both
