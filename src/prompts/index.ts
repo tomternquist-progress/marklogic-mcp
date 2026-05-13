@@ -201,6 +201,106 @@ Generate the extension module now.`,
   // ── Query Building Prompts ─────────────────────────────────────────────────
 
   server.prompt(
+    "nl_to_search_query",
+    "Translate a natural-language question into a MarkLogic search query for a chat → MarkLogic integration. " +
+    "Produces a string-grammar query (primary, parser-friendly) AND a structured-query JSON (fallback for cases " +
+    "the grammar cannot express). Designed to consume the JSON output of ml_search_surface — paste that JSON in " +
+    "as the 'surface' argument so the model sees the available fields, range indexes, and search-options names.",
+    {
+      natural_language: z.string().describe("The user's question in natural language, e.g. 'show me customers in Texas over 65 who mentioned diabetes'"),
+      surface: z.string().optional().describe("JSON output of ml_search_surface for the target collection (inferredFields, rangeIndexes, searchOptionsNames, suggestedBindings)"),
+      collection: z.string().optional().describe("Collection URI to search, if known"),
+      options_name: z.string().optional().describe("Named search-options set to target (one of surface.searchOptionsNames). When provided, ml_search will use the options' grammar + constraints."),
+      hint: z.string().optional().describe("Optional extra context, e.g. 'prefer phrase matching over keyword' or 'date field is enrolledOn'"),
+    },
+    ({ natural_language, surface, collection, options_name, hint }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `You are translating a natural-language question into a MarkLogic search query for a chat-to-MarkLogic
+integration layer (this MCP server). The downstream pipeline is:
+
+   chat → nl_to_search_query (this prompt) → ml_parse_query (validate) → ml_search (execute)
+
+═══════════════════════════════════════════
+USER QUESTION
+═══════════════════════════════════════════
+${natural_language}
+
+CONTEXT
+  Collection   : ${collection ?? "(unspecified — assume default or call ml_collections_list first)"}
+  Options name : ${options_name ?? "(none — bareword/boolean grammar only unless bindings are supplied)"}
+  Hint         : ${hint ?? "(none)"}
+
+SEARCH SURFACE (from ml_search_surface — fields, range indexes, available options sets):
+${surface ?? "(NOT PROVIDED — run ml_search_surface first; without this you must guess field names. Recommend the caller re-invoke after discovery.)"}
+
+═══════════════════════════════════════════
+PRODUCE THE FOLLOWING ANALYSIS
+═══════════════════════════════════════════
+
+## 1. INTENT EXTRACTION
+List the searchable concepts in the user's question. For each, state:
+  • The concept (e.g. "location is Texas", "age over 65", "diabetes mentioned")
+  • Whether it is a TEXT match, FIELD-EQUALITY match, RANGE comparison, or a NEGATION
+  • The candidate field name from inferredFields/rangeIndexes (or "(text — universal index)")
+
+## 2. STRING-GRAMMAR QUERY (preferred output)
+Write a single MarkLogic string-grammar query that captures the question. Rules:
+  • Bareword tokens hit the universal index → free-text concepts go in unquoted.
+  • Multi-word phrases go in double quotes: "type 2 diabetes"
+  • Booleans: AND, OR, NOT, NEAR/k (k is an optional proximity distance)
+  • Grouping: ( … )
+  • Negation prefix: - or NOT
+  • Tagged constraints (only if the surface includes a binding or options_name defines the tag):
+        state:TX             → equality on a json-property binding
+        age:GE:65            → range comparison; operators LT LE EQ NE GE GT
+        enrolledOn:GE:2024-01-01
+  • If options_name is set, prefer the tag syntax for any field bound by that options set.
+  • If no binding exists for a needed field, fall back to a bareword and call it out in section 4.
+
+Output the query as a single line. Then on a new line: "Pass this as: ml_search q='<query>'\${optionsLine}"
+${options_name ? `(\${optionsLine} resolves to " options='${options_name}'" for that line)` : ""}
+
+## 3. STRUCTURED-QUERY FALLBACK (only when needed)
+If the question expresses something the string grammar CANNOT cleanly capture — geospatial regions,
+nested boolean precedence beyond simple grouping, custom collection or directory scoping, or a
+WHERE-NOT pattern with multiple range constraints — output a complete MarkLogic structured-query
+JSON object instead (search:query schema). Otherwise write: "Not needed — string grammar is sufficient."
+
+## 4. ml_parse_query BINDINGS
+List the minimum 'bindings' map (as JSON) to pass to ml_parse_query so that every tag in your
+string query resolves correctly. Pull entries from surface.suggestedBindings when possible. Example:
+  {
+    "state": { "type": "json-property",       "name": "state" },
+    "age":   { "type": "json-property-range", "name": "age", "scalar_type": "int" }
+  }
+If your query uses no tags, write: "No bindings needed — boolean/phrase grammar only."
+
+## 5. VALIDATION STEP
+Recommend the exact ml_parse_query call to verify the query before executing:
+  ml_parse_query qtext="<your query>" bindings=<from section 4>
+
+## 6. EXECUTION STEP
+Recommend the exact ml_search call:
+  ml_search q="<your query>" [collection="${collection ?? "..."}"] [options="${options_name ?? "..."}"]
+If you produced a structured-query fallback in section 3, give that ml_search call too with structured_query=.
+
+## 7. CONFIDENCE & CAVEATS
+State your confidence (high / medium / low) and call out any assumption the agent should verify:
+  • "Assumed 'state' is a top-level JSON property — verify with ml_schema_discover if results are empty."
+  • "No range index on 'age' in the surface — the range tag may fall back to filtered evaluation; consider adding one."
+  • "User said 'recently' — interpreted as last 90 days; ask the user to confirm the window."
+
+Be concrete. Reference actual field names from the surface. Do not invent fields not listed in the surface.
+Do not hedge with generic advice. Do not call any tools — this is a planning step the caller will execute.`,
+        },
+      }],
+    })
+  );
+
+  server.prompt(
     "structured_query_builder",
     "Translate a natural language description into a MarkLogic structured query JSON object.",
     {
@@ -657,9 +757,9 @@ Available tools (use only these):
   Documents:  ml_document_get, ml_document_list, ml_document_sample, ml_document_put,
               ml_document_delete, ml_document_patch
   Search:     ml_search, ml_search_qbe, ml_values_query, ml_suggest, ml_facets_query,
-              ml_geospatial_search
+              ml_geospatial_search, ml_parse_query
   Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_tde_install,
-              ml_indexes_list, ml_collections_list, ml_namespaces_list
+              ml_indexes_list, ml_collections_list, ml_namespaces_list, ml_search_surface
   Eval:       ml_eval_javascript, ml_eval_xquery, ml_sparql, ml_invoke_module
   Graph:      ml_sparql_query, ml_graphs_list, ml_graph_put, ml_graph_delete
   QuickSight: ml_aggregate_query, ml_timeseries_query, ml_export_tabular, ml_facets_query
@@ -686,7 +786,8 @@ Available tools (use only these):
               ml_force_merge (eval-gated), ml_profile_query (eval-gated)
   Planning:   ml_suggest_approach
   Prompts:    uri_designer, xquery_function_generator, sjs_module_generator,
-              tde_schema_generator, rest_extension_generator, structured_query_builder,
+              tde_schema_generator, rest_extension_generator,
+              nl_to_search_query, structured_query_builder,
               optic_query_builder, sparql_query_builder, query_approach_advisor,
               data_modeling_advisor, data_import_advisor, project_setup_advisor,
               gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,

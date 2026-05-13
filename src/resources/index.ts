@@ -146,8 +146,14 @@ template           (convenience wrapper for    ml_tde_validate
 
 Full-text search     Universal index /          ml_search                 ml_collections_list
                      Search API                 ml_search_qbe             ml_schema_discover
-                                                ml_suggest
-                                                ml_facets_query
+                                                ml_suggest                ml_search_surface
+                                                ml_facets_query           (one-shot field/index/options
+                                                                          discovery for query building)
+
+Chat → MarkLogic     NL → string grammar →      ml_search_surface         ml_search_surface
+translation (LLM     parse → execute            nl_to_search_query        (do this FIRST)
+writes queries from  pipeline                   ml_parse_query            ml_search_options_list
+user questions)                                 ml_search                 ml_schema_discover
 
 Structured filter    Structured query /         ml_search                 ml_indexes_list
 (range/date/numeric) range index                ml_values_query           ml_schema_discover
@@ -417,6 +423,69 @@ MULTI-MODEL QUERY COMBINATIONS:
   Documents + Vectors  → ml_vector_search for similarity, ml_document_get for content
   Triples + Vectors    → ml_vector_search finds similar entities; SPARQL traverses edges
   All three (RAG)      → ml_vector_search → retrieve entity docs → SPARQL for context
+
+
+── CHAT → MARKLOGIC TRANSLATION PIPELINE ──────────────────────────────────────
+
+Use this when the MCP server is sitting between a chat interface and MarkLogic and the user
+asks a question in natural language ("show me customers in Texas over 65 who mentioned diabetes").
+
+The pipeline has four stages — discover, translate, validate, execute:
+
+  STAGE 1 — DISCOVER (one tool call):
+    ml_search_surface(collection=<target>, database=<db>)
+    Returns: inferredFields, rangeIndexes, searchOptionsNames, suggestedBindings
+    Replaces the older 3-step pattern of ml_schema_discover + ml_indexes_list + ml_search_options_list.
+
+  STAGE 2 — TRANSLATE (LLM, no MarkLogic call):
+    Invoke the nl_to_search_query prompt with:
+      natural_language = the user's question
+      surface          = the JSON from stage 1 (paste it in verbatim)
+      options_name     = pick one from surface.searchOptionsNames if you want tagged grammar
+    The prompt yields a string-grammar query, a structured-query fallback, and the bindings
+    map needed for stage 3.
+
+  STAGE 3 — VALIDATE (one tool call, cheap, no execution):
+    ml_parse_query(qtext=<from stage 2>, bindings=<from stage 2>)
+    Returns the parsed cts.query as JSON in the same shape ml_search structured_query accepts.
+    Errors here surface grammar problems (unmatched quotes, unknown operators, missing bindings)
+    BEFORE running an expensive search. The parsed JSON is also a useful target for
+    programmatic manipulation (add a collection filter, narrow a range, log the query).
+
+  STAGE 4 — EXECUTE:
+    ml_search(q=<string query>, options=<options_name>, collection=<target>)
+    OR
+    ml_search(structured_query=<the parsed JSON from stage 3>, collection=<target>)
+    Returns URIs + relevance scores. To include document content in results, configure
+    extract-document-data in the search options set (see ml_search docstring SNIPPET PATTERN).
+
+PIPELINE EXAMPLE
+  User: "show me customers in Texas over 65 who mentioned diabetes"
+  Stage 1: ml_search_surface(collection="customers")
+           → fields: [state, age, notes], rangeIndexes: [age:int, state:string],
+             searchOptionsNames: ["customers-opts"], suggestedBindings: {...}
+  Stage 2: nl_to_search_query(natural_language="...", surface=<from 1>, options_name="customers-opts")
+           → qtext='state:TX AND age:GE:65 AND diabetes'
+             bindings={state:{type:'json-property',name:'state'},
+                       age:{type:'json-property-range',name:'age',scalar_type:'int'}}
+  Stage 3: ml_parse_query(qtext=..., bindings=...)
+           → structured_query JSON
+  Stage 4: ml_search(q='state:TX AND age:GE:65 AND diabetes', options='customers-opts', collection='customers')
+
+WHEN TO PREFER STRING GRAMMAR vs STRUCTURED QUERY
+  String grammar  → easiest for LLMs to write; readable; debuggable; round-trippable through ml_parse_query
+  Structured JSON → use for: geospatial regions; complex nested boolean precedence; programmatic
+                    transformation/manipulation; queries with no available tag bindings
+
+WHEN A USER ALREADY HAS A SEARCH OPTIONS SET
+  Many apps deploy a curated options set with constraints, default sort, and snippets pre-configured.
+  Always pass that name to ml_search via options= — the parser uses its grammar bindings automatically,
+  and FastTrack UIs share the exact same configuration.
+
+WHEN THERE IS NO SEARCH OPTIONS SET
+  Bareword queries still work against the universal index. Use ml_search_surface.suggestedBindings to
+  attach tag bindings ad-hoc via ml_parse_query, or design a reusable set with the
+  fasttrack_search_designer prompt and ml_search_options_put.
 
 
 ── OPTIC vs CTS.SEARCH SELECTION GUIDE ────────────────────────────────────────
@@ -709,11 +778,12 @@ Documents (3–7, config-dependent):
                [write-enabled] ml_document_put, ml_document_delete,
                                ml_document_patch, ml_document_patch_batch
 
-Search (5):    ml_search, ml_search_qbe, ml_values_query, ml_suggest,
-               ml_geospatial_search
+Search (6):    ml_search, ml_search_qbe, ml_values_query, ml_suggest,
+               ml_geospatial_search, ml_parse_query
 
-Schema (7):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
-               ml_tde_install, ml_indexes_list, ml_collections_list, ml_namespaces_list
+Schema (8):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
+               ml_tde_install, ml_indexes_list, ml_collections_list, ml_namespaces_list,
+               ml_search_surface
 
 Eval (4, gated): ml_eval_javascript, ml_eval_xquery, ml_sparql, ml_invoke_module
 
@@ -763,7 +833,8 @@ Planning (1):  ml_suggest_approach
 Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                performance_advisor,
                tde_schema_generator, rest_extension_generator,
-               structured_query_builder, optic_query_builder, sparql_query_builder,
+               nl_to_search_query, structured_query_builder,
+               optic_query_builder, sparql_query_builder,
                query_approach_advisor, data_modeling_advisor, data_import_advisor,
                project_setup_advisor,
                rag_pipeline_designer, envelope_pattern_advisor,

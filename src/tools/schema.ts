@@ -97,6 +97,105 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
   );
 
   server.tool(
+    "ml_search_surface",
+    "ONE-SHOT \"what can I query?\" discovery for a collection. Returns everything an LLM (or " +
+    "ml_parse_query, structured_query_builder, nl_to_search_query) needs to translate a natural-language " +
+    "question into a working MarkLogic query — in a single tool call instead of three or four.\n\n" +
+    "PRIMARY USE: chat → MarkLogic translation pipeline. Before asking an LLM to write a query, call " +
+    "ml_search_surface to retrieve the field catalogue, range indexes, and search-options names. " +
+    "Pass the result into the LLM's context; pipe its generated string-grammar query into ml_parse_query " +
+    "(for validation), then ml_search (for execution).\n\n" +
+    "RETURNS a JSON object:\n" +
+    "  • collection / database / documentCount\n" +
+    "  • inferredFields[]   — path, type, cardinality, hasRangeIndex, exampleValues (from doc sample)\n" +
+    "  • rangeIndexes[]     — range/geospatial indexes configured on the database\n" +
+    "  • searchOptionsNames[] — named search-options sets available on the server (any of which can be\n" +
+    "                          passed to ml_search via options= for tagged-grammar parsing and faceting)\n" +
+    "  • suggestedBindings  — pre-built ml_parse_query bindings map: maps each range-indexed field name\n" +
+    "                          to a {type, name, scalar_type} entry the agent can pass straight through\n" +
+    "                          to ml_parse_query when interpreting tagged queries like 'state:TX'\n\n" +
+    "GOOD NEXT STEPS:\n" +
+    "  → For LLM query generation: feed the JSON into the nl_to_search_query prompt with the user's question\n" +
+    "  → For programmatic queries: pick a field from inferredFields and a range index from rangeIndexes;\n" +
+    "    build a structured_query for ml_search\n" +
+    "  → For richer faceting: pick a name from searchOptionsNames and call ml_search_options_get to read\n" +
+    "    its constraint definitions, then pass that name to ml_search via the options= parameter",
+    {
+      collection: z.string().optional().describe("Collection URI to inspect. Omit to sample the whole database."),
+      database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
+      sample_size: z.number().int().positive().max(50).optional().describe("Number of documents to sample for schema inference (default: 10)"),
+    },
+    async ({ collection, database, sample_size }) => {
+      try {
+        // Run discovery + options-list in parallel — both are read-only.
+        const [discovery, optionsList] = await Promise.all([
+          clients.schema.discoverSchema({ collection, sampleSize: sample_size, database }),
+          clients.fasttrack.listSearchOptions(database).catch(() => [] as Array<{ name: string }>),
+        ]);
+
+        const optionNames = (optionsList ?? [])
+          .map((o) => (typeof o === "string" ? o : (o as { name?: string })?.name))
+          .filter((n): n is string => typeof n === "string" && n.length > 0);
+
+        // Build suggested bindings for ml_parse_query. Use range-indexed fields preferentially;
+        // fall back to top-level JSON properties from the inferred schema for word-style tags.
+        const suggestedBindings: Record<string, { type: string; name: string; scalar_type?: string }> = {};
+        for (const idx of discovery.rangeIndexes ?? []) {
+          if (idx.type === "range-element" && idx.localname) {
+            suggestedBindings[idx.localname] = {
+              type: "element-range",
+              name: idx.localname,
+              scalar_type: idx.scalarType,
+            };
+          } else if (idx.type === "range-path" && idx.pathExpression) {
+            // Use the leaf path step as the tag name for readability
+            const leaf = idx.pathExpression.split("/").filter(Boolean).pop() ?? idx.pathExpression;
+            suggestedBindings[leaf] = {
+              type: "path-range",
+              name: idx.pathExpression,
+              scalar_type: idx.scalarType,
+            };
+          } else if (idx.type === "range-field" && idx.localname) {
+            suggestedBindings[idx.localname] = {
+              type: "field-range",
+              name: idx.localname,
+              scalar_type: idx.scalarType,
+            };
+          }
+        }
+        // Also offer equality bindings on every top-level JSON property (no range index needed).
+        for (const field of discovery.inferredFields ?? []) {
+          // Only top-level fields (no slash) — nested paths can be added by the agent if needed.
+          if (!field.path.includes("/") && !suggestedBindings[field.path]) {
+            suggestedBindings[field.path] = {
+              type: "json-property",
+              name: field.path,
+            };
+          }
+        }
+
+        const surface = {
+          collection: collection ?? null,
+          database: database ?? null,
+          documentCount: discovery.documentCount,
+          inferredFields: discovery.inferredFields,
+          rangeIndexes: discovery.rangeIndexes,
+          searchOptionsNames: optionNames,
+          suggestedBindings,
+          nextSteps: [
+            "To translate natural language → query: invoke the nl_to_search_query prompt with this surface as context.",
+            "To validate a string query: ml_parse_query qtext='...' bindings=<suggestedBindings or a subset>.",
+            "To execute: ml_search q='...' [options=<one of searchOptionsNames>] or structured_query=<from ml_parse_query>.",
+          ],
+        };
+        return { content: [{ type: "text", text: JSON.stringify(surface, null, 2) }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
     "ml_collections_list",
     "List document collections in MarkLogic with their document counts.",
     {
