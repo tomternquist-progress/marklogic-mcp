@@ -97,17 +97,18 @@ describe("chat → MarkLogic translation pipeline (end-to-end, mocked)", () => {
     const surface = JSON.parse(surfaceResp.content[0].text);
 
     // The surface must hand the agent exactly what it needs to construct a parse call.
+    // Range-indexed 'age' → tag-bindable. Non-indexed 'state' → bareword search only.
     expect(surface.suggestedBindings.age).toEqual({ type: "element-range", name: "age", scalar_type: "int" });
-    expect(surface.suggestedBindings.state).toEqual({ type: "json-property", name: "state" });
+    expect(surface.suggestedBindings.state).toBeUndefined();
+    expect(surface.barewordFields).toEqual(expect.arrayContaining(["state", "notes"]));
     expect(surface.searchOptionsNames).toContain("customers-opts");
 
     // STAGE 2 — Translation: an LLM produces this from the user's question
     //   "show me customers in Texas over 65 who mentioned diabetes"
-    const llmQuery = "diabetes AND state:TX AND age:GE:65";
-    const llmBindings = {
-      state: surface.suggestedBindings.state,
-      age:   surface.suggestedBindings.age,
-    };
+    // 'state' is NOT range-indexed → searched as the bareword "TX".
+    // 'age'   IS  range-indexed → tagged with spaced named operator.
+    const llmQuery = "diabetes AND TX AND age GE 65";
+    const llmBindings = { age: surface.suggestedBindings.age };
 
     // STAGE 3 — Validation: ml_parse_query routes to the eval client, which
     // returns the cts.parse JSON form (and-query of three children).
@@ -115,7 +116,7 @@ describe("chat → MarkLogic translation pipeline (end-to-end, mocked)", () => {
       "and-query": {
         queries: [
           { "word-query": { text: ["diabetes"] } },
-          { "json-property-value-query": { "property-name": "state", value: ["TX"] } },
+          { "word-query": { text: ["TX"] } },
           { "element-range-query": { element: ["age"], operator: ">=", value: ["65"] } },
         ],
       },

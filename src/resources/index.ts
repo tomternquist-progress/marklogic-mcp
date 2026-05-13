@@ -462,21 +462,27 @@ The pipeline has four stages — discover, translate, validate, execute:
 PIPELINE EXAMPLE
   User: "show me customers in Texas over 65 who mentioned diabetes"
   Stage 1: ml_search_surface(collection="customers")
-           → fields: [state, age, notes], rangeIndexes: [age:int, state:string],
-             searchOptionsNames: ["customers-opts"], suggestedBindings: {...}
+           → fields: [state, age, notes], rangeIndexes: [age:int],
+             searchOptionsNames: ["customers-opts"],
+             suggestedBindings: { age: {type:'element-range', name:'age', scalar_type:'int'} },
+             barewordFields: ["state", "notes"]
   Stage 2: nl_to_search_query(natural_language="...", surface=<from 1>, options_name="customers-opts")
-           → qtext='state:TX AND age:>=65 AND diabetes'
-             bindings={state:{type:'json-property',name:'state'},
-                       age:{type:'json-property-range',name:'age',scalar_type:'int'}}
+           → qtext='TX AND age GE 65 AND diabetes'
+             bindings={ age: {type:'element-range', name:'age', scalar_type:'int'} }
+             (note: "state" has no range index → searched as the bareword "TX" via universal index)
   Stage 3: ml_parse_query(qtext=..., bindings=...)
            → structured_query JSON
-  Stage 4: ml_search(q='state:TX AND age:>=65 AND diabetes', options='customers-opts', collection='customers')
+  Stage 4: ml_search(q='TX AND age GE 65 AND diabetes', options='customers-opts', collection='customers')
 
-GRAMMAR NOTE — cts.parse range syntax
-  Operators (>=, <=, =, !=, >, <) follow the colon IMMEDIATELY: 'age:>=65', NOT 'age:GE:65'.
-  cts.parse rejects 'age:GE:65' with XDMP-UNEXPECTED (the second colon is unexpected).
-  Equality on a json-property/element/field tag uses the universal index and does NOT need
-  a range index — bind via type:'json-property' (no -range suffix).
+GRAMMAR NOTE — cts.parse SJS syntax (strict)
+  Tagged equality:   tag:value         (e.g. importedAt:2026-01-01)
+  Tagged range:      tag <op> value    (op is < <= = != > >= or NAMED LT LE EQ NE GE GT)
+                     SPACES around <op> are REQUIRED — "age >= 65", NOT "age:>=65" / "age:GE:65".
+  Boolean / phrase / paren / bareword / NOT all work as expected.
+  Every TAGGED constraint requires a range index on the bound field — cts.parse SJS will not
+  accept function bindings (XQuery-only), so fields without a range index cannot be tagged.
+  For free-text matching on a non-indexed field, drop the tag and use a bareword token —
+  the universal index will match it.
 
 WHEN TO PREFER STRING GRAMMAR vs STRUCTURED QUERY
   String grammar  → easiest for LLMs to write; readable; debuggable; round-trippable through ml_parse_query

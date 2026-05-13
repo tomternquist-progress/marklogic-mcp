@@ -537,8 +537,10 @@ describe("ml_search_surface handler", () => {
     expect(surface.searchOptionsNames).toEqual(["customers-opts"]);
     // Range-indexed 'age' should pick the typed range binding
     expect(surface.suggestedBindings.age).toEqual({ type: "element-range", name: "age", scalar_type: "int" });
-    // Non-indexed 'state' should fall through to json-property equality
-    expect(surface.suggestedBindings.state).toEqual({ type: "json-property", name: "state" });
+    // Non-indexed 'state' must NOT appear in suggestedBindings (cts.parse SJS needs a range index)
+    expect(surface.suggestedBindings.state).toBeUndefined();
+    // …but it should be advertised as a bareword search candidate
+    expect(surface.barewordFields).toEqual(["state"]);
     // nextSteps is present and references the new pipeline
     expect(surface.nextSteps.join(" ")).toContain("ml_parse_query");
   });
@@ -608,7 +610,7 @@ describe("ml_search_surface handler", () => {
     });
   });
 
-  it("range-indexed binding takes precedence over the bareword fallback for the same field", async () => {
+  it("range-indexed field gets a suggestedBinding and is NOT also in barewordFields", async () => {
     clients.schema.discoverSchema.mockResolvedValue({
       documentCount: 1,
       inferredFields: [
@@ -624,9 +626,11 @@ describe("ml_search_surface handler", () => {
     const surface = JSON.parse((await tools.get("ml_search_surface")!({})).content[0].text);
     expect(surface.suggestedBindings.age.type).toBe("element-range");
     expect(surface.suggestedBindings.age.scalar_type).toBe("int");
+    // 'age' is range-indexed → not in barewordFields (it's tag-bindable instead)
+    expect(surface.barewordFields).not.toContain("age");
   });
 
-  it("skips nested paths in inferredFields when building bareword bindings", async () => {
+  it("non-indexed top-level fields land in barewordFields; nested paths are skipped entirely", async () => {
     clients.schema.discoverSchema.mockResolvedValue({
       documentCount: 1,
       inferredFields: [
@@ -639,10 +643,12 @@ describe("ml_search_surface handler", () => {
     clients.fasttrack.listSearchOptions.mockResolvedValue([]);
 
     const surface = JSON.parse((await tools.get("ml_search_surface")!({})).content[0].text);
-    // Top-level "state" included
-    expect(surface.suggestedBindings.state).toEqual({ type: "json-property", name: "state" });
-    // Nested path NOT included — agent can add it manually if they want
-    expect(surface.suggestedBindings["classification/topCategory/label"]).toBeUndefined();
+    // Top-level non-indexed "state" is a bareword-search candidate
+    expect(surface.barewordFields).toEqual(["state"]);
+    // No tag binding for an unindexed field — cts.parse SJS would fail
+    expect(surface.suggestedBindings.state).toBeUndefined();
+    // Nested path skipped from barewordFields too (only top-level fields surface here)
+    expect(surface.barewordFields).not.toContain("classification/topCategory/label");
   });
 
   it("returns a surface even when collection is omitted (whole-database mode)", async () => {

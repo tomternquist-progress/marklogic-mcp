@@ -67,25 +67,38 @@ describeIfLive("chat → MarkLogic pipeline (live)", () => {
       expect(dump).toContain("wikipedia");
     });
 
-    it("parses a tagged constraint when a json-property binding is supplied", async () => {
-      // "source:wikipedia" tag → bind to the json-property "source" used in seed docs.
-      const res = await clients.eval.parseCtsQuery("source:wikipedia", {
-        source: { type: "json-property", name: "source" },
+    it("parses a tagged equality against a range-indexed field", async () => {
+      // importedAt has a seeded range-element-index of scalarType dateTime — the only
+      // range-indexed field on the wiki seed. cts.parse SJS requires a range index for
+      // every tagged binding, so this is the only seeded field eligible for tagging.
+      const res = await clients.eval.parseCtsQuery("importedAt:2026-01-01T00:00:00Z", {
+        importedAt: { type: "element-range", name: "importedAt", scalar_type: "dateTime" },
       });
       const dump = JSON.stringify(res[0].value).toLowerCase();
-      expect(dump).toContain("source");
-      expect(dump).toContain("wikipedia");
+      expect(dump).toContain("importedat");
+      expect(dump).toContain("2026");
     });
 
-    it("parses a range tag against the seeded importedAt dateTime range index", async () => {
-      // importedAt has a range-element-index of scalarType dateTime (configured by integration-seed.mjs)
-      // cts.parse range syntax is "field:>=value" — operator immediately after the colon, no second colon.
-      const res = await clients.eval.parseCtsQuery("importedAt:>=2025-01-01", {
+    it("parses a range tag (spaced named operator) against the seeded importedAt dateTime range index", async () => {
+      // Range grammar requires SPACES around the operator: "field GE value", not "field:>=value".
+      const res = await clients.eval.parseCtsQuery("importedAt GE 2025-01-01", {
         importedAt: { type: "element-range", name: "importedAt", scalar_type: "dateTime" },
       });
       const dump = JSON.stringify(res[0].value).toLowerCase();
       expect(dump).toContain("importedat");
       expect(dump).toContain("2025");
+    });
+
+    it("rejects tagged binding on a field without a range index (XDMP-ELEMRIDXNOTFOUND)", async () => {
+      // 'source' is a json-property in the seed but has NO range index. cts.parse SJS
+      // function bindings are XQuery-only — there is no SJS path that does tagged
+      // equality without a range index. This MUST surface as an error so the agent
+      // falls back to bareword text search.
+      await expect(
+        clients.eval.parseCtsQuery("source:wikipedia", {
+          source: { type: "json-property", name: "source" },
+        })
+      ).rejects.toThrow();
     });
 
     it("raises on a malformed grammar (unmatched quote)", async () => {
@@ -113,15 +126,15 @@ describeIfLive("chat → MarkLogic pipeline (live)", () => {
       const indexLocalnames = (surface.rangeIndexes as Array<{ localname?: string }>).map((i) => i.localname);
       expect(indexLocalnames).toContain("importedAt");
 
-      // suggestedBindings must include an element-range binding for importedAt,
-      // ready to feed back into ml_parse_query.
+      // suggestedBindings must include an element-range binding for importedAt
+      // (the only seeded field with a range index), ready to feed into ml_parse_query.
       expect(surface.suggestedBindings.importedAt).toBeDefined();
       expect(surface.suggestedBindings.importedAt.type).toBe("element-range");
       expect(surface.suggestedBindings.importedAt.scalar_type).toBe("dateTime");
 
-      // And a bareword binding for the equality-friendly "source" property
-      expect(surface.suggestedBindings.source).toBeDefined();
-      expect(surface.suggestedBindings.source.type).toBe("json-property");
+      // 'source' has no range index → must appear in barewordFields, NOT in suggestedBindings.
+      expect(surface.suggestedBindings.source).toBeUndefined();
+      expect(surface.barewordFields).toEqual(expect.arrayContaining(["source", "title"]));
 
       // searchOptionsNames must be an array (default options set may or may not be present)
       expect(Array.isArray(surface.searchOptionsNames)).toBe(true);
@@ -140,18 +153,21 @@ describeIfLive("chat → MarkLogic pipeline (live)", () => {
       });
       const surface = JSON.parse(surfaceResp.content[0].text);
 
-      // STAGE 2 — translate (hand-written for determinism; in production an LLM emits this)
-      const qtext = "climate AND source:wikipedia";
-      const bindings = { source: surface.suggestedBindings.source };
+      // STAGE 2 — translate. In production the LLM picks tags from suggestedBindings and
+      // drops to bareword for everything else (per barewordFields). 'source' has no range
+      // index → the LLM searches it as the bareword "wikipedia" against the universal index.
+      // 'importedAt' is range-indexed → tag it.
+      const qtext = "climate AND wikipedia AND importedAt GE 2025-01-01";
+      const bindings = { importedAt: surface.suggestedBindings.importedAt };
 
       // STAGE 3 — validate (real cts.parse via the parseCtsQuery client)
       const parseResp = await tools.get("ml_parse_query")!({ qtext, bindings });
       expect(parseResp.isError).toBeUndefined();
       const parsedStructuredQuery = JSON.parse(parseResp.content[0].text);
-      // Sanity: the JSON references both tokens
       const dump = JSON.stringify(parsedStructuredQuery).toLowerCase();
       expect(dump).toContain("climate");
       expect(dump).toContain("wikipedia");
+      expect(dump).toContain("importedat");
 
       // STAGE 4a — execute via string grammar
       const stringExec = await tools.get("ml_search")!({
@@ -193,8 +209,8 @@ describeIfLive("chat → MarkLogic pipeline (live)", () => {
       expect(importedAtBinding).toBeDefined();
 
       // A range query that should match BOTH seed docs (their importedAt is 2026-01-01).
-      // Grammar: operator immediately after colon — no second colon between op and value.
-      const qtext = "importedAt:>=2025-01-01";
+      // Grammar: SPACED named operator — "field GE value", not "field:>=value".
+      const qtext = "importedAt GE 2025-01-01";
       const parseResp = await tools.get("ml_parse_query")!({
         qtext, bindings: { importedAt: importedAtBinding },
       });

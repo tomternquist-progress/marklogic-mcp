@@ -68,48 +68,42 @@ export class EvalClient {
     bindingsSpec?: Record<string, { type: string; name: string; scalar_type?: string; namespace?: string }>,
     database?: string
   ): Promise<EvalResult[]> {
-    // cts.parse accepts two binding flavours:
-    //   • cts:reference (range-index handle) — used for range comparisons (>=, <=, >, <).
-    //     ALWAYS requires a configured range index — cts.jsonPropertyReference("foo") will throw
-    //     XDMP-ELEMRIDXNOTFOUND when "foo" lacks a range-element index.
-    //   • A constructor function (value) => cts.query — cts.parse calls it with the right-hand
-    //     side of "tag:value" to obtain an equality query. No range index needed.
-    // We map "*-range" types to references and the rest to value-query constructors so
-    // an agent can tag equality matches against the universal index without configuring indexes.
+    // cts.parse SJS bindings accept ONLY cts.reference objects or pre-built cts.query.
+    // Function bindings ARE supported in XQuery but silently degenerate in SJS — they get
+    // called with the delimiter character ":" instead of the right-hand value, producing
+    // useless queries. Verified against MarkLogic 12 in CI.
+    //
+    // Implication: every tagged binding here requires a configured range index. For
+    // tags on non-indexed fields, the agent must use bareword search (universal index).
+    // ml_search_surface only emits suggestedBindings for fields that have a range index;
+    // it also lists "barewordFields" so the agent knows what to search via free text.
+    //
+    // The four logical kinds (json-property / element / path / field) each have a
+    // "-range" alias retained for documentation; behaviour is identical because both
+    // forms compile to the same cts.*Reference call.
     const script = `
 'use strict';
 const bindings = {};
 if (typeof bindingsSpec === 'object' && bindingsSpec !== null) {
   for (const tag of Object.keys(bindingsSpec)) {
     const b = bindingsSpec[tag];
-    const rangeOpts = b.scalar_type ? ['type=' + b.scalar_type] : ['type=string'];
+    const opts = ['type=' + (b.scalar_type || 'string')];
     switch (b.type) {
       case 'json-property':
-        bindings[tag] = function(val) { return cts.jsonPropertyValueQuery(b.name, val); };
-        break;
       case 'json-property-range':
-        bindings[tag] = cts.jsonPropertyReference(b.name, rangeOpts);
+        bindings[tag] = cts.jsonPropertyReference(b.name, opts);
         break;
       case 'element':
-        bindings[tag] = function(val) { return cts.elementValueQuery(fn.QName(b.namespace || '', b.name), val); };
-        break;
       case 'element-range':
-        bindings[tag] = cts.elementReference(fn.QName(b.namespace || '', b.name), rangeOpts);
+        bindings[tag] = cts.elementReference(fn.QName(b.namespace || '', b.name), opts);
         break;
       case 'path':
-        // Path-only equality (no range index) is not directly supported by cts.parse.
-        // Fall through to the range reference — if no path range index exists the error
-        // surfaces with the index-missing hint the agent can act on.
-        bindings[tag] = cts.pathReference(b.name);
-        break;
       case 'path-range':
-        bindings[tag] = cts.pathReference(b.name, rangeOpts);
+        bindings[tag] = cts.pathReference(b.name, opts);
         break;
       case 'field':
-        bindings[tag] = function(val) { return cts.fieldValueQuery(b.name, val); };
-        break;
       case 'field-range':
-        bindings[tag] = cts.fieldReference(b.name, rangeOpts);
+        bindings[tag] = cts.fieldReference(b.name, opts);
         break;
       default:
         throw new Error('Unknown binding type for tag ' + tag + ': ' + b.type);

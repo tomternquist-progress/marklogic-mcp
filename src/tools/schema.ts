@@ -111,9 +111,14 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
     "  • rangeIndexes[]     — range/geospatial indexes configured on the database\n" +
     "  • searchOptionsNames[] — named search-options sets available on the server (any of which can be\n" +
     "                          passed to ml_search via options= for tagged-grammar parsing and faceting)\n" +
-    "  • suggestedBindings  — pre-built ml_parse_query bindings map: maps each range-indexed field name\n" +
-    "                          to a {type, name, scalar_type} entry the agent can pass straight through\n" +
-    "                          to ml_parse_query when interpreting tagged queries like 'state:TX'\n\n" +
+    "  • suggestedBindings  — pre-built ml_parse_query bindings map: ONLY range-indexed fields. Each\n" +
+    "                          entry is a {type, name, scalar_type} ready to pass to ml_parse_query.\n" +
+    "                          cts.parse SJS requires a range index for every tagged binding — fields\n" +
+    "                          without one cannot be tagged.\n" +
+    "  • barewordFields[]   — top-level fields the agent saw in the sample but which have NO range\n" +
+    "                          index. These can be searched as bareword text via the universal index\n" +
+    "                          (e.g. ml_search q='wikipedia' finds docs whose 'source' is 'wikipedia'),\n" +
+    "                          but NOT tag-bound (q='source:wikipedia' will not work without an index)\n\n" +
     "GOOD NEXT STEPS:\n" +
     "  → For LLM query generation: feed the JSON into the nl_to_search_query prompt with the user's question\n" +
     "  → For programmatic queries: pick a field from inferredFields and a range index from rangeIndexes;\n" +
@@ -137,8 +142,9 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
           .map((o) => (typeof o === "string" ? o : (o as { name?: string })?.name))
           .filter((n): n is string => typeof n === "string" && n.length > 0);
 
-        // Build suggested bindings for ml_parse_query. Use range-indexed fields preferentially;
-        // fall back to top-level JSON properties from the inferred schema for word-style tags.
+        // Build suggested bindings for ml_parse_query — ONLY range-indexed fields, because
+        // cts.parse SJS requires a range index for any tagged binding. Non-indexed fields
+        // become "barewordFields" the agent can search via the universal index.
         const suggestedBindings: Record<string, { type: string; name: string; scalar_type?: string }> = {};
         for (const idx of discovery.rangeIndexes ?? []) {
           if (idx.type === "range-element" && idx.localname) {
@@ -163,16 +169,10 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
             };
           }
         }
-        // Also offer equality bindings on every top-level JSON property (no range index needed).
-        for (const field of discovery.inferredFields ?? []) {
-          // Only top-level fields (no slash) — nested paths can be added by the agent if needed.
-          if (!field.path.includes("/") && !suggestedBindings[field.path]) {
-            suggestedBindings[field.path] = {
-              type: "json-property",
-              name: field.path,
-            };
-          }
-        }
+        // Top-level fields without a range index → bareword-search candidates.
+        const barewordFields = (discovery.inferredFields ?? [])
+          .filter((f) => !f.path.includes("/") && !suggestedBindings[f.path])
+          .map((f) => f.path);
 
         const surface = {
           collection: collection ?? null,
@@ -182,10 +182,13 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
           rangeIndexes: discovery.rangeIndexes,
           searchOptionsNames: optionNames,
           suggestedBindings,
+          barewordFields,
           nextSteps: [
-            "To translate natural language → query: invoke the nl_to_search_query prompt with this surface as context.",
-            "To validate a string query: ml_parse_query qtext='...' bindings=<suggestedBindings or a subset>.",
-            "To execute: ml_search q='...' [options=<one of searchOptionsNames>] or structured_query=<from ml_parse_query>.",
+            "Tagged queries (e.g. 'importedAt GE 2025-01-01'): use entries from suggestedBindings — requires a range index.",
+            "Non-indexed fields (barewordFields): search as free text via the universal index — q='wikipedia' finds docs where source='wikipedia'.",
+            "Translate NL → query: invoke the nl_to_search_query prompt with this surface as context.",
+            "Validate a string query without executing: ml_parse_query qtext='...' bindings=<from suggestedBindings>.",
+            "Execute: ml_search q='...' [options=<one of searchOptionsNames>] or structured_query=<from ml_parse_query>.",
           ],
         };
         return { content: [{ type: "text", text: JSON.stringify(surface, null, 2) }] };

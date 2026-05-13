@@ -253,14 +253,19 @@ Write a single MarkLogic string-grammar query that captures the question. Rules:
   • Booleans: AND, OR, NOT, NEAR/k (k is an optional proximity distance)
   • Grouping: ( … )
   • Negation prefix: - or NOT
-  • Tagged constraints (only if the surface includes a binding or options_name defines the tag):
-        state:TX                       → equality on a json-property binding
-        age:>=65                       → range comparison; operators >= <= = != > <
-        enrolledOn:>=2024-01-01        → range on a dateTime binding (date strings auto-coerce)
-    GRAMMAR RULE — the comparison operator goes IMMEDIATELY after the colon. No second colon
-    after the operator. "age:GE:65" is INVALID — cts.parse rejects it with XDMP-UNEXPECTED.
+  • Tagged constraints (ONLY for fields in surface.suggestedBindings — these are the
+    range-indexed fields; cts.parse REQUIRES a range index for any tag):
+        importedAt:2026-01-01          → equality through a range index reference
+        age >= 65                      → range; ops are < <= = != > >= (symbol) or LT LE EQ NE GE GT (named)
+        enrolledOn GE 2024-01-01       → range on a dateTime binding (date strings auto-coerce)
+    GRAMMAR RULES (strict in cts.parse SJS):
+        - Comparison operators take SPACES on both sides: "age >= 65", NOT "age:>=65".
+        - Forms like "age:GE:65" are INVALID — cts.parse rejects with XDMP-UNEXPECTED.
+        - The ONLY colon allowed is the equality delimiter in "tag:value".
+  • For fields listed in surface.barewordFields (not range-indexed): DO NOT tag them.
+    Drop the field name and use the value as a bareword token — the universal index will
+    match it ("wikipedia" matches docs where source="wikipedia" without any index work).
   • If options_name is set, prefer the tag syntax for any field bound by that options set.
-  • If no binding exists for a needed field, fall back to a bareword and call it out in section 4.
 
 Output the query as a single line. Then on a new line: "Pass this as: ml_search q='<query>'\${optionsLine}"
 ${options_name ? `(\${optionsLine} resolves to " options='${options_name}'" for that line)` : ""}
