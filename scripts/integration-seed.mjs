@@ -142,6 +142,31 @@ async function mgmtGet(path) {
   }, `GET ${path}`);
 }
 
+/**
+ * POST a small SJS script to /v1/eval with Digest auth. Returns the raw
+ * response body. Used as the index-readiness probe — see waitUntilIndexesAreQueryable.
+ */
+async function digestEval(javascript) {
+  const url = `${BASE}/v1/eval`;
+  const body = new URLSearchParams({ javascript }).toString();
+  const headers = {
+    "Content-Type": "application/x-www-form-urlencoded",
+    Accept: "multipart/mixed",
+  };
+
+  let challenge;
+  try {
+    const res = await axios.post(url, body, { headers });
+    return res.data;
+  } catch (err) {
+    if (err.response?.status !== 401) throw err;
+    challenge = err.response.headers["www-authenticate"];
+  }
+  const auth = buildDigestAuth("POST", url, challenge);
+  const res = await axios.post(url, body, { headers: { ...headers, Authorization: auth } });
+  return res.data;
+}
+
 /** PUT to the Management API with Digest auth. */
 async function mgmtPut(path, body) {
   const url = `${MGMT}${path}?format=json`;
@@ -230,8 +255,13 @@ async function configureIndexes() {
     console.log("  ✓ Added geospatial-element-pair-index for location");
   }
 
-  // Wait until both indexes appear in a fresh GET (ML applies config asynchronously)
-  console.log("  Waiting for index configuration to take effect...");
+  // Two-stage wait — config-visible THEN queryable.
+  //
+  // Stage 1: the management-API GET shows the index in the database properties.
+  // This proves the cluster persisted the config change, but doesn't mean the
+  // indexer has loaded the new index yet — cts.elementReference() will still
+  // throw XDMP-ELEMRIDXNOTFOUND for several seconds after the GET succeeds.
+  console.log("  Waiting for index configuration to be visible...");
   await pollUntil(async () => {
     const updated = await mgmtGet(DB_PATH);
     const ri = updated["range-element-index"] ?? [];
@@ -244,7 +274,31 @@ async function configureIndexes() {
       : true;
     return okRange && okGeo;
   });
-  console.log("  ✓ Indexes confirmed active");
+  console.log("  ✓ Index config visible");
+
+  // Stage 2: probe with cts.elementReference until it RESOLVES — the only signal
+  // that proves the indexer has actually picked up the new range index and a
+  // tagged cts.parse query against it will succeed.
+  console.log("  Waiting for indexes to become queryable (cts.elementReference probe)...");
+  const probe = `
+'use strict';
+try {
+  cts.elementReference(fn.QName('', 'importedAt'), ['type=dateTime']);
+  'ok';
+} catch (e) {
+  'not-ready:' + (e.message || String(e));
+}
+`;
+  await pollUntil(async () => {
+    try {
+      const body = await digestEval(probe);
+      // /v1/eval returns multipart; the result body contains 'ok' on success.
+      return typeof body === "string" && body.includes("ok") && !body.includes("not-ready");
+    } catch {
+      return false;
+    }
+  }, 60_000, 1_000);
+  console.log("  ✓ Indexes are queryable");
 }
 
 async function main() {
