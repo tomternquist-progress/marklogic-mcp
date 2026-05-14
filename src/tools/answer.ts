@@ -35,6 +35,14 @@ interface SearchAttempt {
   decisionReason: string;
 }
 
+import {
+  ML_ANSWER_QUERY_SHAPE,
+  ML_CAPABILITIES_SHAPE,
+  ML_QUERY_RECIPE_SHAPE,
+} from "./answer-shapes.js";
+// Re-export for callers (and tests) that referenced the old answer.ts location.
+export { ML_ANSWER_QUERY_SHAPE, ML_CAPABILITIES_SHAPE, ML_QUERY_RECIPE_SHAPE };
+
 export function registerAnswerTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
     "ml_answer_query",
@@ -59,59 +67,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
     "TRANSLATION-ONLY MODE (translation_only=true): build and return the CTS, normalized values, " +
     "stage confidence, and runnable next_actions WITHOUT executing.\n\n" +
     "Use this for English questions over a known dataset. For unknown intents call ml_suggest_approach first.",
-    {
-      question: z.string().describe("Natural-language question, e.g. 'which items had type X?', 'which records mentioned Y?'"),
-      collection: z.string().optional().describe(
-        "Collection URI to search. If omitted, ml_answer_query routes to the best-matching collection " +
-        "(scored by name and field overlap with the question). Pass explicitly to skip routing."
-      ),
-      answer_mode: z.enum([
-        "rows",
-        "rows_deduped",
-        "rows_plus_rollup",
-        "titles",
-        "count",
-        "group",
-        "distinct",
-      ]).optional().describe(
-        "Shape of the answer to return (default: rows).\n" +
-        "  • rows              — flat rows with projected fields.\n" +
-        "  • rows_deduped      — rows collapsed by rows_unique_by (or preset).\n" +
-        "  • rows_plus_rollup  — rows + raw_count/unique_count.\n" +
-        "  • titles            — convenience shortcut: distinct values of the collection's title/name field (inferred from the schema), with counts. Built for 'which X' questions where the caller wants names, not rows.\n" +
-        "  • count             — total matching documents only.\n" +
-        "  • group(field)      — group matched rows by the named (or auto-picked) field.\n" +
-        "  • distinct(field)   — distinct values of the named (or auto-picked) field + counts."
-      ),
-      mode: z.enum(["strict", "balanced", "broad"]).optional().describe(
-        "Query strategy (default: balanced).\n" +
-        "  • strict   — structured value-query only; fail-fast if no exact match.\n" +
-        "  • balanced — value-query on the filter field, OR word-query on the collection's title field. Catches both indexed-value rows and title-mentions in one call.\n" +
-        "  • broad    — balanced + universal-index word-query for any residual text."
-      ),
-      group_by: z.string().optional().describe(
-        "Field to group/distinct by when answer_mode is 'group' or 'distinct'. If omitted the tool picks " +
-        "the strongest filter field."
-      ),
-      rows_unique_by: z.array(z.string()).optional().describe(
-        "Field paths to dedupe rows on. REQUIRED when answer_mode is rows_deduped or rows_plus_rollup — " +
-        "the tool does not infer business keys per dataset. Pick keys whose combination uniquely identifies " +
-        "an entity in your collection (typically an identifier + a discriminator field)."
-      ),
-      database: z.string().optional().describe(
-        "Database to search. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."
-      ),
-      max_results: z.number().int().positive().max(500).optional().describe(
-        "Cap the number of documents sampled for the answer (default: 50 for rows/count, 250 for group/distinct)."
-      ),
-      include_residual: z.boolean().optional().describe(
-        "When true, leftover non-alias words ('which disasters') are passed as a free-text q alongside the " +
-        "structured filter. Default false — suppressing the residual avoids accidental zero-results."
-      ),
-      translation_only: z.boolean().optional().describe(
-        "If true, build and return the CTS query + normalization trace + runnable example WITHOUT executing."
-      ),
-    },
+    ML_ANSWER_QUERY_SHAPE,
     async ({
       question,
       collection,
@@ -527,6 +483,16 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         timings.totalMs = Date.now() - startedAt;
         trace.attempts = attempts;
         trace.timings = timings;
+        // Concise summary of the rescue ladder — same data as attempts[]
+        // but reduced to (step, count, elapsedMs) so callers can see at a
+        // glance which stage produced the final result without parsing the
+        // full attempts log.
+        trace.rescueLadder = attempts.map((a) => ({
+          step: a.step,
+          count: a.count,
+          elapsedMs: a.elapsedMs,
+        }));
+        trace.successfulStep = attempts.find((a) => a.count > 0)?.step ?? null;
 
         const nextActions = buildActions();
 
@@ -740,15 +706,18 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
 
   server.tool(
     "ml_capabilities",
-    "RUNTIME CAPABILITY INTROSPECTION. Returns, per tool, the parameters this build actually supports. " +
-    "Use this to avoid trial-and-error when documentation and runtime drift apart: if a parameter is not " +
-    "listed here, this build does not accept it.\n\n" +
-    "Call with no arguments to enumerate every introspected tool, or pass tool='<name>' to inspect one. " +
-    "Currently covers the high-frequency NL/search/answer tools where contract drift has caused friction.",
-    {
-      tool: z.string().optional().describe("Tool name to inspect. Omit to list every introspected tool."),
-    },
-    async ({ tool }) => {
+    "RUNTIME CAPABILITY INTROSPECTION. Two modes:\n\n" +
+    "  1. Inspect mode: ml_capabilities tool='<name>' → returns the parameter manifest for that tool.\n" +
+    "     ml_capabilities (no args) → returns every introspected tool's manifest.\n\n" +
+    "  2. Payload-check mode: ml_capabilities tool='<name>' payload={...} → strips keys the tool does\n" +
+    "     not accept, suggests the closest accepted name for each dropped key, and returns the cleaned\n" +
+    "     payload + a warnings block. Useful for previewing a request before hitting strict Zod\n" +
+    "     validation errors — common when the same client targets multiple tool versions or when an\n" +
+    "     agent generates a superset payload from incomplete docs.\n\n" +
+    "If a parameter is not listed in this tool's output, this build does not accept it. Currently " +
+    "covers the high-frequency NL/search/answer tools where contract drift has caused friction.",
+    ML_CAPABILITIES_SHAPE,
+    async ({ tool, payload }) => {
       if (tool) {
         const cap = getCapability(tool);
         if (!cap) {
@@ -765,6 +734,46 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             exampleValid: closest ? { tool: closest } : { tool: allNames[0] },
           });
         }
+
+        // Payload-check mode: strip + warn + suggest closest names for drops.
+        if (payload && typeof payload === "object") {
+          const acceptedNames = new Set(cap.params.map((p) => p.name));
+          const cleanedPayload: Record<string, unknown> = {};
+          const droppedKeys: Array<{ key: string; closest?: string; reason: string }> = [];
+          for (const [k, v] of Object.entries(payload)) {
+            if (acceptedNames.has(k)) {
+              cleanedPayload[k] = v;
+              continue;
+            }
+            const closest = closestMatch(k, Array.from(acceptedNames));
+            droppedKeys.push({
+              key: k,
+              closest,
+              reason: closest
+                ? `Not accepted by ${tool}. Closest accepted name: "${closest}".`
+                : `Not accepted by ${tool}. Accepted: [${Array.from(acceptedNames).join(", ")}].`,
+            });
+          }
+          const warnings = droppedKeys.map(
+            (d) => `Dropped "${d.key}" — ${d.reason}`
+          );
+          const ready = droppedKeys.length === 0;
+          const result = {
+            tool,
+            mode: "payload_check" as const,
+            ready,
+            cleaned_payload: cleanedPayload,
+            dropped_keys: droppedKeys,
+            warnings,
+            note: ready
+              ? `Payload is valid for ${tool}. Submit cleaned_payload to that tool to execute.`
+              : `${droppedKeys.length} key(s) were dropped. Submit cleaned_payload to ${tool} to execute, ` +
+                `or correct the dropped keys (see closest/reason) and re-check.`,
+            capability: cap,
+          };
+          return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        }
+
         return { content: [{ type: "text", text: JSON.stringify(cap, null, 2) }] };
       }
       return {
@@ -784,14 +793,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
     "AVAILABLE RECIPES:\n" +
     QUERY_RECIPES.map((r) => `  • ${r.name} — ${r.description} (params: ${r.requiredParams.join(", ")})`).join("\n") +
     "\n\nCall with recipe='list' to enumerate without executing.",
-    {
-      recipe: z.string().describe("Name of the recipe (or 'list' to enumerate available recipes)"),
-      params: z.record(z.unknown()).optional().describe("Parameters for the recipe; check `requiredParams` in the catalog."),
-      execute: z.boolean().optional().describe(
-        "If true (default), execute the recipe immediately. If false, return only the constructed invocation for review."
-      ),
-      database: z.string().optional().describe("Database name passed through to the underlying tool."),
-    },
+    ML_QUERY_RECIPE_SHAPE,
     async ({ recipe, params, execute, database }) => {
       if (recipe === "list" || !recipe) {
         return {

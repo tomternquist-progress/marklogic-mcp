@@ -56,6 +56,45 @@ describe("ml_capabilities", () => {
     expect(Array.isArray(parsed.tools)).toBe(true);
     expect(parsed.tools.length).toBeGreaterThan(0);
   });
+
+  it("payload-check mode strips unknown keys and reports the closest accepted name", async () => {
+    const { tools } = setup();
+    const result = await tools.get("ml_capabilities")!({
+      tool: "ml_answer_query",
+      payload: {
+        question: "which records involved X",
+        collection: "c1",
+        // Unknown keys: a near-miss typo + a clearly-wrong key:
+        modee: "balanced",
+        unrelated_key: 7,
+      },
+    });
+    expect(result.isError).toBeUndefined();
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.mode).toBe("payload_check");
+    expect(parsed.ready).toBe(false);
+    expect(parsed.cleaned_payload).toEqual({
+      question: "which records involved X",
+      collection: "c1",
+    });
+    const dropped = parsed.dropped_keys.map((d: any) => d.key);
+    expect(dropped).toContain("modee");
+    expect(dropped).toContain("unrelated_key");
+    const modeeDrop = parsed.dropped_keys.find((d: any) => d.key === "modee");
+    expect(modeeDrop?.closest).toBe("mode");
+  });
+
+  it("payload-check mode returns ready=true when every key is accepted", async () => {
+    const { tools } = setup();
+    const result = await tools.get("ml_capabilities")!({
+      tool: "ml_answer_query",
+      payload: { question: "ok", collection: "c1", answer_mode: "rows" },
+    });
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.ready).toBe(true);
+    expect(parsed.dropped_keys).toEqual([]);
+    expect(parsed.warnings).toEqual([]);
+  });
 });
 
 describe("ml_query_recipe", () => {

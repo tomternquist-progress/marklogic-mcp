@@ -346,6 +346,19 @@ describe("ml_answer_query regression — 'which disasters involved hurricanes' m
     expect(typeof payload.has_more).toBe("boolean");
   });
 
+  it("trace includes a rescue-ladder summary plus successfulStep", async () => {
+    const { payload } = await callAnswerQuery({
+      question: "which disasters involved hurricanes",
+      collection: "fema-disasters",
+    });
+    const ladder = payload.trace.rescueLadder;
+    expect(Array.isArray(ladder)).toBe(true);
+    expect(ladder.length).toBeGreaterThan(0);
+    expect(ladder[0]).toMatchObject({ step: expect.stringMatching(/^primary:/), count: expect.any(Number) });
+    expect(typeof payload.trace.successfulStep).toBe("string");
+    expect(payload.trace.successfulStep).toMatch(/^primary:/);
+  });
+
   it("records every search attempt in trace.attempts[]", async () => {
     const { payload } = await callAnswerQuery({
       question: "which disasters involved hurricanes",
