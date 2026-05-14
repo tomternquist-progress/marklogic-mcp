@@ -24,6 +24,7 @@ import {
 } from "../utils/value-normalize.js";
 import { getCapability, TOOL_CAPABILITIES } from "../utils/capabilities.js";
 import { routeToCollection } from "../utils/collection-routing.js";
+import { closestMatch, makeToolError, newCorrelationId } from "../utils/tool-error.js";
 
 interface SearchAttempt {
   step: string;
@@ -130,9 +131,14 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
       const translationOnly = translation_only === true;
       const attempts: SearchAttempt[] = [];
 
+      const correlationId = newCorrelationId();
+      const startedAt = Date.now();
+      const timings: Record<string, number> = {};
+
       const trace: Record<string, unknown> = {
         question,
         answer_mode: mode,
+        correlationId,
       };
       const stageConfidence: Record<string, "high" | "medium" | "low"> = {
         collection: collection ? "high" : "low",
@@ -146,15 +152,14 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         let resolvedCollection = collection;
         let routingCandidates: Array<{ name: string; totalScore: number; documentCount: number }> = [];
         if (!resolvedCollection) {
-          // Pass the question's semantic tags to the router; it scores each
-          // candidate collection by overlap with that tag list (substring
-          // matched against the collection's inferred fields).
+          const routeStart = Date.now();
           const parsedForRouting = parseQuestionWithAliases(question, undefined);
           const route = await routeToCollection(clients, {
             question,
             parsedTags: parsedForRouting.fieldFilters.map((f) => f.tag),
             database,
           });
+          timings.routeMs = Date.now() - routeStart;
           routingCandidates = route.candidates.map((c) => ({
             name: c.name,
             totalScore: c.totalScore,
@@ -176,16 +181,20 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         trace.collection = resolvedCollection ?? null;
 
         // ── Stage 1: schema + observed values ────────────────────────────────
+        const discoverStart = Date.now();
         const { inferredFields, observedValuesByField } = await sampleScope(
           clients,
           resolvedCollection,
           database
         );
+        timings.discoverMs = Date.now() - discoverStart;
         trace.inferredFields = inferredFields.slice(0, 25);
 
         // ── Stage 2: NL parsing + tag resolution + filler strip ──────────────
+        const parseStart = Date.now();
         const parsed = parseQuestionWithAliases(question, resolvedCollection);
         const resolved = resolveFilters(parsed, inferredFields);
+        timings.parseMs = Date.now() - parseStart;
         const rawResidual = parsed.residual;
         const cleanedResidual = stripFiller(rawResidual);
         const droppedFiller = wordsRemoved(rawResidual, cleanedResidual);
@@ -363,13 +372,17 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
 
         // ── Translation-only short-circuit ───────────────────────────────────
         if (translationOnly) {
+          timings.totalMs = Date.now() - startedAt;
           trace.attempts = attempts;
+          trace.timings = timings;
           const payload = {
             translation_only: true,
             answer: "Translation produced — query NOT executed.",
             confidence: overallConfidence,
             stageConfidence,
             collection: resolvedCollection ?? null,
+            correlation_id: correlationId,
+            timings,
             normalizedFilters,
             cts: structuredQuery ?? null,
             ctsKind,
@@ -384,6 +397,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         }
 
         // ── Stage 5: execute ─────────────────────────────────────────────────
+        const executeStart = Date.now();
         let search = await runSearch(
           `primary:${strategy}`,
           ctsKind ? `${strategy} strategy with ${ctsKind} root` : "no structured filter (full-scope)",
@@ -509,7 +523,10 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
           }
         }
 
+        timings.executeMs = Date.now() - executeStart;
+        timings.totalMs = Date.now() - startedAt;
         trace.attempts = attempts;
+        trace.timings = timings;
 
         const nextActions = buildActions();
 
@@ -522,12 +539,18 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             database,
             clients
           );
+          timings.totalMs = Date.now() - startedAt;
+          trace.timings = timings;
           const payload = {
             answer: "No matching documents.",
             total: 0,
+            returned: 0,
+            has_more: false,
             confidence: overallConfidence,
             stageConfidence,
             collection: resolvedCollection ?? null,
+            correlation_id: correlationId,
+            timings,
             trace,
             rescue,
             assumptions,
@@ -540,9 +563,13 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
           const payload = {
             answer: `${search.total} matching documents`,
             total: search.total,
+            returned: 0,
+            has_more: search.total > 0,
             confidence: overallConfidence,
             stageConfidence,
             collection: resolvedCollection ?? null,
+            correlation_id: correlationId,
+            timings,
             assumptions,
             next_actions: nextActions,
             trace,
@@ -562,10 +589,19 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             ? (titleField ?? group_by ?? candidateFields[0])
             : group_by ?? (normalizedFilters[0]?.field as string | undefined) ?? candidateFields[0];
           if (!aggField) {
-            return {
-              content: [{ type: "text", text: "No aggregation field could be inferred from the question." }],
-              isError: true,
-            };
+            return makeToolError({
+              code: "INVALID_PARAMETER",
+              class: "user_input",
+              message: "No aggregation field could be inferred from the question.",
+              hint: `Pass group_by=<field>. Discovered fields: [${inferredFields.slice(0, 8).join(", ")}].`,
+              exampleValid: {
+                question,
+                collection: resolvedCollection,
+                answer_mode: mode,
+                group_by: inferredFields[0] ?? "<field>",
+              },
+              correlationId,
+            });
           }
           const aggFields = candidateFields.includes(aggField)
             ? candidateFields
@@ -584,6 +620,8 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
               : `${values.length} distinct ${aggField} values across ${aggRows.length} matched documents`,
             total: search.total,
             total_documents: search.total,
+            returned: values.length,
+            has_more: false,
             sampled: aggRows.length,
             field: aggField,
             values,
@@ -591,6 +629,8 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             confidence: overallConfidence,
             stageConfidence,
             collection: resolvedCollection ?? null,
+            correlation_id: correlationId,
+            timings,
             assumptions,
             next_actions: nextActions,
             trace,
@@ -610,23 +650,31 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
 
         if (mode === "rows_deduped" || mode === "rows_plus_rollup") {
           if (!dedupeKeys || !dedupeKeys.length) {
-            const hint = inferredFields.length
-              ? `Discovered fields in this collection: [${inferredFields.slice(0, 8).join(", ")}].`
-              : `Call ml_search_surface to discover field names first.`;
-            return {
-              content: [{
-                type: "text",
-                text:
-                  `${mode} requires rows_unique_by=['field1','field2',...] — the tool does not infer ` +
-                  `business keys per dataset. ${hint}`,
-              }],
-              isError: true,
-            };
+            const sampleKey = inferredFields.length ? inferredFields.slice(0, 2) : ["<id>", "<discriminator>"];
+            return makeToolError({
+              code: "MISSING_PARAMETER",
+              class: "user_input",
+              message: `${mode} requires rows_unique_by — the tool does not infer business keys per dataset.`,
+              hint:
+                `Pick keys whose combination uniquely identifies an entity in this collection. ` +
+                (inferredFields.length
+                  ? `Discovered fields: [${inferredFields.slice(0, 8).join(", ")}].`
+                  : `Call ml_search_surface to discover field names first.`),
+              exampleValid: {
+                question,
+                collection: resolvedCollection,
+                answer_mode: mode,
+                rows_unique_by: sampleKey,
+              },
+              correlationId,
+            });
           }
           const { unique, uniqueCount } = dedupeRows(rows, dedupeKeys);
           const payload: Record<string, unknown> = {
             answer: `${uniqueCount} unique entities across ${rows.length} matched rows`,
             total: search.total,
+            returned: unique.length,
+            has_more: rows.length < search.total,
             raw_count: rows.length,
             unique_count: uniqueCount,
             dedupe_keys: dedupeKeys,
@@ -634,6 +682,8 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             confidence: overallConfidence,
             stageConfidence,
             collection: resolvedCollection ?? null,
+            correlation_id: correlationId,
+            timings,
             assumptions,
             next_actions: nextActions,
             trace,
@@ -662,26 +712,28 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             : `Showing first ${rows.length} of ${search.total} matches`,
           total: search.total,
           total_documents: search.total,
+          returned: rows.length,
+          has_more: rows.length < search.total,
           rows,
           distinct_titles: distinctTitlesInline,
           confidence: overallConfidence,
           stageConfidence,
           collection: resolvedCollection ?? null,
+          correlation_id: correlationId,
+          timings,
           assumptions,
           next_actions: nextActions,
           trace,
         };
         return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
       } catch (err) {
-        return {
-          content: [{
-            type: "text",
-            text: toToolError(err) +
-              "\nHint: ml_answer_query relies on ml_search + schema discovery. " +
-              "If discovery fails, retry with an explicit `collection` and `database` parameter.",
-          }],
-          isError: true,
-        };
+        return makeToolError({
+          code: "UPSTREAM_FAILURE",
+          class: "upstream",
+          message: toToolError(err),
+          hint: "ml_answer_query relies on ml_search + schema discovery. Retry with an explicit `collection` and `database`, or call ml_search_surface first to verify the scope is reachable.",
+          correlationId,
+        });
       }
     }
   );
@@ -700,13 +752,18 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
       if (tool) {
         const cap = getCapability(tool);
         if (!cap) {
-          return {
-            content: [{
-              type: "text",
-              text: `No capability manifest for "${tool}". Available: ${TOOL_CAPABILITIES.map((c) => c.name).join(", ")}.`,
-            }],
-            isError: true,
-          };
+          const allNames = TOOL_CAPABILITIES.map((c) => c.name);
+          const closest = closestMatch(tool, allNames);
+          return makeToolError({
+            code: "UNKNOWN_NAME",
+            class: "user_input",
+            message: `No capability manifest for "${tool}".`,
+            hint: closest
+              ? `Did you mean "${closest}"? Otherwise: ${allNames.join(", ")}.`
+              : `Available tools: ${allNames.join(", ")}.`,
+            details: { available: allNames, closest },
+            exampleValid: closest ? { tool: closest } : { tool: allNames[0] },
+          });
         }
         return { content: [{ type: "text", text: JSON.stringify(cap, null, 2) }] };
       }
@@ -747,26 +804,35 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
 
       const def = findRecipe(recipe);
       if (!def) {
-        return {
-          content: [{
-            type: "text",
-            text: `Unknown recipe "${recipe}". Call with recipe='list' to see available templates.`,
-          }],
-          isError: true,
-        };
+        const names = QUERY_RECIPES.map((r) => r.name);
+        const closest = closestMatch(recipe, names);
+        return makeToolError({
+          code: "UNKNOWN_NAME",
+          class: "user_input",
+          message: `Unknown recipe "${recipe}".`,
+          hint: closest
+            ? `Did you mean "${closest}"? Otherwise call recipe='list' to enumerate.`
+            : `Call recipe='list' to see available templates.`,
+          details: { available: names, closest },
+          exampleValid: closest ? { recipe: closest, params: {} } : { recipe: "list" },
+        });
       }
 
       const merged = { ...(params ?? {}) };
       const missing = def.requiredParams.filter((p) => merged[p] == null);
       if (missing.length) {
-        return {
-          content: [{
-            type: "text",
-            text: `Recipe "${recipe}" requires: ${missing.join(", ")}. ` +
-              `Provided: ${Object.keys(merged).join(", ") || "<none>"}.`,
-          }],
-          isError: true,
-        };
+        const example: Record<string, unknown> = { recipe: def.name, params: {} };
+        for (const p of def.requiredParams) {
+          (example.params as Record<string, unknown>)[p] = `<${p}>`;
+        }
+        return makeToolError({
+          code: "MISSING_PARAMETER",
+          class: "user_input",
+          message: `Recipe "${recipe}" is missing required parameter(s): ${missing.join(", ")}.`,
+          hint: `Required: ${def.requiredParams.join(", ")}. Provided: ${Object.keys(merged).join(", ") || "<none>"}.`,
+          details: { missing, required: def.requiredParams },
+          exampleValid: example,
+        });
       }
 
       const invocation = def.build(merged);
