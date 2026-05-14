@@ -5,6 +5,8 @@ import {
   parseQuestionWithAliases,
   projectField,
   projectRow,
+  resolveFilters,
+  resolveTagToField,
 } from "../../src/utils/projection.js";
 
 describe("projectField", () => {
@@ -104,16 +106,15 @@ describe("aggregateByField", () => {
 });
 
 describe("parseQuestionWithAliases", () => {
-  it("maps 'involved hurricanes' to incidentType", () => {
-    const parsed = parseQuestionWithAliases("which disasters involved hurricanes?");
+  it("maps 'involved <phrase>' to the semantic 'type' tag", () => {
+    const parsed = parseQuestionWithAliases("which records involved hurricanes?");
     expect(parsed.fieldFilters).toContainEqual(
-      expect.objectContaining({ field: "incidentType", phrase: "hurricanes" })
+      expect.objectContaining({ tag: "type", phrase: "hurricanes" })
     );
   });
 
   it("returns residual text after consuming aliases", () => {
-    const parsed = parseQuestionWithAliases("show me disasters in state Florida");
-    // "state Florida" → field=state phrase=florida (state alias)
+    const parsed = parseQuestionWithAliases("show me records in state Florida");
     expect(parsed.fieldFilters.length).toBeGreaterThan(0);
   });
 
@@ -121,5 +122,25 @@ describe("parseQuestionWithAliases", () => {
     const parsed = parseQuestionWithAliases("hello world");
     expect(parsed.fieldFilters).toHaveLength(0);
     expect(parsed.residual).toBe("hello world");
+  });
+});
+
+describe("resolveTagToField", () => {
+  it("returns exact-match field", () => {
+    expect(resolveTagToField("type", ["type", "name"])).toBe("type");
+  });
+  it("returns suffix match", () => {
+    expect(resolveTagToField("type", ["incidentType", "state"])).toBe("incidentType");
+  });
+  it("returns prefix match", () => {
+    expect(resolveTagToField("type", ["typeName", "state"])).toBe("typeName");
+  });
+  it("returns undefined when nothing matches", () => {
+    expect(resolveTagToField("type", ["foo", "bar"])).toBeUndefined();
+  });
+  it("resolveFilters maps a parsed result against inferred fields", () => {
+    const parsed = parseQuestionWithAliases("which records involved hurricanes");
+    const resolved = resolveFilters(parsed, ["incidentType", "state"]);
+    expect(resolved[0]).toMatchObject({ tag: "type", field: "incidentType", phrase: "hurricanes" });
   });
 });

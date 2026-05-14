@@ -123,25 +123,30 @@ pitfalls → alternatives) before any tool is called.
     For a user question against a known dataset ("which X involved Y?"), call
     ml_answer_query. It:
       • AUTO-ROUTES to the best-matching collection if you don't specify one
-        (scored by name + field-overlap with the question — fixes the "wrong
-        domain" failure mode where pharmacy hits leak into a disasters question).
-      • Parses the question via an alias dictionary, NORMALIZES the phrase
-        against observed values (so "hurricanes" → indexed "Hurricane",
-        including Damerau-distance-1 typos like "hurricaen").
+        (scored by name + tag-overlap with the question — avoids the "wrong
+        domain" failure mode where unrelated collections leak into the answer).
+      • Parses the question into semantic tags (type, title, location, date,
+        identifier, status) and resolves each tag to an actual inferred field
+        in the target collection (e.g. the "type" tag resolves to whichever
+        field the dataset actually uses — incidentType, drugType, eventType,
+        etc.).
+      • NORMALIZES each phrase against observed values (so "hurricanes" →
+        whichever canonical casing/form the collection indexes, including
+        Damerau-distance-1 typo recovery).
       • Builds a structured value-query, projects readable rows, returns
         per-stage confidence (collection / fieldMapping / valueGrounding) and a
         next_actions list of runnable rewrites.
       • On zero hits: auto-rescues by rewriting filters from closestValues,
         then word-query, then residual.
-    Residual filler ("which disasters") is suppressed by default. Pass
+    NL filler ("which", "show me") is stripped from any residual; the residual
+    itself is suppressed by default to avoid over-constraint. Pass
     translation_only=true to inspect the generated CTS without executing. Pass
     answer_mode=rows_deduped (or rows_plus_rollup) with rows_unique_by=[...]
-    when the dataset has row-vs-entity inflation (FEMA county-level rows vs
-    unique disasters). Pass answer_mode=titles for the "give me the names of X"
-    shortcut. Pass mode=balanced (default) to union value-query with
-    word-query on the title field — catches both indexed-value rows AND
-    title-mentions in one call ("Hurricane Helene" with incidentType="Severe
-    Storm" is still found).
+    when the dataset has row-vs-entity inflation (e.g. one row per geographic
+    sub-unit but the caller wants one row per entity). Pass answer_mode=titles
+    for the "give me the names" shortcut. Pass mode=balanced (default) to union
+    value-query with word-query on the inferred title field — catches both
+    indexed-value rows AND title-mentions in one call.
 
     Every response includes trace.attempts[] with the CTS, count, and elapsed
     ms for each search call the tool made — so operators can debug the chain

@@ -7,7 +7,9 @@ import {
   parseQuestionWithAliases,
   projectField,
   projectRow,
+  resolveFilters,
   type ProjectedRow,
+  type ResolvedFilter,
 } from "../utils/projection.js";
 import {
   findRecipe,
@@ -22,30 +24,6 @@ import {
 } from "../utils/value-normalize.js";
 import { getCapability, TOOL_CAPABILITIES } from "../utils/capabilities.js";
 import { routeToCollection } from "../utils/collection-routing.js";
-
-// Per-collection presets: dedupe keys + canonical business fields that should
-// always surface in row projection when present. Add new entries when a
-// public dataset needs row-vs-entity disambiguation or has well-known
-// "headline" fields the caller expects to see.
-interface CollectionPreset {
-  dedupeKeys: string[];
-  canonicalFields: string[];
-  /** Field most useful for word-query fallback in balanced/broad mode. */
-  titleField?: string;
-}
-
-const COLLECTION_PRESETS: Record<string, CollectionPreset> = {
-  "fema-disasters": {
-    dedupeKeys: ["disasterNumber", "state", "declarationTitle"],
-    canonicalFields: ["disasterNumber", "declarationTitle", "incidentType", "state", "designatedArea", "declarationDate"],
-    titleField: "declarationTitle",
-  },
-  "fema-disaster-declarations": {
-    dedupeKeys: ["disasterNumber", "state", "declarationTitle"],
-    canonicalFields: ["disasterNumber", "declarationTitle", "incidentType", "state", "designatedArea", "declarationDate"],
-    titleField: "declarationTitle",
-  },
-};
 
 interface SearchAttempt {
   step: string;
@@ -81,7 +59,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
     "stage confidence, and runnable next_actions WITHOUT executing.\n\n" +
     "Use this for English questions over a known dataset. For unknown intents call ml_suggest_approach first.",
     {
-      question: z.string().describe("Natural-language question, e.g. 'which disasters involved hurricanes?'"),
+      question: z.string().describe("Natural-language question, e.g. 'which items had type X?', 'which records mentioned Y?'"),
       collection: z.string().optional().describe(
         "Collection URI to search. If omitted, ml_answer_query routes to the best-matching collection " +
         "(scored by name and field overlap with the question). Pass explicitly to skip routing."
@@ -99,7 +77,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         "  • rows              — flat rows with projected fields.\n" +
         "  • rows_deduped      — rows collapsed by rows_unique_by (or preset).\n" +
         "  • rows_plus_rollup  — rows + raw_count/unique_count.\n" +
-        "  • titles            — convenience shortcut: distinct values of the collection's title field (e.g. declarationTitle), with counts. Built for 'which X' questions where the caller wants names, not rows.\n" +
+        "  • titles            — convenience shortcut: distinct values of the collection's title/name field (inferred from the schema), with counts. Built for 'which X' questions where the caller wants names, not rows.\n" +
         "  • count             — total matching documents only.\n" +
         "  • group(field)      — group matched rows by the named (or auto-picked) field.\n" +
         "  • distinct(field)   — distinct values of the named (or auto-picked) field + counts."
@@ -115,8 +93,9 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         "the strongest filter field."
       ),
       rows_unique_by: z.array(z.string()).optional().describe(
-        "Field paths to dedupe rows on (only used by rows_deduped / rows_plus_rollup). When omitted, the " +
-        "tool looks up a built-in dedupe preset by collection name (e.g. fema-disasters → disasterNumber+state+declarationTitle)."
+        "Field paths to dedupe rows on. REQUIRED when answer_mode is rows_deduped or rows_plus_rollup — " +
+        "the tool does not infer business keys per dataset. Pick keys whose combination uniquely identifies " +
+        "an entity in your collection (typically an identifier + a discriminator field)."
       ),
       database: z.string().optional().describe(
         "Database to search. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."
@@ -167,11 +146,13 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         let resolvedCollection = collection;
         let routingCandidates: Array<{ name: string; totalScore: number; documentCount: number }> = [];
         if (!resolvedCollection) {
+          // Pass the question's semantic tags to the router; it scores each
+          // candidate collection by overlap with that tag list (substring
+          // matched against the collection's inferred fields).
           const parsedForRouting = parseQuestionWithAliases(question, undefined);
-          const parsedFields = parsedForRouting.fieldFilters.map((f) => f.field);
           const route = await routeToCollection(clients, {
             question,
-            parsedFields,
+            parsedTags: parsedForRouting.fieldFilters.map((f) => f.tag),
             database,
           });
           routingCandidates = route.candidates.map((c) => ({
@@ -202,27 +183,39 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         );
         trace.inferredFields = inferredFields.slice(0, 25);
 
-        // ── Stage 2: NL parsing + filler strip ───────────────────────────────
+        // ── Stage 2: NL parsing + tag resolution + filler strip ──────────────
         const parsed = parseQuestionWithAliases(question, resolvedCollection);
+        const resolved = resolveFilters(parsed, inferredFields);
         const rawResidual = parsed.residual;
         const cleanedResidual = stripFiller(rawResidual);
         const droppedFiller = wordsRemoved(rawResidual, cleanedResidual);
-        trace.parsedFilters = parsed.fieldFilters;
+        trace.parsedFilters = resolved;
         trace.residualRaw = rawResidual || undefined;
         trace.residualCleaned = cleanedResidual || undefined;
         trace.droppedFillerWords = droppedFiller;
 
-        // Field-mapping confidence: did we land on aliased fields that the
-        // collection actually exposes?
-        if (parsed.fieldFilters.length === 0) {
+        // Field-mapping confidence: did every tag resolve to an actual field?
+        if (resolved.length === 0) {
           stageConfidence.fieldMapping = "low";
         } else {
-          const allKnown = parsed.fieldFilters.every((f) => inferredFields.includes(f.field));
-          stageConfidence.fieldMapping = allKnown ? "high" : "medium";
+          const allResolved = resolved.every((f) => f.field !== undefined);
+          stageConfidence.fieldMapping = allResolved ? "high" : resolved.some((f) => f.field) ? "medium" : "low";
         }
 
         // ── Stage 3: value normalization (in-collection) ─────────────────────
-        const normalizedFilters = parsed.fieldFilters.map((f) => {
+        // Drop filters whose tag did not resolve to a field — the caller is
+        // notified via stageConfidence and assumptions; falling back to
+        // bareword is handled by the rescue layers.
+        const groundedFilters = resolved.filter((f): f is ResolvedFilter & { field: string } => !!f.field);
+        for (const f of resolved) {
+          if (!f.field) {
+            assumptions.push(
+              `Could not ground semantic tag "${f.tag}" against any inferred field in this collection. ` +
+              `Inferred fields: [${inferredFields.slice(0, 10).join(", ")}].`
+            );
+          }
+        }
+        const normalizedFilters = groundedFilters.map((f) => {
           const observed = observedValuesByField.get(f.field) ?? [];
           const candidates = valueCandidates(f.phrase);
           let matched: { value: string; via: string } | undefined;
@@ -240,6 +233,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             ? matched.via === "exact" || matched.via === "singular" ? "high" : "medium"
             : observed.length ? "low" : "medium";
           return {
+            tag: f.tag,
             field: f.field,
             originalPhrase: f.phrase,
             matchedAlias: f.matchedAlias,
@@ -259,7 +253,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         }
 
         // ── Stage 4: build CTS — strategy-aware ──────────────────────────────
-        const titleField = presetTitleField(resolvedCollection) ?? inferTitleField(inferredFields);
+        const titleField = inferTitleField(inferredFields);
         const valueSubQueries = normalizedFilters.map((f) => ({
           "value-query": {
             "json-property": f.field,
@@ -278,11 +272,11 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             ctsKind = "value-query";
           } else {
             // balanced + broad: union value-query with word-query on the
-            // title field for each parsed phrase, so "involved hurricanes"
-            // also matches titles like "Hurricane Helene". Use the union of
-            // the normalised values + the original phrase so the word-query
-            // catches both "Hurricane" and "hurricanes" without depending on
-            // MarkLogic's stemming rules.
+            // title field for each parsed phrase, so a user's noun ("X")
+            // matches both a categorical field whose value is "X" AND
+            // titles that mention "X". Use the union of the normalised
+            // values + the original phrase so the word-query catches both
+            // forms without depending on MarkLogic's stemming rules.
             const titleClauses: Array<Record<string, unknown>> = [];
             if (titleField) {
               for (const f of normalizedFilters) {
@@ -317,7 +311,10 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         const effectiveQ = useResidual ? cleanedResidual || undefined : undefined;
         trace.residualApplied = useResidual ? effectiveQ : null;
 
-        const candidateFields = pickProjectionFields(parsed, inferredFields, resolvedCollection);
+        const candidateFields = pickProjectionFields(
+          normalizedFilters.map((f) => f.field),
+          inferredFields
+        );
         trace.projectionFields = candidateFields;
 
         // Wrapper that records every search call into trace.attempts[] so
@@ -475,9 +472,9 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
 
         // Layer 2: word-query on the original phrase against the filter field.
         if (search.total === 0 && valueSubQueries.length) {
-          const wordSubQueries = parsed.fieldFilters.map((f) => ({
+          const wordSubQueries = normalizedFilters.map((f) => ({
             "word-query": {
-              text: [f.phrase],
+              text: [f.originalPhrase],
               "json-property": f.field,
             },
           }));
@@ -517,7 +514,14 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         const nextActions = buildActions();
 
         if (search.total === 0) {
-          const rescue = await buildRescue(parsed, candidateFields, resolvedCollection, database, clients);
+          const rescue = await buildRescue(
+            normalizedFilters,
+            cleanedResidual.length > 0,
+            candidateFields,
+            resolvedCollection,
+            database,
+            clients
+          );
           const payload = {
             answer: "No matching documents.",
             total: 0,
@@ -551,12 +555,12 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         const docs = await clients.search.fetchDocs(uris, database);
 
         // For dedupe modes we need projection fields to include the dedupe keys.
-        const dedupeKeys = resolveDedupeKeys(rows_unique_by, resolvedCollection, mode);
+        const dedupeKeys = resolveDedupeKeys(rows_unique_by, mode);
 
         if (mode === "group" || mode === "distinct" || mode === "titles") {
           const aggField = mode === "titles"
             ? (titleField ?? group_by ?? candidateFields[0])
-            : group_by ?? (parsed.fieldFilters[0]?.field as string | undefined) ?? candidateFields[0];
+            : group_by ?? (normalizedFilters[0]?.field as string | undefined) ?? candidateFields[0];
           if (!aggField) {
             return {
               content: [{ type: "text", text: "No aggregation field could be inferred from the question." }],
@@ -606,13 +610,15 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
 
         if (mode === "rows_deduped" || mode === "rows_plus_rollup") {
           if (!dedupeKeys || !dedupeKeys.length) {
+            const hint = inferredFields.length
+              ? `Discovered fields in this collection: [${inferredFields.slice(0, 8).join(", ")}].`
+              : `Call ml_search_surface to discover field names first.`;
             return {
               content: [{
                 type: "text",
                 text:
-                  `${mode} requires rows_unique_by= or a built-in preset for the collection. ` +
-                  `No preset is registered for "${resolvedCollection ?? '<unscoped>'}". ` +
-                  `Pass rows_unique_by=['field1','field2'].`,
+                  `${mode} requires rows_unique_by=['field1','field2',...] — the tool does not infer ` +
+                  `business keys per dataset. ${hint}`,
               }],
               isError: true,
             };
@@ -898,31 +904,20 @@ function buildNextActions(input: NextActionsInput): RunnableAction[] {
 
 function resolveDedupeKeys(
   explicit: string[] | undefined,
-  collection: string | undefined,
   mode: string
 ): string[] | undefined {
   if (mode !== "rows_deduped" && mode !== "rows_plus_rollup") return undefined;
   if (explicit?.length) return explicit;
-  if (!collection) return undefined;
-  return COLLECTION_PRESETS[collection]?.dedupeKeys;
-}
-
-function presetCanonicalFields(collection: string | undefined): string[] {
-  if (!collection) return [];
-  return COLLECTION_PRESETS[collection]?.canonicalFields ?? [];
-}
-
-function presetTitleField(collection: string | undefined): string | undefined {
-  if (!collection) return undefined;
-  return COLLECTION_PRESETS[collection]?.titleField;
+  return undefined;
 }
 
 /**
- * Best-effort title-field inference for collections without a registered
- * preset. Looks for the conventional "title" / "name" / "*Title" patterns.
+ * Best-effort title-field inference. Looks for conventional "title" / "name"
+ * / "*Title" / "*Name" patterns in the discovered fields. Used for the
+ * balanced-mode word-query union and for the `titles` answer mode.
  */
 function inferTitleField(inferred: string[]): string | undefined {
-  const priorities = ["declarationTitle", "title", "name", "displayName", "label"];
+  const priorities = ["title", "name", "displayName", "label"];
   for (const p of priorities) {
     if (inferred.includes(p)) return p;
   }
@@ -1029,39 +1024,22 @@ function combineStageConfidence(
 }
 
 function pickProjectionFields(
-  parsed: ReturnType<typeof parseQuestionWithAliases>,
-  inferred: string[],
-  collection: string | undefined
+  filterFields: string[],
+  inferred: string[]
 ): string[] {
   const priority: string[] = [];
-  // 1. Filter fields the question targeted — always relevant to the answer.
-  for (const f of parsed.fieldFilters) {
-    if (!priority.includes(f.field)) priority.push(f.field);
+  // 1. Resolved filter fields the question targeted — always relevant.
+  for (const f of filterFields) {
+    if (f && !priority.includes(f)) priority.push(f);
   }
-  // 2. Collection preset's canonical fields — guarantee these show up when
-  //    the collection has them, so chat consumers always get the "business
-  //    fields" (disasterNumber, declarationTitle, state, incidentType).
-  for (const f of presetCanonicalFields(collection)) {
-    if (!priority.includes(f) && (inferred.length === 0 || inferred.includes(f))) {
-      priority.push(f);
-    }
+  // 2. Generic headline-style fields (title/name/identifier) — common across
+  //    most datasets and useful for chat-scale display when present.
+  for (const f of inferred) {
+    if (priority.length >= 8) break;
+    if (priority.includes(f)) continue;
+    if (/title$|name$|^id$|Id$|Number$|Date$/i.test(f)) priority.push(f);
   }
-  // 3. Generic headline-field fallback for unknown datasets.
-  for (const f of [
-    "declarationTitle",
-    "title",
-    "name",
-    "incidentType",
-    "state",
-    "designatedArea",
-    "declarationDate",
-    "incidentBeginDate",
-  ]) {
-    if (!priority.includes(f) && (inferred.length === 0 || inferred.includes(f))) {
-      priority.push(f);
-    }
-  }
-  // 4. Round out with discovered fields.
+  // 3. Round out with whatever else the collection exposes.
   for (const f of inferred) {
     if (priority.length >= 8) break;
     if (!priority.includes(f) && !f.includes(".")) priority.push(f);
@@ -1077,7 +1055,8 @@ interface RescuePayload {
 }
 
 async function buildRescue(
-  parsed: ReturnType<typeof parseQuestionWithAliases>,
+  normalizedFilters: Array<{ field: string; originalPhrase: string }>,
+  hasResidual: boolean,
   candidateFields: string[],
   collection: string | undefined,
   database: string | undefined,
@@ -1104,11 +1083,11 @@ async function buildRescue(
   }
 
   const suggestions: string[] = [];
-  if (parsed.fieldFilters.length) {
-    const f = parsed.fieldFilters[0];
+  if (normalizedFilters.length) {
+    const f = normalizedFilters[0];
     suggestions.push(`Try matching on actual ${f.field} values — see closestValues above.`);
-    suggestions.push(`Loosen the filter: ml_search q="${f.phrase}" collection="${collection ?? '<scope>'}"`);
-  } else if (parsed.residual) {
+    suggestions.push(`Loosen the filter: ml_search q="${f.originalPhrase}" collection="${collection ?? '<scope>'}"`);
+  } else if (hasResidual) {
     suggestions.push(`No alias matched. Pick a field from candidateFields and call ml_search with select_fields=['<field>'].`);
   } else {
     suggestions.push("Question parsed to no filters and no free text. Restate with specific terms.");

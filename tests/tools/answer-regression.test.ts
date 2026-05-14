@@ -214,16 +214,38 @@ describe("ml_answer_query regression — 'which disasters involved hurricanes' m
     expect(Array.isArray(payload.distinct_titles)).toBe(true);
   });
 
-  it("rows_plus_rollup returns raw_count and unique_count", async () => {
+  it("rows_plus_rollup requires explicit rows_unique_by and returns raw_count + unique_count", async () => {
     const { payload } = await callAnswerQuery({
       question: "which disasters involved hurricanes",
       collection: "fema-disasters",
       answer_mode: "rows_plus_rollup",
+      rows_unique_by: ["disasterNumber", "state", "declarationTitle"],
     });
 
     expect(payload.raw_count).toBeGreaterThan(0);
     expect(payload.unique_count).toBeLessThanOrEqual(payload.raw_count);
     expect(payload.rollup?.dedupe_keys).toEqual(["disasterNumber", "state", "declarationTitle"]);
+  });
+
+  it("rows_plus_rollup without rows_unique_by returns an actionable error", async () => {
+    const { server, tools } = (() => {
+      const tools = new Map<string, ToolHandler>();
+      const server = {
+        tool: (name: string, _desc: string, _schema: any, handler: ToolHandler) => {
+          tools.set(name, handler);
+        },
+      };
+      return { server, tools };
+    })();
+    const clients = makeClients();
+    registerAnswerTools(server as never, clients as never);
+    const result = await tools.get("ml_answer_query")!({
+      question: "which disasters involved hurricanes",
+      collection: "fema-disasters",
+      answer_mode: "rows_plus_rollup",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/rows_unique_by/);
   });
 
   it("translation_only returns CTS without executing", async () => {
@@ -242,6 +264,68 @@ describe("ml_answer_query regression — 'which disasters involved hurricanes' m
     const attempts = payload.trace.attempts ?? [];
     expect(attempts.length).toBe(0);
     expect(searchCalls).toBeLessThanOrEqual(2);
+  });
+
+  it("tag→field resolution adapts to a non-FEMA dataset (drug events)", async () => {
+    // Synthetic drug-event corpus: tag "type" should resolve to drugType, not
+    // incidentType, demonstrating that the alias dictionary is dataset-neutral.
+    const DRUG_DOCS = [
+      { uri: "/d/1.json", reportNumber: 1001, drugName: "Aspirin", drugType: "OTC", country: "US" },
+      { uri: "/d/2.json", reportNumber: 1002, drugName: "Lipitor", drugType: "Prescription", country: "US" },
+      { uri: "/d/3.json", reportNumber: 1003, drugName: "Tylenol", drugType: "OTC", country: "CA" },
+    ];
+    const tools = new Map<string, ToolHandler>();
+    const server = {
+      tool: (name: string, _desc: string, _schema: any, handler: ToolHandler) => {
+        tools.set(name, handler);
+      },
+    };
+    const clients: any = {
+      schema: {
+        discoverSchema: vi.fn(async () => ({
+          documentCount: DRUG_DOCS.length,
+          inferredFields: [
+            { path: "reportNumber", type: "number", nullable: false, cardinality: "single", exampleValues: [1001, 1002], hasRangeIndex: false },
+            { path: "drugName", type: "string", nullable: false, cardinality: "single", exampleValues: ["Aspirin", "Lipitor", "Tylenol"], hasRangeIndex: false },
+            { path: "drugType", type: "string", nullable: false, cardinality: "single", exampleValues: ["OTC", "Prescription"], hasRangeIndex: false },
+            { path: "country", type: "string", nullable: false, cardinality: "single", exampleValues: ["US", "CA"], hasRangeIndex: false },
+          ],
+          rangeIndexes: [],
+          tdeSchemas: [],
+        })),
+        listCollections: vi.fn(async () => [{ name: "drug-events", count: 1000 }]),
+      },
+      search: {
+        search: vi.fn(async (params: any) => {
+          let matched = DRUG_DOCS.slice();
+          if (params.structuredQuery) matched = matched.filter((d) => evaluateCts(params.structuredQuery, d));
+          return {
+            total: matched.length,
+            start: 1,
+            pageLength: params.pageLength ?? 10,
+            results: matched.slice(0, params.pageLength ?? 10).map((d) => ({ uri: d.uri, score: 1 })),
+          };
+        }),
+        fetchDocs: vi.fn(async (uris: string[]) => {
+          const out = new Map<string, unknown>();
+          for (const uri of uris) out.set(uri, DRUG_DOCS.find((d) => d.uri === uri) ?? null);
+          return out;
+        }),
+      },
+      fasttrack: { listSearchOptions: vi.fn(async () => []) },
+    };
+    registerAnswerTools(server as never, clients);
+    const result = await tools.get("ml_answer_query")!({
+      question: "which records involved OTC",
+      collection: "drug-events",
+    });
+    const payload = JSON.parse(result.content[0].text);
+    expect(payload.total).toBeGreaterThan(0);
+    const normalized = payload.trace.normalizedFilters[0];
+    // tag=type resolved to drugType (suffix match, no FEMA hard-coding)
+    expect(normalized.tag).toBe("type");
+    expect(normalized.field).toBe("drugType");
+    expect(normalized.matchedValue).toBe("OTC");
   });
 
   it("records every search attempt in trace.attempts[]", async () => {

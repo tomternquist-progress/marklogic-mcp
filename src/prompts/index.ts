@@ -784,13 +784,18 @@ Available tools (use only these):
                normalize_whitespace=, response_mode= for inline projection
                and aggregation without follow-up ml_document_get calls)
   Answer:     ml_answer_query (auto-routes to collection if not specified;
-                                value-normalizes "hurricanes" → "Hurricane";
+                                parses question into semantic tags (type, title,
+                                  location, date, identifier, status) and resolves
+                                  each tag to the actual inferred field;
+                                value-normalizes phrases against observed values
+                                  with Damerau-1 typo recovery;
                                 suppresses filler residual by default;
                                 mode=strict|balanced|broad strategies (balanced is
                                   default — unions value-query with word-query on
-                                  the title field);
+                                  the inferred title field);
                                 answer_mode=titles for distinct-names shortcut;
-                                rows_deduped / rows_plus_rollup with rows_unique_by=;
+                                rows_deduped / rows_plus_rollup with rows_unique_by=
+                                  (caller must supply the dedupe keys);
                                 three-layer auto-rescue on zero hits;
                                 trace.attempts[] records every search call (cts,
                                   count, elapsed ms, decision_reason) — no need to
