@@ -227,7 +227,7 @@ describe("ml_answer_query regression — 'which disasters involved hurricanes' m
     expect(payload.rollup?.dedupe_keys).toEqual(["disasterNumber", "state", "declarationTitle"]);
   });
 
-  it("rows_plus_rollup without rows_unique_by returns an actionable error", async () => {
+  it("rows_plus_rollup without rows_unique_by returns a structured MISSING_PARAMETER error", async () => {
     const { server, tools } = (() => {
       const tools = new Map<string, ToolHandler>();
       const server = {
@@ -245,7 +245,11 @@ describe("ml_answer_query regression — 'which disasters involved hurricanes' m
       answer_mode: "rows_plus_rollup",
     });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toMatch(/rows_unique_by/);
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.error.code).toBe("MISSING_PARAMETER");
+    expect(parsed.error.class).toBe("user_input");
+    expect(Array.isArray(parsed.error.exampleValid?.rows_unique_by)).toBe(true);
+    expect(parsed.error.correlationId).toMatch(/^mlq_/);
   });
 
   it("translation_only returns CTS without executing", async () => {
@@ -326,6 +330,20 @@ describe("ml_answer_query regression — 'which disasters involved hurricanes' m
     expect(normalized.tag).toBe("type");
     expect(normalized.field).toBe("drugType");
     expect(normalized.matchedValue).toBe("OTC");
+  });
+
+  it("surfaces correlation_id, timings, returned, has_more on rows responses", async () => {
+    const { payload } = await callAnswerQuery({
+      question: "which disasters involved hurricanes",
+      collection: "fema-disasters",
+    });
+    expect(typeof payload.correlation_id).toBe("string");
+    expect(payload.correlation_id).toMatch(/^mlq_/);
+    expect(payload.timings).toBeTruthy();
+    expect(typeof payload.timings.totalMs).toBe("number");
+    expect(typeof payload.timings.executeMs).toBe("number");
+    expect(typeof payload.returned).toBe("number");
+    expect(typeof payload.has_more).toBe("boolean");
   });
 
   it("records every search attempt in trace.attempts[]", async () => {

@@ -88,6 +88,13 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
     ],
   },
   {
+    name: "ml_capabilities",
+    description: "Runtime capability introspection. Pass tool='<name>' for one, omit for all.",
+    params: [
+      { name: "tool", type: "string?", description: "Tool name to inspect; omit to list every introspected tool." },
+    ],
+  },
+  {
     name: "ml_search_query_plan",
     description: "Debug-mode search: returns resolved CTS + estimate; emits zero-result rescue when total=0.",
     params: [
