@@ -41,11 +41,20 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
     params: [
       { name: "question", type: "string", description: "Natural-language question" },
       { name: "collection", type: "string?", description: "Collection URI to scope to (auto-routed when omitted)" },
-      { name: "answer_mode", type: "'rows' | 'rows_deduped' | 'rows_plus_rollup' | 'count' | 'group' | 'distinct'?", description: "Shape of the answer" },
+      {
+        name: "answer_mode",
+        type: "'rows' | 'rows_deduped' | 'rows_plus_rollup' | 'titles' | 'count' | 'group' | 'distinct'?",
+        description: "Shape of the answer — rows (default), rows_deduped, rows_plus_rollup, titles (distinct names of the collection's title field), count, group(field), distinct(field).",
+      },
+      {
+        name: "mode",
+        type: "'strict' | 'balanced' | 'broad'?",
+        description: "Query strategy — strict (value-query only), balanced (value-query OR word-query on title; default), broad (balanced + universal-index residual).",
+      },
       { name: "group_by", type: "string?", description: "Field to group/distinct by (overrides auto-pick)" },
       { name: "rows_unique_by", type: "string[]?", description: "Dedupe keys for rows_deduped / rows_plus_rollup; falls back to a preset by collection" },
       { name: "database", type: "string?", description: "Target database" },
-      { name: "max_results", type: "number?", description: "Cap rows sampled (default 50 / 250 for group)" },
+      { name: "max_results", type: "number?", description: "Cap rows sampled (default 50 / 250 for group/distinct/titles)" },
       { name: "include_residual", type: "boolean?", description: "Pass leftover filler as q (default false)" },
       { name: "translation_only", type: "boolean?", description: "Return CTS + trace WITHOUT executing" },
     ],

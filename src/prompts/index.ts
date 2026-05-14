@@ -786,9 +786,16 @@ Available tools (use only these):
   Answer:     ml_answer_query (auto-routes to collection if not specified;
                                 value-normalizes "hurricanes" → "Hurricane";
                                 suppresses filler residual by default;
-                                three-layer auto-rescue on zero hits;
-                                per-stage confidence + next_actions runnables;
+                                mode=strict|balanced|broad strategies (balanced is
+                                  default — unions value-query with word-query on
+                                  the title field);
+                                answer_mode=titles for distinct-names shortcut;
                                 rows_deduped / rows_plus_rollup with rows_unique_by=;
+                                three-layer auto-rescue on zero hits;
+                                trace.attempts[] records every search call (cts,
+                                  count, elapsed ms, decision_reason) — no need to
+                                  tool-hop to debug;
+                                per-stage confidence + next_actions runnables;
                                 translation_only=true returns CTS without executing),
               ml_query_recipe (named templates for common analytics),
               ml_capabilities (runtime parameter manifest — inspect supported params per tool)

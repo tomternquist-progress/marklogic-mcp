@@ -137,7 +137,15 @@ pitfalls → alternatives) before any tool is called.
     translation_only=true to inspect the generated CTS without executing. Pass
     answer_mode=rows_deduped (or rows_plus_rollup) with rows_unique_by=[...]
     when the dataset has row-vs-entity inflation (FEMA county-level rows vs
-    unique disasters).
+    unique disasters). Pass answer_mode=titles for the "give me the names of X"
+    shortcut. Pass mode=balanced (default) to union value-query with
+    word-query on the title field — catches both indexed-value rows AND
+    title-mentions in one call ("Hurricane Helene" with incidentType="Severe
+    Storm" is still found).
+
+    Every response includes trace.attempts[] with the CTS, count, and elapsed
+    ms for each search call the tool made — so operators can debug the chain
+    without tool-hopping.
 
 13. ml_search NOW PROJECTS AND AGGREGATES
     Pass select_fields=[...] to ml_search and each result includes the field values
