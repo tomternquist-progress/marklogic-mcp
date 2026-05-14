@@ -83,13 +83,19 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         trace.parsedFilters = parsed.fieldFilters;
         trace.residualQuery = parsed.residual;
 
-        // Step 3 — build a CTS structured query.
+        // Step 3 — build a CTS structured query. Prefer value-query (exact match
+        // against the JSON property value index — always on, no range index
+        // needed) over word-query, because word-query stems/tokenises and can
+        // over-match. Pass both the original phrase and a Title-Cased variant
+        // so common case mismatches ("hurricanes" vs indexed "Hurricane") still
+        // resolve in one call.
         const subQueries: unknown[] = [];
         for (const f of parsed.fieldFilters) {
+          const variants = Array.from(new Set([f.phrase, titleCase(f.phrase)]));
           subQueries.push({
-            "word-query": {
-              text: [f.phrase],
+            "value-query": {
               "json-property": f.field,
+              text: variants,
             },
           });
         }
@@ -100,6 +106,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             : { "and-query": { queries: subQueries } };
         }
         trace.cts = structuredQuery ?? null;
+        trace.ctsKind = subQueries.length ? "value-query" : null;
         trace.freeTextQuery = parsed.residual || undefined;
 
         // Step 4 — choose projection fields.
@@ -107,7 +114,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         trace.projectionFields = candidateFields;
 
         // Step 5 — execute the search.
-        const search = await clients.search.search({
+        let search = await clients.search.search({
           q: parsed.residual || undefined,
           structuredQuery,
           collection,
@@ -127,6 +134,37 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             assumptions.push(
               `Field "${f.field}" was inferred from the alias dictionary; the sampled documents did not surface it. ` +
               `Run ml_schema_discover to verify it exists on this collection.`
+            );
+          }
+        }
+
+        // Value-query is precise but unforgiving — case/morphology mismatches
+        // produce zero hits. If we get a zero-result on a value-query, retry
+        // once with the tokenised word-query before falling through to rescue.
+        if (search.total === 0 && subQueries.length) {
+          const wordSubQueries = parsed.fieldFilters.map((f) => ({
+            "word-query": {
+              text: [f.phrase],
+              "json-property": f.field,
+            },
+          }));
+          const wordStructured: Record<string, unknown> = wordSubQueries.length === 1
+            ? (wordSubQueries[0] as Record<string, unknown>)
+            : { "and-query": { queries: wordSubQueries } };
+          const retry = await clients.search.search({
+            q: parsed.residual || undefined,
+            structuredQuery: wordStructured,
+            collection,
+            database,
+            pageLength: sampleSize,
+          });
+          if (retry.total > 0) {
+            search = retry;
+            structuredQuery = wordStructured;
+            trace.cts = wordStructured;
+            trace.ctsKind = "word-query";
+            assumptions.push(
+              "value-query returned no matches; falling back to tokenised word-query for looser matching."
             );
           }
         }
@@ -450,6 +488,14 @@ async function executeRecipe(
     return { total: searchResp.total, rows };
   }
   throw new Error(`Recipe tool "${invocation.tool}" is not yet supported in ml_query_recipe.`);
+}
+
+function titleCase(s: string): string {
+  return s
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => (w.length ? w[0].toUpperCase() + w.slice(1) : w))
+    .join(" ");
 }
 
 // Re-export for explainability use elsewhere.
