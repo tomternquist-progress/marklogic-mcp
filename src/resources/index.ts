@@ -1,6 +1,8 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { MarkLogicClients } from "../client/index.js";
+import type { AppConfig } from "../config/index.js";
 import { toToolError } from "../utils/errors.js";
+import { analyzeSecurityPosture, renderSecurityPosture } from "../utils/security-posture.js";
 
 const INSTRUCTIONS_TEXT = `\
 MARKLOGIC MCP — PROBLEM-FIRST DECISION GUIDE
@@ -63,6 +65,50 @@ pitfalls → alternatives) before any tool is called.
      • Roles    → src/main/ml-config/security/roles/<n>.json         → gradle mlDeployRoles
      • Data     → Gradle Exec tasks calling: flux import-files / flux import-rdf-files
    See the PROJECT SETUP / DEPLOYMENT (ml-gradle) section below for the full layout.
+
+
+── SECURITY POSTURE — WHAT ML_READONLY DOES (AND DOES NOT) ─────────────────────
+
+ML_READONLY is a TOOL-LAYER SAFETY BELT. When set to true:
+  • Write tools are not registered: ml_document_put / _delete / _patch,
+    ml_search_options_put / _delete, ml_extension_put / _delete, ml_graph_put /
+    _delete, ml_database_set_forests, dhf_flow_run.
+  • Flux write subcommands (flux_import, flux_copy, flux_reprocess) refuse
+    with a structured UNSUPPORTED_IN_BUILD error.
+  • Eval tools (ml_eval_javascript / _xquery / _sparql / ml_invoke_module /
+    ml_profile_query / ml_force_merge) are NOT registered at all, because
+    server-side eval can call any write API (xdmp.documentInsert,
+    admin:database-create, sec:create-user) and would defeat readonly entirely.
+
+ML_READONLY DOES NOT:
+  • Restrict the underlying MarkLogic user's privileges. The MCP server holds
+    one set of credentials; those credentials have whatever roles MarkLogic
+    granted them. If the configured user is "admin", that user can still do
+    anything against MarkLogic — via the Admin UI, the Management REST API,
+    or any process that finds the credentials on the host.
+  • Stop bypass via shell access. An agent (or operator) on the same host
+    can read the MCP server's config, write a separate Node/curl script
+    that uses the same credentials, and call MarkLogic directly. The MCP
+    server cannot prevent this.
+
+FOR TRUE READ-ONLY PROTECTION:
+  1. Create a MarkLogic role with only read privileges (no rest-writer,
+     no manage-admin, no any-uri / any-collection update).
+  2. Create a user bound to that role and set ML_USERNAME / ML_PASSWORD
+     to those credentials.
+  3. Keep ML_READONLY=true for defence in depth at the tool layer.
+
+AGENT GUIDANCE: If you're asked to perform a write operation and the MCP
+server's write tools are unavailable (ML_READONLY=true), REFUSE the
+operation. Do NOT craft shell scripts, curl invocations, or side-channel
+Node.js code to bypass the safety belt. Report back to the user that the
+server is in read-only mode and recommend that they restart with
+ML_READONLY=false (and the appropriate MarkLogic role) if writes are
+actually intended.
+
+Inspect the live posture: read the marklogic://security resource. Critical
+misconfigurations (readonly+eval, readonly with a privileged username) are
+logged loudly at startup and surfaced in that resource.
 
 
 ── DECISION PRINCIPLES (in priority order) ────────────────────────────────────
@@ -944,7 +990,11 @@ Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                problem_advisor
 `;
 
-export function registerAllResources(server: McpServer, clients: MarkLogicClients): void {
+export function registerAllResources(
+  server: McpServer,
+  clients: MarkLogicClients,
+  config?: AppConfig
+): void {
   // List of databases
   server.resource(
     "marklogic_databases",
@@ -1020,4 +1070,29 @@ export function registerAllResources(server: McpServer, clients: MarkLogicClient
       }
     }
   );
+
+  // Security posture — reports the active ML_READONLY / ML_ALLOW_EVAL configuration,
+  // any detected misconfigurations, and the structural limits of tool-layer readonly.
+  // Always available so operators can introspect what the safety belt actually covers.
+  if (config) {
+    server.resource(
+      "marklogic_security",
+      "marklogic://security",
+      {
+        mimeType: "text/plain",
+        description: "Current MCP server security posture (readonly, allowEval, auth) + warnings about misconfigurations. Read this BEFORE assuming ML_READONLY=true protects writes — it is a tool-layer safety belt, not a MarkLogic privilege restriction.",
+      },
+      async () => {
+        const posture = analyzeSecurityPosture(config);
+        const body = renderSecurityPosture(posture) + "\n\nJSON form:\n" + JSON.stringify(posture, null, 2);
+        return {
+          contents: [{
+            uri: "marklogic://security",
+            text: body,
+            mimeType: "text/plain",
+          }],
+        };
+      }
+    );
+  }
 }

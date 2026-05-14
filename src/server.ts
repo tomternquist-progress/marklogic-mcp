@@ -14,7 +14,7 @@ export function createMcpServer(config: AppConfig, oauthToken?: string): McpServ
   const clients = createClients(config, oauthToken);
 
   registerAllTools(server, clients, config);
-  registerAllResources(server, clients);
+  registerAllResources(server, clients, config);
   registerAllPrompts(server);
 
   return server;

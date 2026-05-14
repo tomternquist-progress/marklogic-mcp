@@ -2,6 +2,27 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 
+/**
+ * Refusal payload returned when a Flux write subcommand is invoked under
+ * ML_READONLY=true. Kept consistent so agents/clients can detect it
+ * structurally without parsing prose.
+ */
+function refuseFluxWrite(toolName: string): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  const body = {
+    error: {
+      code: "UNSUPPORTED_IN_BUILD",
+      class: "runtime_capability",
+      message: `${toolName} is disabled because ML_READONLY=true.`,
+      hint:
+        `${toolName} writes to MarkLogic (Flux import/copy/reprocess bypass the document-write tools but ` +
+        `still ingest documents). To enable, restart the MCP server with ML_READONLY=false. For true ` +
+        `read-only protection use a MarkLogic user with a read-only role — the readonly flag is a ` +
+        `tool-layer safety belt, not a credential-level restriction.`,
+    },
+  };
+  return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }], isError: true };
+}
+
 function formatResult(result: { exitCode: number; output: string; success: boolean; timedOut?: boolean }, maxOutputChars?: number): string {
   const status = result.success ? "SUCCESS" : result.timedOut ? "TIMED OUT" : `FAILED (exit ${result.exitCode})`;
   let output = result.output || "(no output)";
@@ -96,7 +117,8 @@ function buildTdeNote(output: string, collections?: string[]): string | null {
 export function registerFluxTools(
   server: McpServer,
   clients: MarkLogicClients,
-  authType: "digest" | "basic" | "oauth" = "digest"
+  authType: "digest" | "basic" | "oauth" = "digest",
+  readonly: boolean = false
 ): void {
   if (authType === "oauth") {
     // Flux embeds username:password in its connection string — incompatible with OAuth
@@ -191,6 +213,9 @@ export function registerFluxTools(
       ),
     },
     async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore, classifier_publish_sets, classifier_path }) => {
+      if (readonly) {
+        return refuseFluxWrite("flux_import");
+      }
       // Validate and convert permissions
       let fluxPermissions: string | undefined;
       if (permissions) {
@@ -567,6 +592,9 @@ export function registerFluxTools(
       extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim"),
     },
     async ({ output_connection_string, collections, query, database, output_collections, thread_count, batch_size, extra_args }) => {
+      if (readonly) {
+        return refuseFluxWrite("flux_copy");
+      }
       const args: string[] = [
         "copy",
         "--connection-string", flux.connectionString(database),
@@ -701,6 +729,9 @@ export function registerFluxTools(
       ),
     },
     async ({ invoke_module, read_module, read_javascript, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore, classifier_publish_sets, classifier_path }) => {
+      if (readonly) {
+        return refuseFluxWrite("flux_reprocess");
+      }
       // Coerce collections: accept string or array
       const collectionsArr: string[] | undefined = collections === undefined
         ? undefined

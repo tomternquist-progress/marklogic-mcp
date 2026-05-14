@@ -21,22 +21,30 @@ import { registerMlGradleTools } from "./ml-gradle.js";
 import { registerAnswerTools } from "./answer.js";
 
 export function registerAllTools(server: McpServer, clients: MarkLogicClients, config: AppConfig): void {
+  const { readonly, allowEval } = config.safety;
+  // Eval can call any server-side write API (xdmp.documentInsert,
+  // admin:database-create, sec:create-user, etc.) — so registering eval
+  // tools alongside readonly defeats the safety belt entirely. Only register
+  // them when readonly is OFF. Operators who need read-only complex queries
+  // can set ML_READONLY=false and rely on MarkLogic role-based ACL instead.
+  const effectiveAllowEval = allowEval && !readonly;
+
   registerSuggestApproachTool(server);
-  registerAdminTools(server, clients);
-  registerDocumentTools(server, clients, config.safety.readonly);
+  registerAdminTools(server, clients, readonly);
+  registerDocumentTools(server, clients, readonly);
   registerSearchTools(server, clients);
   registerSchemaTools(server, clients);
-  registerEvalTools(server, clients, config.safety.allowEval);
-  registerGraphTools(server, clients, config.safety.readonly);
+  registerEvalTools(server, clients, effectiveAllowEval);
+  registerGraphTools(server, clients, readonly);
   registerQuickSightTools(server, clients);
   registerOpticTools(server, clients);
-  registerFluxTools(server, clients, config.connection.authType);
-  registerFastTrackTools(server, clients, config.safety.readonly);
+  registerFluxTools(server, clients, config.connection.authType, readonly);
+  registerFastTrackTools(server, clients, readonly);
   registerSemaphoreTools(server, clients);
-  registerExtensionTools(server, clients, config.safety.readonly);
+  registerExtensionTools(server, clients, readonly);
   registerSecurityTools(server, clients);
-  registerPerformanceTools(server, clients, config.safety.allowEval);
-  registerDhfTools(server, clients, config.safety.allowEval, config.safety.readonly, config.dhf, config.connection);
+  registerPerformanceTools(server, clients, effectiveAllowEval);
+  registerDhfTools(server, clients, effectiveAllowEval, readonly, config.dhf, config.connection);
   registerMlGradleTools(server);
   registerAnswerTools(server, clients);
 }
