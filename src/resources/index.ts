@@ -122,8 +122,13 @@ pitfalls → alternatives) before any tool is called.
 12. ANSWER FIRST, EXPLORE SECOND
     For a user question against a known collection ("which X involved Y?"), call
     ml_answer_query — it parses the question, maps phrases to fields via an alias
-    dictionary, builds the CTS query, projects readable rows, optionally aggregates,
-    and returns an audit trace. Skip the manual discover → query → fetch loop.
+    dictionary, NORMALIZES the phrase against observed values (so "hurricanes"
+    → indexed "Hurricane"), builds a structured value-query, projects readable
+    rows, optionally aggregates, and returns an audit trace + a query plan card.
+    Residual filler ("which disasters") is suppressed by default to avoid
+    accidental zero-result over-constraint. Pass translation_only=true to inspect
+    the generated CTS without executing. Skip the manual discover → query → fetch
+    loop.
 
 13. ml_search NOW PROJECTS AND AGGREGATES
     Pass select_fields=[...] to ml_search and each result includes the field values
@@ -840,7 +845,11 @@ Search (6):    ml_search, ml_search_qbe, ml_values_query, ml_suggest,
                 normalize_whitespace=, response_mode= for inline projection
                 and aggregation)
 
-Answer (2):    ml_answer_query, ml_query_recipe
+Answer (3):    ml_answer_query (with translation_only=, include_residual=,
+                                  group_by=, value normalization, plan card),
+               ml_query_recipe,
+               ml_capabilities (runtime parameter manifest — call this when in
+                                doubt about which parameters a tool accepts)
 
 Schema (8):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
                ml_tde_install, ml_indexes_list, ml_collections_list, ml_namespaces_list,

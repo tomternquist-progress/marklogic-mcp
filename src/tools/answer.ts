@@ -14,6 +14,13 @@ import {
   listRecipeSummaries,
   QUERY_RECIPES,
 } from "../utils/recipes.js";
+import {
+  closestKnownValue,
+  stripFiller,
+  titleCase,
+  valueCandidates,
+} from "../utils/value-normalize.js";
+import { getCapability, TOOL_CAPABILITIES } from "../utils/capabilities.js";
 
 export function registerAnswerTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
@@ -22,19 +29,22 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
     "concise answer with the rows that backed it, plus an audit trace (CTS shape, fields used, " +
     "filters applied, confidence/assumptions).\n\n" +
     "INTERNAL FLOW:\n" +
-    "  1. Sample documents from the collection to discover field shape.\n" +
-    "  2. Parse the question against an alias dictionary (synonyms → field paths).\n" +
-    "  3. Build a structured CTS query from the matched aliases + residual free-text.\n" +
-    "  4. Execute the search and project the most useful fields inline.\n" +
-    "  5. Optionally aggregate (count/group_by) based on the chosen answer_mode.\n" +
-    "  6. Return the answer with an explainability trace.\n\n" +
+    "  1. Sample the collection: schema + observed values per field.\n" +
+    "  2. Parse the question against an alias dictionary (synonyms → field paths). Strip filler.\n" +
+    "  3. Normalize each filter phrase against observed values (case + plural + closest match).\n" +
+    "  4. Build a structured value-query and execute. Residual filler is suppressed by default.\n" +
+    "  5. On zero hits: retry with word-query, then with rescue (closest-value substitution).\n" +
+    "  6. Project the most useful fields inline and return — with a query plan card.\n\n" +
     "ANSWER MODES:\n" +
-    "  • rows    — return the matching rows with projected fields (default).\n" +
-    "  • count   — return just the total count.\n" +
-    "  • group   — group matched rows by the most relevant field (auto-picked).\n" +
-    "  • distinct— return distinct values of the most relevant field with their counts.\n\n" +
-    "Use this when the user asks an English question against a known collection. For multi-step " +
-    "exploration or unknown intents, call ml_suggest_approach first.",
+    "  • rows          — return the matching rows with projected fields (default).\n" +
+    "  • count         — return just the total count.\n" +
+    "  • group(field)  — group matched rows by the named (or auto-picked) field.\n" +
+    "  • distinct(field) — return distinct values of the named (or auto-picked) field + counts.\n\n" +
+    "TRANSLATION-ONLY MODE (translation_only=true): build and return the CTS, normalized values, " +
+    "confidence, and runnable ml_search example — WITHOUT executing. Useful for inspecting how the " +
+    "translator interprets a question before committing to a query.\n\n" +
+    "Use this for English questions over a known collection. For multi-step exploration or unknown " +
+    "intents, call ml_suggest_approach first.",
     {
       question: z.string().describe("Natural-language question, e.g. 'which disasters involved hurricanes?'"),
       collection: z.string().optional().describe(
@@ -44,16 +54,40 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
       answer_mode: z.enum(["rows", "count", "group", "distinct"]).optional().describe(
         "Shape of the answer to return (default: rows)."
       ),
+      group_by: z.string().optional().describe(
+        "Field to group/distinct by when answer_mode is 'group' or 'distinct'. If omitted the tool picks " +
+        "the strongest filter field."
+      ),
       database: z.string().optional().describe(
         "Database to search. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."
       ),
       max_results: z.number().int().positive().max(500).optional().describe(
         "Cap the number of documents sampled for the answer (default: 50 for rows/count, 250 for group/distinct)."
       ),
+      include_residual: z.boolean().optional().describe(
+        "When true, leftover non-alias words ('which disasters') are passed as a free-text q alongside the " +
+        "structured filter. Default false — suppressing the residual avoids accidental zero-results from " +
+        "question filler over-constraining the query."
+      ),
+      translation_only: z.boolean().optional().describe(
+        "If true, build and return the CTS query + normalization trace + runnable example WITHOUT executing. " +
+        "Use this to inspect the translator before running it."
+      ),
     },
-    async ({ question, collection, answer_mode, database, max_results }) => {
+    async ({
+      question,
+      collection,
+      answer_mode,
+      group_by,
+      database,
+      max_results,
+      include_residual,
+      translation_only,
+    }) => {
       const mode = answer_mode ?? "rows";
       const sampleSize = max_results ?? (mode === "group" || mode === "distinct" ? 250 : 50);
+      const includeResidual = include_residual === true;
+      const translationOnly = translation_only === true;
 
       const trace: Record<string, unknown> = {
         question,
@@ -62,43 +96,64 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
       };
 
       try {
-        // Step 1 — discover field shape so we can pick projection fields.
-        let inferredFields: string[] = [];
-        try {
-          const schema = await clients.schema.discoverSchema({
-            collection,
-            sampleSize: 5,
-            database,
-          });
-          inferredFields = schema.inferredFields
-            .filter((f) => f.type === "string" || f.type === "date" || f.type === "number")
-            .map((f) => f.path);
-        } catch {
-          // discovery is best-effort; aliases below still let us proceed.
-        }
+        // Step 1 — discover fields. Sample a few docs and remember each
+        // top-level field's observed values so we can normalize.
+        const { inferredFields, observedValuesByField } = await sampleScope(
+          clients,
+          collection,
+          database
+        );
         trace.inferredFields = inferredFields.slice(0, 25);
 
-        // Step 2 — NL parsing.
+        // Step 2 — NL parsing. Drop filler ("which", "show me") from residual.
         const parsed = parseQuestionWithAliases(question, collection);
+        const rawResidual = parsed.residual;
+        const cleanedResidual = stripFiller(rawResidual);
+        const droppedFiller = wordsRemoved(rawResidual, cleanedResidual);
         trace.parsedFilters = parsed.fieldFilters;
-        trace.residualQuery = parsed.residual;
+        trace.residualRaw = rawResidual || undefined;
+        trace.residualCleaned = cleanedResidual || undefined;
+        trace.droppedFillerWords = droppedFiller;
 
-        // Step 3 — build a CTS structured query. Prefer value-query (exact match
-        // against the JSON property value index — always on, no range index
-        // needed) over word-query, because word-query stems/tokenises and can
-        // over-match. Pass both the original phrase and a Title-Cased variant
-        // so common case mismatches ("hurricanes" vs indexed "Hurricane") still
-        // resolve in one call.
-        const subQueries: unknown[] = [];
-        for (const f of parsed.fieldFilters) {
-          const variants = Array.from(new Set([f.phrase, titleCase(f.phrase)]));
-          subQueries.push({
-            "value-query": {
-              "json-property": f.field,
-              text: variants,
-            },
-          });
-        }
+        // Step 3 — normalize each filter phrase against observed values so
+        // case/plural mismatches don't blow up exact value-query.
+        const normalizedFilters = parsed.fieldFilters.map((f) => {
+          const observed = observedValuesByField.get(f.field) ?? [];
+          const candidates = valueCandidates(f.phrase);
+          let matched: { value: string; via: string } | undefined;
+          if (observed.length) {
+            for (const c of candidates) {
+              const m = closestKnownValue(c, observed);
+              if (m) {
+                matched = m;
+                break;
+              }
+            }
+          }
+          const finalValues = matched ? [matched.value] : candidates;
+          const confidence = matched
+            ? matched.via === "exact" || matched.via === "singular" ? "high" : "medium"
+            : observed.length ? "low" : "medium";
+          return {
+            field: f.field,
+            originalPhrase: f.phrase,
+            matchedAlias: f.matchedAlias,
+            normalizedValues: finalValues,
+            matchedValue: matched?.value,
+            matchedVia: matched?.via,
+            observedSample: observed.slice(0, 5),
+            confidence,
+          };
+        });
+        trace.normalizedFilters = normalizedFilters;
+
+        // Step 4 — build the structured value-query.
+        const subQueries = normalizedFilters.map((f) => ({
+          "value-query": {
+            "json-property": f.field,
+            text: f.normalizedValues,
+          },
+        }));
         let structuredQuery: Record<string, unknown> | undefined;
         if (subQueries.length) {
           structuredQuery = subQueries.length === 1
@@ -107,15 +162,49 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         }
         trace.cts = structuredQuery ?? null;
         trace.ctsKind = subQueries.length ? "value-query" : null;
-        trace.freeTextQuery = parsed.residual || undefined;
 
-        // Step 4 — choose projection fields.
+        // Suppress residual filler by default. If structured filters fired,
+        // we trust them — the residual is usually question scaffolding
+        // ("which disasters") that over-constrains via the universal index.
+        const useResidual = includeResidual || (subQueries.length === 0 && cleanedResidual.length > 0);
+        const effectiveQ = useResidual ? cleanedResidual || undefined : undefined;
+        trace.residualApplied = useResidual ? effectiveQ : null;
+
+        // Choose projection fields.
         const candidateFields = pickProjectionFields(parsed, inferredFields);
         trace.projectionFields = candidateFields;
 
-        // Step 5 — execute the search.
+        const overallConfidence = computeConfidence(normalizedFilters);
+        trace.confidence = overallConfidence;
+
+        // Translation-only short-circuit — we don't hit /v1/search.
+        if (translationOnly) {
+          const card = buildPlanCard({
+            cts: structuredQuery,
+            q: effectiveQ,
+            collection,
+            candidateFields,
+            normalizedFilters,
+            includeResidual: useResidual,
+          });
+          const payload = {
+            translation_only: true,
+            answer: "Translation produced — query NOT executed.",
+            confidence: overallConfidence,
+            normalizedFilters,
+            cts: structuredQuery ?? null,
+            ctsKind: subQueries.length ? "value-query" : null,
+            residualApplied: useResidual ? effectiveQ : null,
+            droppedFillerWords: droppedFiller,
+            queryPlanCard: card,
+            trace,
+          };
+          return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+        }
+
+        // Step 5 — execute.
         let search = await clients.search.search({
-          q: parsed.residual || undefined,
+          q: effectiveQ,
           structuredQuery,
           collection,
           database,
@@ -123,24 +212,27 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         });
 
         const assumptions: string[] = [];
-        if (!structuredQuery && !parsed.residual) {
-          assumptions.push("Question did not yield any filters; matching all documents in the scope.");
-        }
-        if (parsed.fieldFilters.length === 0 && parsed.residual) {
-          assumptions.push("Falling back to full-text matching on the universal index.");
-        }
-        for (const f of parsed.fieldFilters) {
+        for (const f of normalizedFilters) {
+          if (f.matchedValue && f.matchedValue.toLowerCase() !== f.originalPhrase.toLowerCase()) {
+            assumptions.push(
+              `Normalized "${f.originalPhrase}" → ${f.field}="${f.matchedValue}" (via ${f.matchedVia}).`
+            );
+          }
           if (!inferredFields.includes(f.field)) {
             assumptions.push(
-              `Field "${f.field}" was inferred from the alias dictionary; the sampled documents did not surface it. ` +
-              `Run ml_schema_discover to verify it exists on this collection.`
+              `Field "${f.field}" came from the alias dictionary; sampled documents did not surface it. ` +
+              `Verify with ml_schema_discover.`
             );
           }
         }
+        if (droppedFiller.length) {
+          assumptions.push(`Dropped filler from residual: [${droppedFiller.join(", ")}].`);
+        }
+        if (subQueries.length === 0 && !effectiveQ) {
+          assumptions.push("Question did not yield any filters; matching all documents in the scope.");
+        }
 
-        // Value-query is precise but unforgiving — case/morphology mismatches
-        // produce zero hits. If we get a zero-result on a value-query, retry
-        // once with the tokenised word-query before falling through to rescue.
+        // Auto-rescue layer 1: word-query on the original phrase.
         if (search.total === 0 && subQueries.length) {
           const wordSubQueries = parsed.fieldFilters.map((f) => ({
             "word-query": {
@@ -152,7 +244,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             ? (wordSubQueries[0] as Record<string, unknown>)
             : { "and-query": { queries: wordSubQueries } };
           const retry = await clients.search.search({
-            q: parsed.residual || undefined,
+            q: effectiveQ,
             structuredQuery: wordStructured,
             collection,
             database,
@@ -164,19 +256,49 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
             trace.cts = wordStructured;
             trace.ctsKind = "word-query";
             assumptions.push(
-              "value-query returned no matches; falling back to tokenised word-query for looser matching."
+              "Primary value-query returned 0; rescued with tokenised word-query for looser matching."
             );
           }
         }
+
+        // Auto-rescue layer 2: if still zero AND residual was originally
+        // suppressed, retry with the cleaned residual to widen the search.
+        if (search.total === 0 && !useResidual && cleanedResidual.length) {
+          const retry = await clients.search.search({
+            q: cleanedResidual,
+            structuredQuery,
+            collection,
+            database,
+            pageLength: sampleSize,
+          });
+          if (retry.total > 0) {
+            search = retry;
+            trace.residualApplied = cleanedResidual;
+            assumptions.push(
+              `No structured match; rescued with free-text q="${cleanedResidual}".`
+            );
+          }
+        }
+
+        const planCard = buildPlanCard({
+          cts: structuredQuery,
+          q: trace.residualApplied as string | undefined,
+          collection,
+          candidateFields,
+          normalizedFilters,
+          includeResidual: useResidual,
+        });
 
         if (search.total === 0) {
           const rescue = await buildRescue(parsed, candidateFields, collection, database, clients);
           const payload = {
             answer: "No matching documents.",
             total: 0,
+            confidence: overallConfidence,
             trace,
             rescue,
             assumptions,
+            queryPlanCard: planCard,
           };
           return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
         }
@@ -185,8 +307,9 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
           const payload = {
             answer: `${search.total} matching documents`,
             total: search.total,
-            confidence: parsed.fieldFilters.length > 0 ? "high" : "medium",
+            confidence: overallConfidence,
             assumptions,
+            queryPlanCard: planCard,
             trace,
           };
           return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
@@ -203,37 +326,51 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         );
 
         if (mode === "group" || mode === "distinct") {
-          const aggField = pickAggregationField(parsed, candidateFields);
+          const aggField =
+            group_by ??
+            (parsed.fieldFilters[0]?.field as string | undefined) ??
+            candidateFields[0];
           if (!aggField) {
             return {
               content: [{ type: "text", text: "No aggregation field could be inferred from the question." }],
               isError: true,
             };
           }
-          const values = aggregateByField(rows, aggField, { normalizeWhitespace: true });
+          // Re-project rows that include the agg field if it isn't already there.
+          const aggFields = candidateFields.includes(aggField)
+            ? candidateFields
+            : [...candidateFields, aggField];
+          const aggRows: ProjectedRow[] = search.results.map((r) =>
+            projectRow(r.uri, docs.get(r.uri), aggFields, {
+              normalizeWhitespace: true,
+              score: r.score,
+            })
+          );
+          const values = aggregateByField(aggRows, aggField, { normalizeWhitespace: true });
           (trace as Record<string, unknown>).aggregationField = aggField;
           const payload = {
-            answer: `${values.length} distinct ${aggField} values across ${rows.length} matched documents`,
+            answer: `${values.length} distinct ${aggField} values across ${aggRows.length} matched documents`,
             total: search.total,
-            sampled: rows.length,
+            sampled: aggRows.length,
             field: aggField,
             values,
-            confidence: parsed.fieldFilters.length > 0 ? "high" : "medium",
+            confidence: overallConfidence,
             assumptions,
+            queryPlanCard: planCard,
             trace,
           };
           return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
         }
 
-        // Rows mode.
         const payload = {
           answer: rows.length === search.total
             ? `${rows.length} matches`
             : `Showing first ${rows.length} of ${search.total} matches`,
           total: search.total,
           rows,
-          confidence: parsed.fieldFilters.length > 0 ? "high" : "medium",
+          confidence: overallConfidence,
           assumptions,
+          queryPlanCard: planCard,
           trace,
         };
         return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
@@ -248,6 +385,39 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
           isError: true,
         };
       }
+    }
+  );
+
+  server.tool(
+    "ml_capabilities",
+    "RUNTIME CAPABILITY INTROSPECTION. Returns, per tool, the parameters this build actually supports. " +
+    "Use this to avoid trial-and-error when documentation and runtime drift apart: if a parameter is not " +
+    "listed here, this build does not accept it.\n\n" +
+    "Call with no arguments to enumerate every introspected tool, or pass tool='<name>' to inspect one. " +
+    "Currently covers the high-frequency NL/search/answer tools where contract drift has caused friction.",
+    {
+      tool: z.string().optional().describe("Tool name to inspect. Omit to list every introspected tool."),
+    },
+    async ({ tool }) => {
+      if (tool) {
+        const cap = getCapability(tool);
+        if (!cap) {
+          return {
+            content: [{
+              type: "text",
+              text: `No capability manifest for "${tool}". Available: ${TOOL_CAPABILITIES.map((c) => c.name).join(", ")}.`,
+            }],
+            isError: true,
+          };
+        }
+        return { content: [{ type: "text", text: JSON.stringify(cap, null, 2) }] };
+      }
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({ tools: TOOL_CAPABILITIES }, null, 2),
+        }],
+      };
     }
   );
 
@@ -346,16 +516,124 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
+interface PlanCardInput {
+  cts: Record<string, unknown> | undefined;
+  q: string | undefined;
+  collection: string | undefined;
+  candidateFields: string[];
+  normalizedFilters: Array<{ field: string; normalizedValues: string[] }>;
+  includeResidual: boolean;
+}
+
+function buildPlanCard(input: PlanCardInput): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  if (input.q) params.q = input.q;
+  if (input.cts) params.structured_query = input.cts;
+  if (input.collection) params.collection = input.collection;
+  if (input.candidateFields.length) params.select_fields = input.candidateFields;
+  params.page_length = 50;
+  params.normalize_whitespace = true;
+
+  const runnable = {
+    tool: "ml_search",
+    params,
+  };
+
+  const alternatives: Array<{ description: string; tool: string; params: Record<string, unknown> }> = [];
+  for (const f of input.normalizedFilters) {
+    alternatives.push({
+      description: `Group by ${f.field} to see how matches break down`,
+      tool: "ml_search",
+      params: {
+        ...params,
+        group_by: f.field,
+        count: true,
+      },
+    });
+    alternatives.push({
+      description: `Distinct values of ${f.field}`,
+      tool: "ml_search",
+      params: {
+        collection: input.collection,
+        distinct: f.field,
+        page_length: 200,
+      },
+    });
+  }
+  if (input.cts && !input.includeResidual && input.q) {
+    alternatives.push({
+      description: "Re-run with residual free-text included (looser scope)",
+      tool: "ml_answer_query",
+      params: {
+        question: "<same question>",
+        collection: input.collection,
+        include_residual: true,
+      },
+    });
+  }
+
+  return {
+    runnable,
+    alternatives: alternatives.slice(0, 3),
+  };
+}
+
+async function sampleScope(
+  clients: MarkLogicClients,
+  collection: string | undefined,
+  database: string | undefined
+): Promise<{ inferredFields: string[]; observedValuesByField: Map<string, string[]> }> {
+  let inferredFields: string[] = [];
+  const observedValuesByField = new Map<string, string[]>();
+  try {
+    const schema = await clients.schema.discoverSchema({
+      collection,
+      sampleSize: 10,
+      database,
+    });
+    inferredFields = schema.inferredFields
+      .filter((f) => f.type === "string" || f.type === "date" || f.type === "number")
+      .map((f) => f.path);
+    for (const f of schema.inferredFields) {
+      if (!f.exampleValues?.length) continue;
+      const values = f.exampleValues
+        .filter((v) => typeof v === "string" || typeof v === "number")
+        .map((v) => String(v));
+      if (values.length) observedValuesByField.set(f.path, Array.from(new Set(values)));
+    }
+  } catch {
+    // discovery is best-effort
+  }
+  return { inferredFields, observedValuesByField };
+}
+
+function wordsRemoved(before: string, after: string): string[] {
+  const beforeWords = before
+    .replace(/[?!.,;:]+/g, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+  const afterSet = new Set(after.toLowerCase().split(/\s+/).filter(Boolean));
+  return beforeWords.filter((w) => !afterSet.has(w.toLowerCase()));
+}
+
+function computeConfidence(
+  filters: Array<{ confidence: string; matchedValue?: string }>
+): "high" | "medium" | "low" {
+  if (filters.length === 0) return "low";
+  const allMatched = filters.every((f) => f.matchedValue !== undefined);
+  if (allMatched) return "high";
+  const anyHigh = filters.some((f) => f.confidence === "high");
+  return anyHigh ? "medium" : "low";
+}
+
 function pickProjectionFields(
   parsed: ReturnType<typeof parseQuestionWithAliases>,
   inferred: string[]
 ): string[] {
   const priority: string[] = [];
-  // Always show the filter fields the question targeted.
   for (const f of parsed.fieldFilters) {
     if (!priority.includes(f.field)) priority.push(f.field);
   }
-  // Common headline fields for event/incident-style datasets.
   for (const f of [
     "declarationTitle",
     "title",
@@ -370,22 +648,11 @@ function pickProjectionFields(
       priority.push(f);
     }
   }
-  // Top-level inferred fields rounded out the projection.
   for (const f of inferred) {
     if (priority.length >= 6) break;
     if (!priority.includes(f) && !f.includes(".")) priority.push(f);
   }
   return priority.slice(0, 6);
-}
-
-function pickAggregationField(
-  parsed: ReturnType<typeof parseQuestionWithAliases>,
-  projection: string[]
-): string | undefined {
-  // Prefer the most specific filter field — the user asked about that dimension.
-  if (parsed.fieldFilters.length) return parsed.fieldFilters[0].field;
-  // Otherwise the first projection field is the best fallback.
-  return projection[0];
 }
 
 interface RescuePayload {
@@ -402,7 +669,6 @@ async function buildRescue(
   database: string | undefined,
   clients: MarkLogicClients
 ): Promise<RescuePayload> {
-  // Pull a sample of the scope (no filters) so we can show what real values look like.
   const sample = await clients.search.search({
     q: "",
     collection,
@@ -490,13 +756,5 @@ async function executeRecipe(
   throw new Error(`Recipe tool "${invocation.tool}" is not yet supported in ml_query_recipe.`);
 }
 
-function titleCase(s: string): string {
-  return s
-    .toLowerCase()
-    .split(/\s+/)
-    .map((w) => (w.length ? w[0].toUpperCase() + w.slice(1) : w))
-    .join(" ");
-}
-
 // Re-export for explainability use elsewhere.
-export { projectField };
+export { projectField, titleCase };

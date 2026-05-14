@@ -783,8 +783,12 @@ Available tools (use only these):
               (ml_search supports select_fields=, distinct=, group_by=,
                normalize_whitespace=, response_mode= for inline projection
                and aggregation without follow-up ml_document_get calls)
-  Answer:     ml_answer_query (one-shot NL → CTS → projection + audit trace),
-              ml_query_recipe (named templates for common analytics)
+  Answer:     ml_answer_query (one-shot NL → CTS → projection + audit trace;
+                                value-normalizes "hurricanes" → "Hurricane";
+                                suppresses filler residual by default;
+                                translation_only=true returns CTS without executing),
+              ml_query_recipe (named templates for common analytics),
+              ml_capabilities (runtime parameter manifest — inspect supported params per tool)
   Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_tde_install,
               ml_indexes_list, ml_collections_list, ml_namespaces_list, ml_search_surface
   Eval:       ml_eval_javascript, ml_eval_xquery, ml_sparql, ml_invoke_module
