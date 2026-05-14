@@ -592,11 +592,51 @@ QuickSight agents connect via the HTTP transport. Recommended pattern:
 
 ## Security Notes
 
-- `ML_READONLY=true` (default) — write tools are not registered at all: `ml_document_put/delete/patch`, `ml_tde_install`, `ml_graph_put/delete`, `ml_search_options_put/delete`, `ml_extension_put/delete`
-- `ML_ALLOW_EVAL=false` (default) — eval tools are not registered: `ml_eval_javascript`, `ml_eval_xquery`, `ml_invoke_module`, `ml_sparql`, `ml_profile_query`
-- `MCP_API_KEY` — set to require Bearer token auth on the HTTP transport
-- `ML_AUTH_TYPE=oauth` — Bearer tokens from MCP clients are forwarded directly to MarkLogic; the MCP server never sees credentials, only opaque tokens; MarkLogic enforces per-user RBAC via its own JWT validation
-- Credentials are read from environment variables only — never hardcoded
-- Digest auth recomputes the challenge per request — no credential caching
-- The Flux runner executes on the MCP server host; `http_url` must be reachable from that host, not from the user's machine
-- In oauth mode, `MCP_API_KEY` gateway auth uses the `X-MCP-Api-Key` header to avoid conflicting with the `Authorization: Bearer` header used for the user token
+### What `ML_READONLY` actually does
+
+`ML_READONLY=true` (the default) is a **tool-layer safety belt**, not a credential-level restriction. When it is on:
+
+- **Write tools are not registered.** `ml_document_put` / `_delete` / `_patch`, `ml_tde_install`, `ml_graph_put` / `_delete`, `ml_search_options_put` / `_delete`, `ml_extension_put` / `_delete`, `ml_database_set_forests`, and `dhf_flow_run` are absent from the server's tool list.
+- **Flux write subcommands refuse.** `flux_import` / `flux_copy` / `flux_reprocess` return a structured `UNSUPPORTED_IN_BUILD` error. `flux_export` / `flux_preview` / `flux_help` / `flux_status` remain available (read-only).
+- **Eval tools are not registered.** `ml_eval_javascript` / `_xquery` / `_sparql`, `ml_invoke_module`, `ml_profile_query`, and `ml_force_merge` are skipped entirely — even if `ML_ALLOW_EVAL=true`. Server-side eval can call any write API (`xdmp.documentInsert`, `admin:database-create`, `sec:create-user`, etc.), so allowing it alongside readonly would defeat the safety belt. The server logs a critical warning at startup when this combination is set, then disables eval.
+
+### What `ML_READONLY` does NOT do
+
+The flag controls **which tools this server registers**. It does **not** restrict what the underlying MarkLogic user can do:
+
+- The MCP server holds one set of MarkLogic credentials (`ML_USERNAME` / `ML_PASSWORD`). Those credentials have whatever MarkLogic roles the operator granted them. If the user is `admin`, that user can do anything against MarkLogic — via the Admin UI, the Management REST API, or any other process that finds the credentials on the host.
+- **The MCP server cannot prevent shell-level bypass.** A user (or agent) with shell access to the host running the MCP server can read the credentials, write a separate Node/curl script that uses them, and call MarkLogic directly. The server is a single process; it does not control other processes on the same host.
+
+A real-world example: an agent given `ML_READONLY=true` was asked to create a database. The MCP write tools were correctly unavailable. The agent then read the MCP server's source to learn the auth scheme, wrote a Node script that imported the same client classes, and ran it via `node create-db.mjs` — bypassing the server entirely. The database was created because the underlying user had admin privileges.
+
+### Recommended security posture
+
+For **defence in depth**, both layers should be locked:
+
+1. **Credential layer (most important).** Create a MarkLogic role with only the privileges you actually need (typically just `rest-reader` and any application-specific read privileges — no `rest-writer`, no `manage-admin`, no `any-uri` / `any-collection update`). Create a user bound to that role. Set `ML_USERNAME` / `ML_PASSWORD` to those credentials. **A read-only MarkLogic user makes bypass impossible regardless of what runs on the host.**
+2. **Tool layer.** Keep `ML_READONLY=true` so the MCP server's tool surface is sealed. This is your protection against accidental writes from agents calling write tools by name.
+3. **Host layer.** Treat the credentials in the MCP server's environment as secrets. Don't run the server on a host that untrusted agents have shell access to.
+
+### Inspect the live posture
+
+Read the `marklogic://security` resource at any time. It reports:
+- Active config: `readonly`, `allowEval`, `authType`, username hint.
+- Detected warnings, each with a code, severity, message, and remedy:
+  - `READONLY_DEFEATED_BY_EVAL` (critical) — readonly is on alongside allowEval (eval is auto-disabled; warning explains why).
+  - `READONLY_WITH_PRIVILEGED_USER` (warning) — the configured username looks like an admin account; tool-layer readonly does not provide credential-layer protection.
+  - `READONLY_POSTURE_OK` (info) — clean posture; verify the MarkLogic role is also read-only.
+
+Critical and warning items are also logged at startup.
+
+### Agent guidance
+
+The `marklogic://instructions` resource includes explicit agent guidance: when `ML_READONLY=true` is set and a write operation is requested, the agent should **refuse the operation** rather than crafting shell scripts, curl invocations, or side-channel Node code to bypass the safety belt. This is published in the instructions so Claude / Copilot / other MCP clients pick it up.
+
+### Other relevant configuration
+
+- `MCP_API_KEY` — set to require Bearer token auth on the HTTP transport.
+- `ML_AUTH_TYPE=oauth` — Bearer tokens from MCP clients are forwarded directly to MarkLogic; the MCP server never sees credentials, only opaque tokens; MarkLogic enforces per-user RBAC via its own JWT validation. In oauth mode, **per-user RBAC is your real readonly mechanism** — give each user only the roles they need.
+- Credentials are read from environment variables only — never hardcoded.
+- Digest auth recomputes the challenge per request — no credential caching.
+- The Flux runner executes on the MCP server host; `http_url` must be reachable from that host, not from the user's machine.
+- In oauth mode, `MCP_API_KEY` gateway auth uses the `X-MCP-Api-Key` header to avoid conflicting with the `Authorization: Bearer` header used for the user token.

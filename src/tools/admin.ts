@@ -3,7 +3,11 @@ import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 import { toToolError } from "../utils/errors.js";
 
-export function registerAdminTools(server: McpServer, clients: MarkLogicClients): void {
+export function registerAdminTools(
+  server: McpServer,
+  clients: MarkLogicClients,
+  readonly: boolean = false
+): void {
   server.tool(
     "ml_databases_list",
     "List all databases in the MarkLogic cluster.\n\nRUN THIS FIRST when starting work on a MarkLogic project. Every MarkLogic application creates its own content database (e.g. 'myapp-content') alongside dedicated Schemas, Modules, and Triggers databases. The built-in 'Documents' database is for ad-hoc sandbox use — project data lives in the app-specific DB. Use the output to determine the correct 'database' parameter for ml_search, ml_optic_query, ml_eval_javascript, and other data-access tools.",
@@ -68,22 +72,27 @@ export function registerAdminTools(server: McpServer, clients: MarkLogicClients)
     }
   );
 
-  server.tool(
-    "ml_database_set_forests",
-    "Set the list of forests attached to a MarkLogic database. Use this to restrict a database to only forests on available hosts when cluster nodes are offline — the primary fix for the forest-hang pattern where HTTP connections are accepted but never respond. Pass only the names of forests on running hosts.",
-    {
-      database: z.string().describe("Database name"),
-      forests: z.array(z.string()).describe("Forest names to attach — replaces the current list"),
-    },
-    async ({ database, forests }) => {
-      try {
-        await clients.admin.setDatabaseForests(database, forests);
-        return { content: [{ type: "text", text: `Forest list updated for database "${database}": [${forests.join(", ")}]` }] };
-      } catch (err) {
-        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+  // ml_database_set_forests writes to the Management API and so must be
+  // readonly-gated. Skip registration entirely when readonly=true so the tool
+  // can't be discovered, called, or trial-and-erred against.
+  if (!readonly) {
+    server.tool(
+      "ml_database_set_forests",
+      "Set the list of forests attached to a MarkLogic database. Use this to restrict a database to only forests on available hosts when cluster nodes are offline — the primary fix for the forest-hang pattern where HTTP connections are accepted but never respond. Pass only the names of forests on running hosts.",
+      {
+        database: z.string().describe("Database name"),
+        forests: z.array(z.string()).describe("Forest names to attach — replaces the current list"),
+      },
+      async ({ database, forests }) => {
+        try {
+          await clients.admin.setDatabaseForests(database, forests);
+          return { content: [{ type: "text", text: `Forest list updated for database "${database}": [${forests.join(", ")}]` }] };
+        } catch (err) {
+          return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        }
       }
-    }
-  );
+    );
+  }
 
   server.tool(
     "ml_servers_list",
