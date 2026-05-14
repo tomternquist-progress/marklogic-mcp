@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 import { toToolError } from "../utils/errors.js";
+import { formatLintFindings, lintSjs } from "../utils/eval-lint.js";
 
 export function registerEvalTools(server: McpServer, clients: MarkLogicClients, allowEval: boolean): void {
   if (!allowEval) return; // Tools not registered at all when eval is disabled
@@ -67,9 +68,32 @@ export function registerEvalTools(server: McpServer, clients: MarkLogicClients, 
       database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ javascript, vars, database }) => {
+      // Preflight lint: catch a handful of well-known SJS pitfalls before
+      // round-tripping to the server so the caller gets actionable hints
+      // instead of an opaque HTTP 500.
+      const findings = lintSjs(javascript);
+      const hardErrors = findings.filter((f) => f.severity === "error");
+      if (hardErrors.length) {
+        return {
+          content: [{
+            type: "text",
+            text:
+              "Eval rejected by preflight lint (no request was sent):\n" +
+              formatLintFindings(findings) +
+              "\n\nFix the issue above and call ml_eval_javascript again. " +
+              "If you believe the lint is wrong, you can bypass it by adjusting the code shape " +
+              "(e.g. rename a variable, wrap an object literal in parens).",
+          }],
+          isError: true,
+        };
+      }
+      const lintWarnings = formatLintFindings(findings);
       try {
         const results = await clients.eval.evalJavaScript(javascript, vars as Record<string, unknown> | undefined, database);
-        return { content: [{ type: "text", text: JSON.stringify(results, null, 2) }] };
+        const text = JSON.stringify(results, null, 2);
+        return {
+          content: [{ type: "text", text: lintWarnings ? `${lintWarnings}\n\n${text}` : text }],
+        };
       } catch (err) {
         const msg = toToolError(err);
         const is500 = err instanceof Error && msg.includes("500");

@@ -140,6 +140,52 @@ export class SearchClient {
     const res = await this.search({ q: query, pageLength: 0, database });
     return res.facets ?? {};
   }
+
+  /**
+   * Fetch the parsed content for a list of URIs in parallel. Used by
+   * field-projection callers (ml_search select_fields, ml_answer_query) to
+   * pull bodies after a search rather than requiring callers to do follow-up
+   * ml_document_get calls per URI.
+   */
+  async fetchDocs(
+    uris: string[],
+    database?: string,
+    concurrency = 8
+  ): Promise<Map<string, unknown>> {
+    const out = new Map<string, unknown>();
+    if (!uris.length) return out;
+
+    const queue = [...uris];
+    const workers: Promise<void>[] = [];
+    const launch = async (): Promise<void> => {
+      while (queue.length) {
+        const uri = queue.shift();
+        if (!uri) return;
+        try {
+          const qs = new URLSearchParams({ uri });
+          if (database) qs.set("database", database);
+          const res = await this.base.http.get(`/v1/documents?${qs.toString()}`, {
+            responseType: "text",
+          });
+          const text = res.data as string;
+          let parsed: unknown = text;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            // leave as raw string for XML/text documents
+          }
+          out.set(uri, parsed);
+        } catch {
+          out.set(uri, null);
+        }
+      }
+    };
+    for (let i = 0; i < Math.min(concurrency, uris.length); i++) {
+      workers.push(launch());
+    }
+    await Promise.all(workers);
+    return out;
+  }
 }
 
 function normalizeSearchResponse(raw: Record<string, unknown>): SearchResponse {

@@ -2,29 +2,91 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 import { toToolError } from "../utils/errors.js";
+import {
+  aggregateByField,
+  projectRow,
+  type ProjectedRow,
+} from "../utils/projection.js";
 
 export function registerSearchTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
     "ml_search",
     "Full-text and structured search across MarkLogic documents. Supports string queries and JSON structured queries.\n\n" +
-    "RESULT FORMAT: Returns URIs, relevance scores, confidence, and fitness for each match — NOT document content.\n" +
-    "To inspect content of matching documents: call ml_document_get on specific URIs, or use ml_document_sample\n" +
-    "to preview a collection without a search query. To add field extracts (snippets) to results, create search\n" +
-    "options with extract-document-data via ml_search_options_put and pass the options name here.\n\n" +
-    "SNIPPET PATTERN (inline content preview via search options):\n" +
-    "  ml_search_options_put name='my-opts' options={'options':{'extract-document-data':{'extract-path':'/*'}}}\n" +
-    "  then ml_search q='...' options='my-opts'  ← results will include extracted fields",
+    "RESULT FORMAT: By default returns URIs, relevance scores, confidence, and fitness for each match.\n" +
+    "Pass `select_fields` to project document fields directly into each row — no follow-up\n" +
+    "ml_document_get calls needed. Pass `group_by`/`distinct`/`count` for inline aggregation.\n" +
+    "Pass `response_mode='inline_summary'` (default) to keep typical chat-scale answers inline.\n\n" +
+    "SELECT FIELDS:\n" +
+    "  select_fields=['declarationTitle','incidentType','state'] → each result has those fields.\n" +
+    "  Paths support dot navigation ('envelope.instance.id') and a leading '*' for recursive search\n" +
+    "  ('*.declarationTitle' finds the field at any depth).\n\n" +
+    "AGGREGATION:\n" +
+    "  distinct='declarationTitle' → one row per distinct value with its document count.\n" +
+    "  group_by='incidentType' + count=true → frequency table over the matched documents.\n" +
+    "  normalize_whitespace=true collapses runs of whitespace before grouping/projection.\n\n" +
+    "SNIPPET PATTERN (server-side extracts via search options) is still supported via the\n" +
+    "`options` parameter, but `select_fields` is preferred for ad-hoc questions because it does\n" +
+    "not require pre-deploying a search-options node.",
     {
       q: z.string().optional().describe("Full-text query string (Google-style syntax supported)"),
       structured_query: z.record(z.unknown()).optional().describe("MarkLogic structured query JSON object"),
       collection: z.string().optional().describe("Limit search to this collection URI"),
       directory: z.string().optional().describe("Limit search to documents under this directory path"),
       start: z.number().int().positive().optional().describe("Pagination start position (default: 1)"),
-      page_length: z.number().int().positive().max(100).optional().describe("Results per page (default: 10)"),
+      page_length: z.number().int().positive().max(200).optional().describe("Results per page (default: 10, max 200 when select_fields is used)"),
       options: z.string().optional().describe("Named search options node configured on the server"),
       database: z.string().optional().describe("Database to search. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
+      select_fields: z.array(z.string()).optional().describe(
+        "Field paths to project from each matched document. Each result becomes a flat row " +
+        "with the requested fields plus uri/score. Paths support dot navigation and a leading " +
+        "'*' for recursive search."
+      ),
+      distinct: z.string().optional().describe(
+        "Return distinct values of this field with their document count instead of per-document rows. " +
+        "Cannot be combined with group_by."
+      ),
+      group_by: z.string().optional().describe(
+        "Group matched documents by this field; combined with count=true returns a frequency table. " +
+        "Cannot be combined with distinct."
+      ),
+      count: z.boolean().optional().describe(
+        "When grouping or projecting, include per-group counts. Implied by `distinct` and `group_by`."
+      ),
+      normalize_whitespace: z.boolean().optional().describe(
+        "Collapse runs of whitespace in projected/grouped values (default: false). Useful when extracting from XML mixed content."
+      ),
+      response_mode: z.enum(["inline_summary", "paged", "full"]).optional().describe(
+        "How to render the response. inline_summary (default): tabular + truncated to first 50 rows for readability. " +
+        "paged: full rows for the requested page. full: same as paged, kept for API symmetry."
+      ),
     },
-    async ({ q, structured_query, collection, directory, start, page_length, options, database }) => {
+    async ({
+      q,
+      structured_query,
+      collection,
+      directory,
+      start,
+      page_length,
+      options,
+      database,
+      select_fields,
+      distinct,
+      group_by,
+      count,
+      normalize_whitespace,
+      response_mode,
+    }) => {
+      if (distinct && group_by) {
+        return {
+          content: [{ type: "text", text: "Pass either distinct or group_by, not both." }],
+          isError: true,
+        };
+      }
+
+      const aggField = distinct ?? group_by;
+      const wantProjection = !!select_fields?.length || !!aggField;
+      const effectivePageLength = page_length ?? (wantProjection ? 50 : 10);
+
       try {
         const result = await clients.search.search({
           q,
@@ -32,11 +94,65 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
           collection,
           directory,
           start,
-          pageLength: page_length,
+          pageLength: effectivePageLength,
           options,
           database,
         });
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+        // Default path (no projection / no aggregation): preserve historical
+        // behaviour so existing callers and tests stay working.
+        if (!wantProjection) {
+          return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        }
+
+        // Projection / aggregation path: fetch the matched documents and
+        // assemble flat rows.
+        const fields = new Set<string>(select_fields ?? []);
+        if (aggField) fields.add(aggField);
+        const uris = result.results.map((r) => r.uri);
+        const docs = await clients.search.fetchDocs(uris, database);
+
+        const rows: ProjectedRow[] = result.results.map((r) =>
+          projectRow(r.uri, docs.get(r.uri), Array.from(fields), {
+            normalizeWhitespace: normalize_whitespace,
+            score: r.score,
+          })
+        );
+
+        if (aggField) {
+          const aggregated = aggregateByField(rows, aggField, {
+            normalizeWhitespace: normalize_whitespace,
+          });
+          const payload = {
+            total: result.total,
+            sampled: rows.length,
+            aggregation: distinct ? "distinct" : "group_by",
+            field: aggField,
+            values: aggregated,
+            note:
+              rows.length < result.total
+                ? `Aggregation covers the first ${rows.length} matches of ${result.total}. ` +
+                  `Increase page_length to widen the sample.`
+                : undefined,
+          };
+          return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
+        }
+
+        const mode = response_mode ?? "inline_summary";
+        const visibleRows = mode === "inline_summary" ? rows.slice(0, 50) : rows;
+        const payload: Record<string, unknown> = {
+          total: result.total,
+          start: result.start,
+          pageLength: result.pageLength,
+          fields: Array.from(fields),
+          rows: visibleRows,
+        };
+        if (count) payload.count = result.total;
+        if (mode === "inline_summary" && rows.length > visibleRows.length) {
+          payload.truncated = `Showing first ${visibleRows.length} of ${rows.length} rows on this page. ` +
+            `Pass response_mode='paged' for the full page.`;
+        }
+        return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
@@ -69,6 +185,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
     "field (sum/avg/min/max/stddev over a range index), and fast counting without scanning documents.\n\n" +
     "WHEN TO PICK THIS vs ALTERNATIVES:\n" +
     "  • ml_values_query  → no TDE needed; one field; fastest for simple frequency / 1D aggregate.\n" +
+    "  • ml_search distinct=… → no range index needed; samples up to page_length matched docs.\n" +
     "  • ml_facets_query  → multiple facets at once; requires search options with facet constraints.\n" +
     "  • ml_optic_query   → GROUP BY across multiple columns, joins, or tabular SELECT — requires TDE view.\n" +
     "  • ml_aggregate_query → single-row totals across filtered documents (no grouping).\n\n" +

@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 import { toToolError } from "../utils/errors.js";
+import { aggregateByField, projectRow, type ProjectedRow } from "../utils/projection.js";
 
 export function registerPerformanceTools(
   server: McpServer,
@@ -108,14 +109,24 @@ export function registerPerformanceTools(
         const { results: _results, ...metadata } = raw as Record<string, unknown> & { results?: unknown };
         const hints = analyzeSearchDebug(raw);
 
-        const output = [
+        const sections = [
           "=== SEARCH QUERY PLAN (debug=true) ===",
           JSON.stringify(metadata, null, 2),
           "",
           "=== QUERY ANALYSIS ===",
           ...hints,
-        ].join("\n");
-        return { content: [{ type: "text", text: output }] };
+        ];
+
+        // Zero-result rescue: when the resolved query returned no candidates,
+        // sample the scope to suggest the next move instead of leaving the
+        // caller to redo schema discovery by hand.
+        const total = metadata["total"] as number | undefined;
+        if (total === 0) {
+          const rescue = await buildZeroResultRescue(clients, { q, collection, database });
+          sections.push("", "=== ZERO-RESULT RESCUE ===", rescue);
+        }
+
+        return { content: [{ type: "text", text: sections.join("\n") }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
@@ -615,6 +626,83 @@ function interpretQueryMetrics(
   }
 
   return hints;
+}
+
+/**
+ * Build a zero-result rescue payload when the planner's resolved query returns
+ * no candidates. Samples the search scope (collection / DB), extracts the most
+ * common values from a handful of heuristic fields, and emits suggested next
+ * steps so the caller can recover without re-running schema discovery.
+ */
+async function buildZeroResultRescue(
+  clients: MarkLogicClients,
+  ctx: { q?: string; collection?: string; database?: string }
+): Promise<string> {
+  const lines: string[] = [];
+  try {
+    const sample = await clients.search.search({
+      q: "",
+      collection: ctx.collection,
+      database: ctx.database,
+      pageLength: 25,
+    });
+    lines.push(`Scope size: ${sample.total.toLocaleString()} documents in ${ctx.collection ? `collection "${ctx.collection}"` : "the content DB"}.`);
+
+    if (sample.total === 0) {
+      lines.push("The scope itself is empty. Verify the collection name with ml_collections_list.");
+      return lines.join("\n");
+    }
+
+    const uris = sample.results.map((r) => r.uri);
+    const docs = await clients.search.fetchDocs(uris, ctx.database);
+
+    // Heuristic field candidates: top-level keys that are short strings.
+    const candidateFields = pickFieldCandidates(docs);
+    if (candidateFields.length) {
+      lines.push("", "SUGGESTED FIELDS TO TARGET (most populated in the sample):");
+      candidateFields.forEach((f) => lines.push(`  • ${f}`));
+
+      lines.push("", "CLOSEST INDEXED-LIKE VALUES IN THE SAMPLE:");
+      for (const field of candidateFields.slice(0, 3)) {
+        const rows: ProjectedRow[] = sample.results.map((r) =>
+          projectRow(r.uri, docs.get(r.uri), [field], { normalizeWhitespace: true })
+        );
+        const top = aggregateByField(rows, field, { normalizeWhitespace: true, limit: 5 });
+        if (!top.length) continue;
+        lines.push(`  ${field}:`);
+        for (const t of top) {
+          lines.push(`    - ${JSON.stringify(t.value)}  (${t.count})`);
+        }
+      }
+    }
+
+    lines.push("", "SUGGESTED REFORMULATIONS:");
+    if (ctx.q) {
+      lines.push(`  • Loosen the free-text query: ml_search q="${ctx.q.split(/\s+/).slice(0, 2).join(" ")}"`);
+      lines.push(`  • Or target a specific field: ml_search structured_query={"word-query":{"text":["${ctx.q}"], "json-property":"<field>"}}`);
+    }
+    lines.push(`  • Aggregate to confirm available values: ml_search distinct="<field>" collection="${ctx.collection ?? '<scope>'}"`);
+    lines.push(`  • Ask in natural language: ml_answer_query question="…" collection="${ctx.collection ?? '<scope>'}"`);
+  } catch (err) {
+    lines.push(`Rescue sample failed: ${toToolError(err)}`);
+  }
+  return lines.join("\n");
+}
+
+function pickFieldCandidates(docs: Map<string, unknown>): string[] {
+  const counts = new Map<string, number>();
+  for (const doc of docs.values()) {
+    if (!doc || typeof doc !== "object") continue;
+    for (const [key, value] of Object.entries(doc as Record<string, unknown>)) {
+      if (value == null) continue;
+      if (typeof value === "object" && !Array.isArray(value)) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  return Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([k]) => k);
 }
 
 /** Safely extract a numeric value from a nested object using common key patterns. */

@@ -765,6 +765,11 @@ Available tools (use only these):
               ml_document_delete, ml_document_patch
   Search:     ml_search, ml_search_qbe, ml_values_query, ml_suggest, ml_facets_query,
               ml_geospatial_search, ml_parse_query
+              (ml_search supports select_fields=, distinct=, group_by=,
+               normalize_whitespace=, response_mode= for inline projection
+               and aggregation without follow-up ml_document_get calls)
+  Answer:     ml_answer_query (one-shot NL → CTS → projection + audit trace),
+              ml_query_recipe (named templates for common analytics)
   Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_tde_install,
               ml_indexes_list, ml_collections_list, ml_namespaces_list, ml_search_surface
   Eval:       ml_eval_javascript, ml_eval_xquery, ml_sparql, ml_invoke_module
