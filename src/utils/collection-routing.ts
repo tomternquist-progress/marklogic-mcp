@@ -27,7 +27,11 @@ export interface RoutingResult {
 
 interface RouteOptions {
   question: string;
-  parsedFields: string[];
+  /** Semantic tags emitted by the alias parser (e.g. ["type", "location"]).
+   *  Matched against each candidate collection's inferred fields via
+   *  substring containment, so the tag "type" hits an "incidentType" field
+   *  in one dataset or a "drugType" field in another. */
+  parsedTags: string[];
   database?: string;
   /** Cap candidate collections to enumerate. Top-N by document count. */
   candidatePoolSize?: number;
@@ -106,7 +110,10 @@ export async function routeToCollection(
     .sort((a, b) => b.nameScore - a.nameScore || b.documentCount - a.documentCount);
 
   // Pass 2: for the top candidates, sample fields and score by overlap with
-  // the parsed filter fields. This is the expensive step — keep it bounded.
+  // the parsed tag list. We match each tag against each observed field via
+  // case-insensitive substring containment, so the tag "type" hits
+  // "incidentType" / "drugType" / "eventType" without us needing dataset-
+  // specific dictionaries. This is the expensive step — keep it bounded.
   const seedPool = ranked.slice(0, sampleTop);
   for (const cand of seedPool) {
     try {
@@ -119,8 +126,10 @@ export async function routeToCollection(
         .filter((f) => !f.path.includes("/"))
         .map((f) => f.path);
       let overlap = 0;
-      for (const pf of options.parsedFields) {
-        if (cand.observedFields.includes(pf)) overlap++;
+      const observedLower = cand.observedFields.map((f) => f.toLowerCase());
+      for (const tag of options.parsedTags) {
+        const tagLower = tag.toLowerCase();
+        if (observedLower.some((f) => f === tagLower || f.includes(tagLower))) overlap++;
       }
       cand.fieldScore = overlap;
     } catch {

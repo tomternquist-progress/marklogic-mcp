@@ -163,81 +163,83 @@ export function aggregateByField(
 // ─── Alias dictionary (schema-aware NL parsing) ──────────────────────────────
 
 /**
- * Per-collection alias dictionary. Maps natural-language phrases (lowercased,
- * whitespace-normalized) to the field path agents should actually query. Used
- * by ml_answer_query when constructing a CTS query from a user question.
+ * Generic semantic-tag dictionary. Keys are abstract concepts ("type",
+ * "title", "location"); values are the natural-language phrases that signal
+ * the user is talking about that concept.
  *
- * Built from observed dataset shapes. Add new entries here when a new dataset
- * is being supported; existing entries are intentionally generic enough to
- * cover most disaster/event/incident-style collections.
+ * The output of parseQuestionWithAliases is a list of tagged filters — at
+ * execution time the caller resolves each tag to the actual field name in
+ * the target collection via resolveTagToField(). That keeps the parser
+ * dataset-agnostic.
+ *
+ * Add new tags here only when a concept is genuinely common across
+ * datasets. Anything domain-specific belongs in the caller's configuration,
+ * not in this library.
  */
-export const FIELD_ALIASES: Record<string, Record<string, string[]>> = {
-  // FEMA disaster declarations and similar event/incident datasets.
-  "*": {
-    declarationTitle: ["title", "disaster", "disaster name", "event", "event name", "incident name"],
-    incidentType: [
-      "type",
-      "incident type",
-      "event type",
-      "disaster type",
-      "category",
-      "kind",
-      "involved",
-      "involving",
-      "related to",
-      "about",
-    ],
-    state: ["state", "us state", "where", "location", "region"],
-    designatedArea: ["county", "area", "designated area", "place"],
-    declarationDate: ["date", "declared", "declaration date", "when"],
-    incidentBeginDate: ["start", "began", "started", "from", "incident begin"],
-    incidentEndDate: ["end", "ended", "until", "through", "incident end"],
-    fipsStateCode: ["fips", "state code", "fips code"],
-    declarationType: ["declaration type", "designation"],
-  },
+export const SEMANTIC_TAGS: Record<string, string[]> = {
+  type: [
+    "type",
+    "category",
+    "kind",
+    "incident type",
+    "event type",
+    "involved",
+    "involving",
+    "related to",
+    "about",
+  ],
+  title: ["title", "name", "called", "labelled", "labeled"],
+  location: ["state", "us state", "where", "location", "region", "country", "city", "county", "place", "area"],
+  date: ["date", "declared", "when", "issued", "published"],
+  startDate: ["start", "began", "started", "from", "since"],
+  endDate: ["end", "ended", "until", "through", "before"],
+  identifier: ["id", "number", "code", "key"],
+  status: ["status", "state of"],
 };
 
 export interface ParsedAliasResult {
-  /** Field path → search phrase that should match values of that field. */
-  fieldFilters: Array<{ field: string; phrase: string; matchedAlias: string }>;
+  /** Semantic tag matched in the question + the captured phrase that should
+   *  filter on that concept. Resolve the `tag` to an actual field via
+   *  resolveTagToField() before building a CTS query. */
+  fieldFilters: Array<{ tag: string; phrase: string; matchedAlias: string }>;
   /** Words from the question that were not consumed by any alias match. */
   residual: string;
 }
 
 /**
  * Lightweight NL parser: look at the question text for phrases registered in
- * the alias dictionary and turn them into field-scoped filters. Anything not
- * consumed by an alias becomes the residual free-text query.
+ * SEMANTIC_TAGS and turn them into tag-scoped filters. Anything not consumed
+ * by an alias becomes the residual free-text query.
  *
  * Example:
  *   "which disasters involved hurricanes"
- *   → fieldFilters: [{ field: "incidentType", phrase: "hurricanes", matchedAlias: "involved" }]
+ *   → fieldFilters: [{ tag: "type", phrase: "hurricanes", matchedAlias: "involved" }]
  *   → residual: "disasters"
  *
  * Heuristic — does not aim to fully parse English. The goal is "natural
  * phrasing doesn't fail just because wording differs from indexed terms."
+ *
+ * The `collection` parameter is reserved for future per-collection alias
+ * overrides via configuration; current behavior is identical regardless.
  */
 export function parseQuestionWithAliases(
   question: string,
-  collection?: string
+  _collection?: string
 ): ParsedAliasResult {
-  const aliasSet = collectAliases(collection);
   const lower = question.toLowerCase();
 
-  const filters: Array<{ field: string; phrase: string; matchedAlias: string }> = [];
+  const filters: Array<{ tag: string; phrase: string; matchedAlias: string }> = [];
   const consumed: Array<[number, number]> = [];
 
   // Sort alias terms by length descending so multi-word phrases match before
   // single-word substrings of those phrases.
-  const aliasEntries = aliasSet.flatMap(([field, aliases]) =>
-    aliases.map((a) => ({ field, alias: a }))
+  const aliasEntries = Object.entries(SEMANTIC_TAGS).flatMap(([tag, aliases]) =>
+    aliases.map((a) => ({ tag, alias: a }))
   );
   aliasEntries.sort((a, b) => b.alias.length - a.alias.length);
 
-  for (const { field, alias } of aliasEntries) {
+  for (const { tag, alias } of aliasEntries) {
     const aliasLower = alias.toLowerCase();
-    // Look for the alias as a whole-word phrase; capture the noun that follows
-    // it. "involved hurricanes" → field=incidentType, phrase="hurricanes".
     const pattern = new RegExp(
       String.raw`\b${escapeRegex(aliasLower)}\b\s+([a-z][a-z0-9\- ]{1,40}?)(?=\s+(?:in|on|at|by|with|and|or|of|for|from|to|during)\b|[?.!,]|$)`,
       "i"
@@ -250,7 +252,7 @@ export function parseQuestionWithAliases(
     if (overlaps(consumed, start, end)) continue;
     const phrase = m[1].trim();
     if (!phrase) continue;
-    filters.push({ field, phrase, matchedAlias: alias });
+    filters.push({ tag, phrase, matchedAlias: alias });
     consumed.push([start, end]);
   }
 
@@ -268,21 +270,64 @@ export function parseQuestionWithAliases(
   return { fieldFilters: filters, residual };
 }
 
-function collectAliases(collection?: string): Array<[string, string[]]> {
-  // Merge global aliases with collection-specific ones if the collection has
-  // its own entry. Collection-specific entries win on key conflict.
-  const out = new Map<string, string[]>();
-  const globalEntry = FIELD_ALIASES["*"] ?? {};
-  for (const [field, aliases] of Object.entries(globalEntry)) {
-    out.set(field, [...aliases]);
+/**
+ * Map a semantic tag (e.g. "type") to the best actual field name from a list
+ * of fields the collection actually exposes. Strategy:
+ *   1. Exact match (tag === field).
+ *   2. Suffix match — field ends with capitalized tag ("incidentType" matches "type").
+ *   3. Prefix match — field starts with tag ("typeName" matches "type").
+ *   4. Substring containment ("disasterType" matches "type", "subTypeKind" matches "type").
+ *
+ * Returns undefined when no inferred field is a plausible match. Callers
+ * should treat that as "we can't ground this filter in the collection's
+ * schema" and either skip it or surface as a low-confidence assumption.
+ */
+export function resolveTagToField(tag: string, inferredFields: string[]): string | undefined {
+  const tagLower = tag.toLowerCase();
+  for (const f of inferredFields) {
+    if (f.toLowerCase() === tagLower) return f;
   }
-  if (collection && FIELD_ALIASES[collection]) {
-    for (const [field, aliases] of Object.entries(FIELD_ALIASES[collection])) {
-      const existing = out.get(field) ?? [];
-      out.set(field, Array.from(new Set([...aliases, ...existing])));
-    }
+  for (const f of inferredFields) {
+    const fl = f.toLowerCase();
+    if (fl.endsWith(tagLower) && f.length > tag.length) return f;
   }
-  return Array.from(out.entries());
+  for (const f of inferredFields) {
+    if (f.toLowerCase().startsWith(tagLower) && f.length > tag.length) return f;
+  }
+  for (const f of inferredFields) {
+    if (f.toLowerCase().includes(tagLower)) return f;
+  }
+  return undefined;
+}
+
+export interface ResolvedFilter {
+  /** Semantic tag (concept) the alias parser landed on. */
+  tag: string;
+  /** Actual field name in the target collection; undefined if no inferred
+   *  field was a plausible match for the tag. */
+  field: string | undefined;
+  /** The captured phrase that should filter on the tag/field. */
+  phrase: string;
+  /** The exact alias the parser matched in the question. */
+  matchedAlias: string;
+}
+
+/**
+ * Turn a ParsedAliasResult into a list of ResolvedFilters by mapping each
+ * tag to a field via resolveTagToField. Filters whose tag does not resolve
+ * still appear in the output (with field=undefined) so the caller can choose
+ * whether to skip, warn, or fall back to bareword.
+ */
+export function resolveFilters(
+  parsed: ParsedAliasResult,
+  inferredFields: string[]
+): ResolvedFilter[] {
+  return parsed.fieldFilters.map((f) => ({
+    tag: f.tag,
+    field: resolveTagToField(f.tag, inferredFields),
+    phrase: f.phrase,
+    matchedAlias: f.matchedAlias,
+  }));
 }
 
 function escapeRegex(s: string): string {
