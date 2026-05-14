@@ -119,6 +119,23 @@ pitfalls → alternatives) before any tool is called.
     If the goal does not map cleanly to the table below, invoke the problem_advisor
     prompt before picking any tool.
 
+12. ANSWER FIRST, EXPLORE SECOND
+    For a user question against a known collection ("which X involved Y?"), call
+    ml_answer_query — it parses the question, maps phrases to fields via an alias
+    dictionary, builds the CTS query, projects readable rows, optionally aggregates,
+    and returns an audit trace. Skip the manual discover → query → fetch loop.
+
+13. ml_search NOW PROJECTS AND AGGREGATES
+    Pass select_fields=[...] to ml_search and each result includes the field values
+    inline (no follow-up ml_document_get needed). Pass distinct="<field>" or
+    group_by="<field>" to fold matches into a frequency table in one call.
+    response_mode=inline_summary keeps chat output compact by default.
+
+14. USE RECIPES FOR REPEATED PATTERNS
+    Common analytical questions ("top N by field", "distinct titles + count",
+    "time-bounded events") have named templates in ml_query_recipe. Call with
+    recipe='list' to enumerate; pass minimal params to execute.
+
 11. FASTTRACK APPS START WITH SEARCH OPTIONS
     FastTrack UI widgets (SearchBar, FacetFilters, Geospatial Map, Timeline) are
     configured entirely through named search-options sets stored in MarkLogic.
@@ -149,11 +166,24 @@ Full-text search     Universal index /          ml_search                 ml_col
                                                 ml_suggest                ml_search_surface
                                                 ml_facets_query           (one-shot field/index/options
                                                                           discovery for query building)
+                                                (ml_search now supports
+                                                 select_fields= for inline
+                                                 field projection and
+                                                 distinct=/group_by= for
+                                                 single-call aggregation)
 
 Chat → MarkLogic     NL → string grammar →      ml_search_surface         ml_search_surface
 translation (LLM     parse → execute            nl_to_search_query        (do this FIRST)
 writes queries from  pipeline                   ml_parse_query            ml_search_options_list
 user questions)                                 ml_search                 ml_schema_discover
+
+One-shot Q&A         Question parser +          ml_answer_query           ml_collections_list
+(natural language    schema-aware aliases +     (returns rows + audit      ml_schema_discover
+ over a collection)  CTS build + projection     trace incl. CTS shape,
+                                                fields used, assumptions)
+
+Reusable templates   Named recipe library       ml_query_recipe           —
+(common analytics)                              (recipe='list' to enumerate)
 
 Structured filter    Structured query /         ml_search                 ml_indexes_list
 (range/date/numeric) range index                ml_values_query           ml_schema_discover
@@ -792,6 +822,11 @@ Documents (3–7, config-dependent):
 
 Search (6):    ml_search, ml_search_qbe, ml_values_query, ml_suggest,
                ml_geospatial_search, ml_parse_query
+               (ml_search supports select_fields=, distinct=, group_by=,
+                normalize_whitespace=, response_mode= for inline projection
+                and aggregation)
+
+Answer (2):    ml_answer_query, ml_query_recipe
 
 Schema (8):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
                ml_tde_install, ml_indexes_list, ml_collections_list, ml_namespaces_list,
@@ -839,6 +874,8 @@ DHF (3–5, DHF-install-dependent):
 Performance (3–5, eval-dependent):
                ml_explain_optic, ml_search_query_plan, ml_forest_metrics
                [eval-enabled] ml_force_merge, ml_profile_query
+               (ml_search_query_plan now emits a zero-result rescue section
+                with suggested fields, closest indexed values, and reformulations)
 
 Planning (1):  ml_suggest_approach
 
