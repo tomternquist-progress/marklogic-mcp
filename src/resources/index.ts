@@ -120,15 +120,24 @@ pitfalls → alternatives) before any tool is called.
     prompt before picking any tool.
 
 12. ANSWER FIRST, EXPLORE SECOND
-    For a user question against a known collection ("which X involved Y?"), call
-    ml_answer_query — it parses the question, maps phrases to fields via an alias
-    dictionary, NORMALIZES the phrase against observed values (so "hurricanes"
-    → indexed "Hurricane"), builds a structured value-query, projects readable
-    rows, optionally aggregates, and returns an audit trace + a query plan card.
-    Residual filler ("which disasters") is suppressed by default to avoid
-    accidental zero-result over-constraint. Pass translation_only=true to inspect
-    the generated CTS without executing. Skip the manual discover → query → fetch
-    loop.
+    For a user question against a known dataset ("which X involved Y?"), call
+    ml_answer_query. It:
+      • AUTO-ROUTES to the best-matching collection if you don't specify one
+        (scored by name + field-overlap with the question — fixes the "wrong
+        domain" failure mode where pharmacy hits leak into a disasters question).
+      • Parses the question via an alias dictionary, NORMALIZES the phrase
+        against observed values (so "hurricanes" → indexed "Hurricane",
+        including Damerau-distance-1 typos like "hurricaen").
+      • Builds a structured value-query, projects readable rows, returns
+        per-stage confidence (collection / fieldMapping / valueGrounding) and a
+        next_actions list of runnable rewrites.
+      • On zero hits: auto-rescues by rewriting filters from closestValues,
+        then word-query, then residual.
+    Residual filler ("which disasters") is suppressed by default. Pass
+    translation_only=true to inspect the generated CTS without executing. Pass
+    answer_mode=rows_deduped (or rows_plus_rollup) with rows_unique_by=[...]
+    when the dataset has row-vs-entity inflation (FEMA county-level rows vs
+    unique disasters).
 
 13. ml_search NOW PROJECTS AND AGGREGATES
     Pass select_fields=[...] to ml_search and each result includes the field values
@@ -845,11 +854,16 @@ Search (6):    ml_search, ml_search_qbe, ml_values_query, ml_suggest,
                 normalize_whitespace=, response_mode= for inline projection
                 and aggregation)
 
-Answer (3):    ml_answer_query (with translation_only=, include_residual=,
-                                  group_by=, value normalization, plan card),
+Answer (3):    ml_answer_query (auto-routes to collection, value-normalizes,
+                                  filler-suppressed, three-layer auto-rescue,
+                                  per-stage confidence, next_actions array,
+                                  rows_deduped/rows_plus_rollup with
+                                  rows_unique_by= or built-in presets),
                ml_query_recipe,
                ml_capabilities (runtime parameter manifest — call this when in
-                                doubt about which parameters a tool accepts)
+                                doubt about which parameters a tool accepts;
+                                CI-tested against actual schemas via
+                                capabilities-parity.test.ts)
 
 Schema (8):    ml_schema_discover, ml_schema_get_tde, ml_tde_validate,
                ml_tde_install, ml_indexes_list, ml_collections_list, ml_namespaces_list,

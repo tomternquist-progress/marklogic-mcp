@@ -783,9 +783,12 @@ Available tools (use only these):
               (ml_search supports select_fields=, distinct=, group_by=,
                normalize_whitespace=, response_mode= for inline projection
                and aggregation without follow-up ml_document_get calls)
-  Answer:     ml_answer_query (one-shot NL → CTS → projection + audit trace;
+  Answer:     ml_answer_query (auto-routes to collection if not specified;
                                 value-normalizes "hurricanes" → "Hurricane";
                                 suppresses filler residual by default;
+                                three-layer auto-rescue on zero hits;
+                                per-stage confidence + next_actions runnables;
+                                rows_deduped / rows_plus_rollup with rows_unique_by=;
                                 translation_only=true returns CTS without executing),
               ml_query_recipe (named templates for common analytics),
               ml_capabilities (runtime parameter manifest — inspect supported params per tool)

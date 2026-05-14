@@ -37,12 +37,13 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
   },
   {
     name: "ml_answer_query",
-    description: "One-shot NL question → CTS → projected rows + audit trace.",
+    description: "One-shot NL question → CTS → projected rows + audit trace + next_actions.",
     params: [
       { name: "question", type: "string", description: "Natural-language question" },
-      { name: "collection", type: "string?", description: "Collection URI to scope to" },
-      { name: "answer_mode", type: "'rows' | 'count' | 'group' | 'distinct'?", description: "Shape of the answer" },
+      { name: "collection", type: "string?", description: "Collection URI to scope to (auto-routed when omitted)" },
+      { name: "answer_mode", type: "'rows' | 'rows_deduped' | 'rows_plus_rollup' | 'count' | 'group' | 'distinct'?", description: "Shape of the answer" },
       { name: "group_by", type: "string?", description: "Field to group/distinct by (overrides auto-pick)" },
+      { name: "rows_unique_by", type: "string[]?", description: "Dedupe keys for rows_deduped / rows_plus_rollup; falls back to a preset by collection" },
       { name: "database", type: "string?", description: "Target database" },
       { name: "max_results", type: "number?", description: "Cap rows sampled (default 50 / 250 for group)" },
       { name: "include_residual", type: "boolean?", description: "Pass leftover filler as q (default false)" },
