@@ -149,18 +149,33 @@ function classify(task: string): ToolRecipe[] {
     !/import|ingest|load/.test(t);
 
   if (isSearch) {
+    const isExactValue = /\bexact\b|\bequals?\b|\b(field|property|column)\s+(is|equal|matches?)\b|\bonly.*where\b/.test(t);
     results.push({
       tool: "ml_search",
       description: "Full-text and structured document search",
       use_when: ["full-text-search", "keyword-search", "document-retrieval"],
-      recipe: {
-        q: "<search terms>",
-        collection: "<collection-name>",
-        page_length: 20,
-      },
+      recipe: isExactValue
+        ? {
+            structured_query: {
+              query: {
+                "value-query": {
+                  "json-property": "<field-name>",
+                  text: ["<exact-value>"],
+                },
+              },
+            },
+            collection: "<collection-name>",
+            page_length: 20,
+          }
+        : {
+            q: "<search terms>",
+            collection: "<collection-name>",
+            page_length: 20,
+          },
       rationale:
-        "ml_search uses MarkLogic's Universal Index — no TDE or range index required for basic word queries. " +
-        "Use ml_optic_query for exact-match structured filtering or aggregations.",
+        "ml_search uses MarkLogic's Universal Index for bareword queries (q='...'). For field-scoped EXACT-VALUE " +
+        "matching, pass a structured value-query — the JSON property value index is on by default, NO range index " +
+        "needed. Use ml_optic_query for GROUP BY / joins / aggregations across a TDE view.",
     });
   }
 

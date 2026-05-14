@@ -20,7 +20,9 @@ export const QUERY_RECIPES: RecipeDefinition[] = [
   {
     name: "find_entities_by_type",
     description:
-      "Find documents in a collection whose type/category field matches a given phrase. " +
+      "Find documents in a collection whose type/category field exactly equals a given value. " +
+      "Uses a structured value-query against the JSON property value index (no range index required) — " +
+      "more precise than bareword full-text matching, which can over-match across other fields. " +
       "Returns flat rows with the requested fields.",
     requiredParams: ["collection", "type_field", "type_value"],
     build: (args) => ({
@@ -28,16 +30,9 @@ export const QUERY_RECIPES: RecipeDefinition[] = [
       params: {
         collection: args.collection,
         structured_query: {
-          "and-query": {
-            queries: [
-              {
-                "value-query": {
-                  type: "string",
-                  json_property: args.type_field,
-                  text: [args.type_value],
-                },
-              },
-            ],
+          "value-query": {
+            "json-property": args.type_field,
+            text: [args.type_value],
           },
         },
         select_fields: args.select_fields ?? [args.type_field],
@@ -45,8 +40,9 @@ export const QUERY_RECIPES: RecipeDefinition[] = [
         normalize_whitespace: true,
       },
       explanation:
-        `Looks for documents where ${args.type_field} == "${args.type_value}" in collection ` +
-        `"${args.collection}", projecting the requested fields inline.`,
+        `Exact-match value-query on ${args.type_field}="${args.type_value}" in collection ` +
+        `"${args.collection}". JSON property value indexes are on by default, so this works without ` +
+        `adding a range index.`,
     }),
   },
   {

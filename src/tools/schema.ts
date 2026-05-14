@@ -113,16 +113,43 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
     "                          passed to ml_search via options= for tagged-grammar parsing and faceting)\n" +
     "  • suggestedBindings  — pre-built ml_parse_query bindings map: ONLY range-indexed fields. Each\n" +
     "                          entry is a {type, name, scalar_type} ready to pass to ml_parse_query.\n" +
-    "                          cts.parse SJS requires a range index for every tagged binding — fields\n" +
-    "                          without one cannot be tagged.\n" +
-    "  • barewordFields[]   — top-level fields the agent saw in the sample but which have NO range\n" +
-    "                          index. These can be searched as bareword text via the universal index\n" +
-    "                          (e.g. ml_search q='wikipedia' finds docs whose 'source' is 'wikipedia'),\n" +
-    "                          but NOT tag-bound (q='source:wikipedia' will not work without an index)\n\n" +
+    "                          cts.parse SJS requires a range index for every tagged binding — but a\n" +
+    "                          range index is NOT the only way to query a field (see below).\n" +
+    "  • valueQueryableFields[] — top-level fields whose EXACT VALUES can be matched by passing a\n" +
+    "                          structured_query to ml_search, with no range index needed. JSON\n" +
+    "                          property/element/field value indexes are on by default in MarkLogic, so\n" +
+    "                          { value-query: { json-property: 'incidentType', text: ['Hurricane'] } }\n" +
+    "                          returns ONLY docs whose incidentType property literally equals 'Hurricane'.\n" +
+    "                          PREFER this over bareword `q='Hurricane'`, which also matches docs that\n" +
+    "                          merely mention the term in some other field.\n" +
+    "  • wordQueryableFields[] — same fields, available for tokenised free-text matching via\n" +
+    "                          { word-query: { json-property: 'description', text: ['hurricane'] } }\n" +
+    "                          or via the universal index with bareword `q='hurricane'`.\n" +
+    "  • barewordFields[]    — alias of wordQueryableFields, kept for backwards compatibility. Note the\n" +
+    "                          earlier framing was misleading — a bareword query goes through the\n" +
+    "                          universal index and matches ANYWHERE in the document, not just the named\n" +
+    "                          field. For field-scoped matching, use valueQueryableFields with a\n" +
+    "                          structured value-query.\n\n" +
+    "QUERY-CONSTRUCTOR PICKER (no range index needed for any of these):\n" +
+    "  EXACT VALUE on a JSON property → cts.jsonPropertyValueQuery(name, [values])\n" +
+    "  EXACT VALUE on a field          → cts.fieldValueQuery(field, [values])\n" +
+    "  EXACT VALUE on an XML element   → cts.elementValueQuery(qname, [values])\n" +
+    "  WORD/STEMMED in a property      → cts.jsonPropertyWordQuery(name, text)\n" +
+    "  WORD/STEMMED anywhere           → cts.wordQuery(text)\n" +
+    "  IN A COLLECTION                 → cts.collectionQuery(uri)\n" +
+    "  UNDER A DIRECTORY               → cts.directoryQuery(uri, depth)\n" +
+    "  AND/OR/NOT                      → cts.andQuery / cts.orQuery / cts.notQuery\n" +
+    "RANGE INDEX REQUIRED (only for these):\n" +
+    "  RANGE comparison (>, <, GE, LE) → cts.jsonPropertyRangeQuery / cts.elementRangeQuery /\n" +
+    "                                    cts.fieldRangeQuery / cts.pathRangeQuery\n" +
+    "  TAGGED grammar in cts.parse     → every binding produces a cts.<kind>Reference\n" +
+    "  Faceting / lexicon iteration    → ml_facets_query / ml_values_query\n\n" +
     "GOOD NEXT STEPS:\n" +
+    "  → For exact-value filtering on non-indexed fields: build a structured value-query and pass to\n" +
+    "    ml_search via structured_query. NO range index required.\n" +
+    "      ml_search collection='X' structured_query='{\"query\":{\"value-query\":{\"json-property\":\"f\",\"text\":[\"v\"]}}}'\n" +
     "  → For LLM query generation: feed the JSON into the nl_to_search_query prompt with the user's question\n" +
-    "  → For programmatic queries: pick a field from inferredFields and a range index from rangeIndexes;\n" +
-    "    build a structured_query for ml_search\n" +
+    "  → For programmatic range queries: pick a field from rangeIndexes; build a structured range-query for ml_search\n" +
     "  → For richer faceting: pick a name from searchOptionsNames and call ml_search_options_get to read\n" +
     "    its constraint definitions, then pass that name to ml_search via the options= parameter",
     {
@@ -169,10 +196,19 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
             };
           }
         }
-        // Top-level fields without a range index → bareword-search candidates.
-        const barewordFields = (discovery.inferredFields ?? [])
+        // Top-level fields the agent can query. Every top-level field with at least one
+        // observed value supports structured value-query / word-query matching out of the
+        // box — JSON property value & word indexes are on by default. The earlier
+        // "barewordFields" framing implied bareword (universal-index) was the ONLY option
+        // for non-range-indexed fields; that was wrong. Surface them as
+        // valueQueryableFields so the agent reaches for structured_query first.
+        const topLevelFields = (discovery.inferredFields ?? [])
           .filter((f) => !f.path.includes("/") && !suggestedBindings[f.path])
           .map((f) => f.path);
+        const valueQueryableFields = topLevelFields;
+        const wordQueryableFields = topLevelFields;
+        // Kept as an alias so existing callers and tests don't break.
+        const barewordFields = topLevelFields;
 
         const surface = {
           collection: collection ?? null,
@@ -182,13 +218,16 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
           rangeIndexes: discovery.rangeIndexes,
           searchOptionsNames: optionNames,
           suggestedBindings,
+          valueQueryableFields,
+          wordQueryableFields,
           barewordFields,
           nextSteps: [
-            "Tagged queries (e.g. 'importedAt GE 2025-01-01'): use entries from suggestedBindings — requires a range index.",
-            "Non-indexed fields (barewordFields): search as free text via the universal index — q='wikipedia' finds docs where source='wikipedia'.",
+            "Exact value on a non-range-indexed field: ml_search structured_query='{\"query\":{\"value-query\":{\"json-property\":\"<field>\",\"text\":[\"<value>\"]}}}' — NO range index needed.",
+            "Tagged range comparison ('age GE 65'): use entries from suggestedBindings via ml_parse_query — requires a range index on the bound field.",
+            "Free-text token in a specific field: { word-query: { json-property: '<field>', text: ['<token>'] } } — uses the property word index, no range index needed.",
+            "Free-text across the whole doc: ml_search q='<token>' — universal index, matches anywhere.",
             "Translate NL → query: invoke the nl_to_search_query prompt with this surface as context.",
-            "Validate a string query without executing: ml_parse_query qtext='...' bindings=<from suggestedBindings>.",
-            "Execute: ml_search q='...' [options=<one of searchOptionsNames>] or structured_query=<from ml_parse_query>.",
+            "Combine clauses: wrap multiple queries in { and-query: { queries: [...] } } or { or-query: ... }.",
           ],
         };
         return { content: [{ type: "text", text: JSON.stringify(surface, null, 2) }] };
