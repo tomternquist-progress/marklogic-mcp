@@ -6,6 +6,8 @@ function makeConfig(overrides: Partial<{
   allowEval: boolean;
   username: string;
   authType: "digest" | "basic" | "oauth";
+  ssl: boolean;
+  rejectUnauthorized: boolean;
 }> = {}) {
   return {
     safety: {
@@ -19,8 +21,8 @@ function makeConfig(overrides: Partial<{
       username: overrides.username ?? "appuser",
       password: "x",
       database: "Documents",
-      ssl: false,
-      rejectUnauthorized: true,
+      ssl: overrides.ssl ?? false,
+      rejectUnauthorized: overrides.rejectUnauthorized ?? true,
       authType: overrides.authType ?? "digest",
       timeoutMs: 30000,
     },
@@ -53,6 +55,23 @@ describe("analyzeSecurityPosture", () => {
   it("returns no warnings at all when readonly is off", () => {
     const posture = analyzeSecurityPosture(makeConfig({ readonly: false, allowEval: true, username: "admin" }));
     expect(posture.warnings).toEqual([]);
+  });
+
+  it("warns when TLS is enabled but certificate verification is disabled", () => {
+    const posture = analyzeSecurityPosture(makeConfig({ ssl: true, rejectUnauthorized: false }));
+    const warn = posture.warnings.find((w) => w.code === "TLS_VERIFICATION_DISABLED");
+    expect(warn?.severity).toBe("warning");
+    expect(warn?.message).toMatch(/man-in-the-middle/i);
+  });
+
+  it("does not warn about TLS when verification is enabled", () => {
+    const posture = analyzeSecurityPosture(makeConfig({ ssl: true, rejectUnauthorized: true }));
+    expect(posture.warnings.some((w) => w.code === "TLS_VERIFICATION_DISABLED")).toBe(false);
+  });
+
+  it("reports the TLS warning independent of the readonly posture", () => {
+    const posture = analyzeSecurityPosture(makeConfig({ readonly: false, ssl: true, rejectUnauthorized: false }));
+    expect(posture.warnings.some((w) => w.code === "TLS_VERIFICATION_DISABLED")).toBe(true);
   });
 });
 
