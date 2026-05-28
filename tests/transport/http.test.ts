@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Server } from "http";
-import { startHttpTransport } from "../../src/transport/http.js";
+import { createHash } from "crypto";
+import { startHttpTransport, sessionTokenMatches } from "../../src/transport/http.js";
 
 // The HTTP transport logs on listen and on session events; mock the logger so
 // tests don't require initLogger() to be called first.
@@ -139,6 +140,36 @@ describe("Bearer token auth – apiKey configured", () => {
     const res = await fetch(`${baseUrl}/health`);
     const body = (await res.json()) as { error: string };
     expect(body.error).toMatch(/unauthorized/i);
+  });
+});
+
+// ─── OAuth session token binding ─────────────────────────────────────────────
+
+describe("sessionTokenMatches", () => {
+  const hashOf = (t: string) => createHash("sha256").update(t).digest("hex");
+  const reqWith = (token?: string) => ({
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  }) as never;
+
+  it("matches when the Bearer token hashes to the session's tokenHash", () => {
+    const entry = { tokenHash: hashOf("user-a-token") };
+    expect(sessionTokenMatches(entry, reqWith("user-a-token"))).toBe(true);
+  });
+
+  it("rejects a different Bearer token (session hijack attempt)", () => {
+    const entry = { tokenHash: hashOf("user-a-token") };
+    expect(sessionTokenMatches(entry, reqWith("user-b-token"))).toBe(false);
+  });
+
+  it("rejects a request with no Bearer token against a token-bound session", () => {
+    const entry = { tokenHash: hashOf("user-a-token") };
+    expect(sessionTokenMatches(entry, reqWith(undefined))).toBe(false);
+  });
+
+  it("always matches for non-oauth sessions (no tokenHash), even with no token", () => {
+    const entry = { tokenHash: undefined };
+    expect(sessionTokenMatches(entry, reqWith(undefined))).toBe(true);
+    expect(sessionTokenMatches(entry, reqWith("anything"))).toBe(true);
   });
 });
 

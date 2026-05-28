@@ -77,6 +77,24 @@ export function analyzeSecurityPosture(config: AppConfig): SecurityPosture {
     });
   }
 
+  // Warning: TLS is enabled but certificate verification is turned off. This
+  // accepts any certificate, defeating TLS's protection against man-in-the-middle
+  // interception of MarkLogic credentials and data. Independent of the readonly
+  // posture, so it is reported whenever the connection is misconfigured this way.
+  if (connection.ssl && !connection.rejectUnauthorized) {
+    warnings.push({
+      severity: "warning",
+      code: "TLS_VERIFICATION_DISABLED",
+      message:
+        `ML_SSL=true but ML_SSL_REJECT_UNAUTHORIZED=false — the server's TLS certificate is not ` +
+        `verified. Any certificate is accepted, so the connection is exposed to man-in-the-middle ` +
+        `interception of credentials and query data.`,
+      remedy:
+        `Install a trusted certificate on MarkLogic (or add its CA to the host trust store) and set ` +
+        `ML_SSL_REJECT_UNAUTHORIZED=true. Only disable verification for throwaway local testing.`,
+    });
+  }
+
   // Info: a meaningful readonly posture exists.
   if (safety.readonly && !usernameHint && !safety.allowEval) {
     warnings.push({

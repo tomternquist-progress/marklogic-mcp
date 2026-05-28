@@ -17,10 +17,25 @@ interface SessionEntry {
   tokenHash: string | undefined;
 }
 
-function extractBearerToken(req: Request): string | undefined {
+function extractBearerToken(req: Pick<Request, "headers">): string | undefined {
   const auth = req.headers.authorization;
   if (auth?.startsWith("Bearer ")) return auth.slice(7);
   return undefined;
+}
+
+/**
+ * Returns true when the request's Bearer token matches the token that created
+ * the session. Sessions created without a token (non-oauth deployments) have an
+ * undefined tokenHash and always match — token binding only applies in oauth mode.
+ *
+ * Exported for unit testing; not part of the transport's public API.
+ */
+export function sessionTokenMatches(entry: Pick<SessionEntry, "tokenHash">, req: Pick<Request, "headers">): boolean {
+  if (!entry.tokenHash) return true;
+  const token = extractBearerToken(req);
+  if (!token) return false;
+  const incomingHash = createHash("sha256").update(token).digest("hex");
+  return incomingHash === entry.tokenHash;
 }
 
 export async function startHttpTransport(
@@ -36,7 +51,11 @@ export async function startHttpTransport(
     app.set("trust proxy", config.trustProxy);
     logger.info("Express trust proxy enabled", { trustProxy: config.trustProxy });
   }
-  app.use(express.json());
+  // Eval scripts, flux jobs, and document writes can carry payloads well over
+  // Express's 100 KB default (ml_eval_javascript documents vars up to ~1–2 MB).
+  // Raise the JSON body limit so the HTTP transport doesn't 413 before the
+  // request reaches a tool handler.
+  app.use(express.json({ limit: "16mb" }));
   app.use(cors(config.corsOrigin ? { origin: config.corsOrigin } : undefined));
   app.use(rateLimit({ windowMs: 60_000, max: 500 }));
 
@@ -137,8 +156,7 @@ export async function startHttpTransport(
     // In oauth mode, verify the incoming token matches the one that created the session.
     // This prevents a different user from hijacking a session by guessing its ID.
     if (entry && oauthToken) {
-      const incomingHash = createHash("sha256").update(oauthToken).digest("hex");
-      if (entry.tokenHash && entry.tokenHash !== incomingHash) {
+      if (!sessionTokenMatches(entry, req)) {
         res.status(401).json({
           jsonrpc: "2.0",
           error: {
@@ -198,6 +216,13 @@ export async function startHttpTransport(
       res.status(404).json({ error: "Session not found" });
       return;
     }
+    // Token binding applies to the SSE channel too — without this, a caller who
+    // learns a session ID could attach to another user's server→client stream
+    // in oauth mode. No-op for non-oauth sessions (tokenHash undefined).
+    if (!sessionTokenMatches(entry, req)) {
+      res.status(401).json({ error: "OAuth token mismatch for this session" });
+      return;
+    }
     entry.lastSeen = Date.now();
     await entry.transport.handleRequest(req, res);
   });
@@ -205,6 +230,13 @@ export async function startHttpTransport(
   app.delete("/mcp", async (req, res) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
     const entry = sessionId ? sessions.get(sessionId) : undefined;
+    // Only the token that created the session may tear it down — otherwise a
+    // guessed session ID is a denial-of-service vector in oauth mode. Deleting a
+    // non-existent session stays idempotent (200).
+    if (entry && !sessionTokenMatches(entry, req)) {
+      res.status(401).json({ error: "OAuth token mismatch for this session" });
+      return;
+    }
     if (entry) {
       await entry.transport.close().catch(() => undefined);
       sessions.delete(sessionId!);

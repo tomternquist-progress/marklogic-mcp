@@ -27,7 +27,7 @@ Before writing any new tool, prompt, resource, or client method, answer:
    collection, or TDE template, document that prerequisite in the tool's `description`
    string so the agent knows to check before calling.
 
-4. **Is this already covered?** Check the 11 existing tool groups before adding a new
+4. **Is this already covered?** Check the 18 existing tool groups before adding a new
    tool. Extend an existing tool (via a new parameter) rather than adding a new one
    unless the problem type is genuinely distinct.
 
@@ -130,44 +130,65 @@ src/
   server.ts          — factory: createMcpServer() wires tools + resources + prompts
   index.ts           — CLI entry point; selects stdio or HTTP transport
   tools/
-    index.ts         — calls all registerXxxTools() — add new groups here
-    admin.ts         — cluster, databases, forests, servers (7 tools)
-    documents.ts     — get/list/put/delete/patch (2–5 tools, readonly-gated)
-    search.ts        — search, QBE, values, suggest (4 tools)
-    schema.ts        — discover, TDE, indexes, collections, namespaces (6 tools)
-    eval.ts          — XQuery, SJS, invoke (3 tools, allowEval-gated)
-    graphs.ts        — SPARQL, graphs list (2 tools)
-    optic.ts         — Optic query (1 tool)
-    quicksight.ts    — aggregate, timeseries, export, facets (4 tools)
-    flux.ts          — import/export/copy/reprocess/preview/help/status (7 tools)
-    semaphore.ts     — CLS status/classify + KMM model management + publish (12 tools)
+    index.ts            — calls all registerXxxTools() — add new groups here
+    suggest-approach.ts — ml_suggest_approach: maps a goal to the best-fit tool(s)
+    answer.ts           — ml_answer_query: one-shot NL question answering over a collection
+    admin.ts            — cluster, databases, forests, servers (readonly-gated writes)
+    documents.ts        — get/sample/list/put/delete/patch/patch-batch (readonly-gated)
+    search.ts           — search, QBE, values, suggest
+    schema.ts           — discover, TDE, indexes, collections, namespaces
+    eval.ts             — XQuery, SJS, SPARQL-via-eval, invoke (allowEval-gated)
+    graphs.ts           — SPARQL, graphs list (readonly-gated writes)
+    optic.ts            — Optic query
+    quicksight.ts       — aggregate, timeseries, export, facets
+    flux.ts             — import/export/copy/reprocess/preview/help/status (readonly-gated)
+    fasttrack.ts        — FastTrack scaffolding (readonly-gated)
+    extensions.ts       — REST resource/transform extension management (readonly-gated)
+    security.ts         — users/roles/permissions introspection (read-only)
+    performance.ts      — database/forest metrics, merge/reindex status (eval-gated bits)
+    dhf.ts              — Data Hub Framework flow run/scaffold (eval + readonly + JAR gated)
+    ml-gradle.ts        — ml-gradle project scaffolding / command guidance
+    semaphore.ts        — CLS + KMM + taxonomy + KID templates (~27 tools)
   resources/
     index.ts         — all resources; INSTRUCTIONS_TEXT constant at top
   prompts/
     index.ts         — all prompts; problem_advisor first, then domain-specific
   client/
     index.ts         — MarkLogicClients factory + interface
-    base.ts          — Axios HTTP + Digest/Basic auth + error mapping
+    base.ts          — Axios HTTP + Digest/Basic/OAuth auth + error mapping
     admin.ts         — cluster, databases, forests, servers
     documents.ts     — CRUD + patch
     search.ts        — full-text, structured, QBE, values, suggest
     schema.ts        — TDE, indexes, collections, namespaces, discovery
-    eval.ts          — XQuery, SJS, module invocation
+    eval.ts          — XQuery, SJS, module invocation, cts.parse, static check
     graphs.ts        — SPARQL
     optic.ts         — Optic plan execution
-    flux.ts          — Flux runner HTTP client
+    flux.ts          — Flux runner HTTP client (SSE /run-stream + /run fallback)
+    fasttrack.ts     — FastTrack client
+    extensions.ts    — REST extension management client
+    security.ts      — users/roles/permissions client
+    performance.ts   — metrics + status client
+    dhf.ts           — Data Hub Framework client
     semaphore.ts     — CLS XML API + KMM REST API (SPARQL, publish, workspace ZIP)
   config/
     index.ts         — dotenv loading + validation
     schema.ts        — Zod schemas for all config sections
   transport/
     stdio.ts         — StdioServerTransport wrapper
-    http.ts          — Express server with session management + Bearer auth
+    http.ts          — Express server with session management + Bearer/OAuth token binding
   utils/
-    errors.ts        — error classes + toToolError() formatter
-    logger.ts        — Winston configuration
-    digest.ts        — HTTP Digest auth builder
-    multipart.ts     — Multipart form-data builder
+    errors.ts            — error classes + toToolError() string formatter
+    tool-error.ts        — structured makeToolError() envelope + edit-distance "did you mean"
+    logger.ts            — Winston configuration
+    digest.ts            — HTTP Digest auth builder
+    multipart.ts         — Multipart form-data builder + multipart/mixed parser
+    eval-lint.ts         — preflight SJS lint for ml_eval_javascript
+    capabilities.ts      — per-tool capability tags (CAP ABILITIES)
+    projection.ts        — field projection / aggregation for ml_answer_query
+    recipes.ts           — canned query recipes for ml_answer_query
+    value-normalize.ts   — case/plural/closest-value normalization
+    collection-routing.ts— score-based collection routing for ml_answer_query
+    security-posture.ts  — startup security-misconfig analysis (readonly/eval/TLS/admin-user)
 ```
 
 ---
