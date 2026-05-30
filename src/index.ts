@@ -4,7 +4,7 @@ import { initLogger, logger } from "./utils/logger.js";
 import { createMcpServer } from "./server.js";
 import { startStdioTransport } from "./transport/stdio.js";
 import { startHttpTransport } from "./transport/http.js";
-import { analyzeSecurityPosture, renderSecurityPosture } from "./utils/security-posture.js";
+import { analyzeSecurityPosture } from "./utils/security-posture.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();

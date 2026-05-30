@@ -449,17 +449,6 @@ function unwrapMgmtValue(v: unknown): unknown {
   return v;
 }
 
-/** Safely extract a wrapped or plain numeric value from a Management API status-properties object. */
-function extractMgmtNumber(obj: Record<string, unknown>, key: string): number | null {
-  const raw = unwrapMgmtValue(obj[key]);
-  if (typeof raw === "number") return raw;
-  if (typeof raw === "string") {
-    const n = parseInt(raw, 10);
-    return isNaN(n) ? null : n;
-  }
-  return null;
-}
-
 /** Extract key metrics from a forest status Management API response. */
 function analyzeForestStatus(
   forestName: string,
@@ -556,7 +545,6 @@ function interpretQueryMetrics(
   const filterHits = metrics["filterHits"] as number | undefined;
   const listCacheMisses = metrics["listCacheMisses"] as number | undefined;
   const expandedTreeCacheMisses = metrics["expandedTreeCacheMisses"] as number | undefined;
-  const resultCount = (metrics["resultCount"] ?? metrics["rowCount"]) as number | undefined;
 
   if (elapsedMs !== undefined) {
     if (elapsedMs < 10) {
@@ -705,13 +693,3 @@ function pickFieldCandidates(docs: Map<string, unknown>): string[] {
     .map(([k]) => k);
 }
 
-/** Safely extract a numeric value from a nested object using common key patterns. */
-function extractNumber(obj: Record<string, unknown>, key: string): number | null {
-  const val = obj[key];
-  if (typeof val === "number") return val;
-  if (typeof val === "string") {
-    const n = parseInt(val, 10);
-    return isNaN(n) ? null : n;
-  }
-  return null;
-}

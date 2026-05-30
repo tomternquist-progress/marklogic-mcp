@@ -187,6 +187,24 @@ describe("ml_vector_search handler", () => {
     );
   });
 
+  it("honours strip_schema_prefix=false when supplied", async () => {
+    clients.optic.query.mockResolvedValue([]);
+
+    await tools.get("ml_vector_search")!({
+      schema: "mySchema",
+      view: "myView",
+      vector_column: "embedding",
+      query_vector: [0.1, 0.2],
+      strip_schema_prefix: false,
+    });
+
+    expect(clients.optic.query).toHaveBeenCalledWith(
+      expect.objectContaining({ $optic: expect.any(Object) }),
+      undefined,
+      false
+    );
+  });
+
   it("uses default score_column and k values", async () => {
     clients.optic.query.mockResolvedValue([]);
 
