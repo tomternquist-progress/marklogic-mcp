@@ -107,7 +107,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
       database: z.string().optional().describe("Target database. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
       strip_schema_prefix: z.boolean().optional().describe("Strip the 'schema.view.' prefix from result column names (default: true for vector search)"),
     },
-    async ({ schema, view, vector_column, query_vector, k, score_column, database }) => {
+    async ({ schema, view, vector_column, query_vector, k, score_column, database, strip_schema_prefix }) => {
       const scoreCol = score_column ?? "similarity_score";
       const limit = k ?? 10;
 
@@ -146,7 +146,7 @@ export function registerOpticTools(server: McpServer, clients: MarkLogicClients)
       };
 
       try {
-        const result = await clients.optic.query(plan, database, true);
+        const result = await clients.optic.query(plan, database, strip_schema_prefix ?? true);
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
         let msg = appendTdeHint(toToolError(err));

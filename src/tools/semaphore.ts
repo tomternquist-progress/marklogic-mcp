@@ -2331,11 +2331,8 @@ LIMIT 500`;
         );
         const missingLang = parseInt(missingLangResult.rows[0]?.n ?? "0", 10);
 
-        // 7. Hierarchy depth counts (depth 1 = topConcept, depth 2 = direct child, depth 3+ = deeper)
-        const depth1Result = await semaphore.kmmSparqlQuery(model_uri,
-          `PREFIX skos: <${SKOS}>
-           SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE { ?c skos:topConceptOf ?s }`
-        );
+        // 7. Hierarchy depth counts (depth 1 = topConcept, depth 2 = direct child, depth 3+ = deeper).
+        // Depth 1 reuses topConcepts computed above — it is the same topConceptOf count.
         const depth2Result = await semaphore.kmmSparqlQuery(model_uri,
           `PREFIX skos: <${SKOS}>
            SELECT (COUNT(DISTINCT ?c) AS ?n) WHERE {
@@ -2351,7 +2348,6 @@ LIMIT 500`;
              ?gp skos:topConceptOf ?s .
            }`
         );
-        const d1 = parseInt(depth1Result.rows[0]?.n ?? "0", 10);
         const d2 = parseInt(depth2Result.rows[0]?.n ?? "0", 10);
         const d3 = parseInt(depth3Result.rows[0]?.n ?? "0", 10);
 

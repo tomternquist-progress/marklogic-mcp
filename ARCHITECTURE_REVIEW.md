@@ -5,6 +5,50 @@
 
 ---
 
+## Addendum — 2026-05-30 Review Pass
+
+A follow-up correctness review (~22,900 lines) found and fixed the following.
+Baseline before the pass: build clean, lint reporting 5 warnings, 788 tests passing.
+After: build clean, **0 lint warnings, 792 tests passing**.
+
+### Bugs fixed
+
+1. **`ml_vector_search` ignored `strip_schema_prefix` (regression).** Section 2 / item 3
+   above marked this "FIXED" on 2026-03-19, but the handler at `src/tools/optic.ts:110`
+   had regressed: the parameter was declared in the Zod schema but not destructured, and
+   the call to `clients.optic.query(plan, database, true)` hardcoded `true`. Callers could
+   not opt out of prefix stripping. **Fixed**: the handler now destructures the parameter
+   and passes `strip_schema_prefix ?? true`. A regression test that supplies `false`
+   (`tests/tools/optic.test.ts`) now guards it — the pre-existing default-case test passed
+   even while the bug was live, which is how the regression slipped through.
+
+2. **KMM token refresh had no single-flight guard (concurrency).** `SemaphoreClient.kmmApiKey()`
+   (`src/client/semaphore.ts`) performed a full two-step form login + token exchange per
+   call when the cache was cold. Concurrent Semaphore tool calls at startup each triggered
+   a redundant login. **Fixed**: refresh logic extracted to `refreshKmmToken()` behind a
+   single-flight promise (`kmmTokenRefresh`), cleared in `finally` so a failed refresh does
+   not poison later attempts. Token expiry is now anchored to refresh-completion time.
+   Covered by `tests/client/semaphore-token.test.ts` (nock-based: 3 concurrent calls → 1 login).
+
+### Cleanups
+
+3. **Removed a redundant SPARQL round-trip** in `semaphore_taxonomy_validate`
+   (`src/tools/semaphore.ts`): the depth-1 query was identical to the already-computed
+   `topConcepts` query; its result (`d1`) was never used in the report.
+4. **Removed dead code** flagged by lint: stale `renderSecurityPosture` import in
+   `src/index.ts`, and unused `extractMgmtNumber` / `extractNumber` functions and a
+   `resultCount` variable in `src/tools/performance.ts`.
+
+### Investigated, not bugs (rejected findings)
+
+- **`ml_document_sample` default `count`** — a destructuring default (`count = 3`) does
+  fire on `undefined`, which is exactly what Zod `.optional()` passes; behaviour is correct.
+- **XML attribute regex "escaped quote" handling** in `src/client/semaphore.ts` — valid XML
+  encodes quotes as `&quot;` entities, not backslash escapes, so the existing regex is
+  correct for well-formed input; the proposed `\"` handling would be semantically wrong.
+
+---
+
 ## Executive Summary
 
 The MarkLogic MCP server is a well-architected, modular TypeScript project that bridges AI agents with MarkLogic databases via the Model Context Protocol. The codebase demonstrates strong engineering practices: strict TypeScript, Zod-validated configuration, comprehensive error handling with actionable hints, and safety-by-default design (readonly=true, eval=false). The project registers ~70 tools across 13 domain groups, 19 prompts, and 5 resources.

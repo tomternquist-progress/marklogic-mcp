@@ -447,6 +447,10 @@ export class SemaphoreClient {
   /** Cached KMM API token (x-api-key) and its expiry epoch ms. */
   private kmmToken: string | null = null;
   private kmmTokenExpiry = 0;
+  /** Single-flight guard: when a token refresh is in progress, concurrent
+   *  callers await this same promise instead of each performing a redundant
+   *  login + token-exchange round-trip. */
+  private kmmTokenRefresh: Promise<string> | null = null;
   private readonly kmmUsername: string | undefined;
   private readonly kmmPassword: string | undefined;
 
@@ -507,6 +511,22 @@ export class SemaphoreClient {
       return this.kmmToken;
     }
 
+    // Single-flight: if a refresh is already underway, await it rather than
+    // launching a second concurrent login. Cleared in a finally so a failed
+    // refresh does not poison subsequent attempts.
+    if (this.kmmTokenRefresh) {
+      return this.kmmTokenRefresh;
+    }
+
+    this.kmmTokenRefresh = this.refreshKmmToken().finally(() => {
+      this.kmmTokenRefresh = null;
+    });
+    return this.kmmTokenRefresh;
+  }
+
+  /** Perform the two-step KMM login (form auth → token exchange) and cache the
+   *  resulting API token. Always run through kmmApiKey()'s single-flight guard. */
+  private async refreshKmmToken(): Promise<string> {
     if (!this.kmmUsername || !this.kmmPassword) {
       throw new Error(
         "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD."
@@ -550,7 +570,9 @@ export class SemaphoreClient {
     }
 
     this.kmmToken = token;
-    this.kmmTokenExpiry = now + TOKEN_TTL_S * 1_000;
+    // Base expiry on completion time, not the pre-login timestamp, so the
+    // safety margin reflects when the token actually became valid.
+    this.kmmTokenExpiry = Date.now() + TOKEN_TTL_S * 1_000;
     logger.debug("KMM API token acquired", { expiresIn: `${TOKEN_TTL_S}s` });
     return token;
   }
