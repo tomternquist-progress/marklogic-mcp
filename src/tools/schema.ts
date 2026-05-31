@@ -265,6 +265,8 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
     "  1. Run ml_tde_validate to verify the template produces the expected rows.\n" +
     "  2. MarkLogic reindexes asynchronously — ml_tde_validate will report TABLEREINDEXING while in progress.\n" +
     "  3. Once indexed, query via ml_optic_query or ml_eval_javascript with the op.fromView() API.\n\n" +
+    "IDEMPOTENCY: re-installing the same template URI REPLACES the previous template atomically (it is a " +
+    "URI-keyed upsert), so this call is safe to retry and you do NOT need to delete the old template first.\n\n" +
     "TDE SYNTAX RULES (common mistakes that cause TDE-INVALIDTEMPLATEPROPNODE):\n" +
     "  1. Triple subject/object must use { \"val\": \"<XPath>\" }, NOT { \"column\": \"<name>\" }\n" +
     "     Correct: { \"subject\": { \"val\": \"sem:iri(fn:concat('http://.../', id))\" } }\n" +

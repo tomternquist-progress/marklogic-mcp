@@ -2,27 +2,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 
-/**
- * Refusal payload returned when a Flux write subcommand is invoked under
- * ML_READONLY=true. Kept consistent so agents/clients can detect it
- * structurally without parsing prose.
- */
-function refuseFluxWrite(toolName: string): { content: Array<{ type: "text"; text: string }>; isError: true } {
-  const body = {
-    error: {
-      code: "UNSUPPORTED_IN_BUILD",
-      class: "runtime_capability",
-      message: `${toolName} is disabled because ML_READONLY=true.`,
-      hint:
-        `${toolName} writes to MarkLogic (Flux import/copy/reprocess bypass the document-write tools but ` +
-        `still ingest documents). To enable, restart the MCP server with ML_READONLY=false. For true ` +
-        `read-only protection use a MarkLogic user with a read-only role — the readonly flag is a ` +
-        `tool-layer safety belt, not a credential-level restriction.`,
-    },
-  };
-  return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }], isError: true };
-}
-
 function formatResult(result: { exitCode: number; output: string; success: boolean; timedOut?: boolean }, maxOutputChars?: number): string {
   const status = result.success ? "SUCCESS" : result.timedOut ? "TIMED OUT" : `FAILED (exit ${result.exitCode})`;
   let output = result.output || "(no output)";
@@ -138,8 +117,17 @@ export function registerFluxTools(
   }
   const { flux, schema, documents, semaphore } = clients;
 
+  // Flux write subcommands (import/copy/reprocess) follow the same convention
+  // as the document/eval/graph write tools: when ML_READONLY=true they are NOT
+  // registered, so they never appear in the tool list. registerWriteTool is a
+  // no-op in readonly mode and the real server.tool otherwise. Read-only Flux
+  // subcommands (export/preview/help/status) are always registered below.
+  const registerWriteTool = (
+    readonly ? (() => undefined) : server.tool.bind(server)
+  ) as unknown as typeof server.tool;
+
   // ── flux_import ──────────────────────────────────────────────────────────────
-  server.tool(
+  registerWriteTool(
     "flux_import",
     "Import data into MarkLogic using Flux. The FIRST-CHOICE tool for any bulk or URL-based data loading task — prefer this over ml_eval_javascript or ml_document_put for anything beyond ~5 documents.\n\nCAP ABILITIES: bulk-import, http-fetch, csv, tsv, json, json-lines, parquet, avro, orc, jdbc, s3, zip-extract, gzip-extract, tde-generation, column-mapping, headerless-csv, uri-template, rdf-turtle, rdf-ntriples, rdf-jsonld\n\nUSE THIS TOOL WHEN:\n- Loading data from an HTTP/HTTPS URL (open data portals, Socrata, GDELT, government datasets)\n- Importing CSV, TSV, JSON-Lines, Parquet, Avro, ORC, or MLCP archives (compressed or not)\n- Importing RDF files (Turtle, N-Triples, JSON-LD, RDF/XML) into named graphs — use subcommand='import-rdf-files'\n- Fetching from a JDBC database (PostgreSQL, MySQL, Oracle, SQL Server, etc.)\n- You need one MarkLogic document per source row/record\n- You want automatic TDE view generation (set generate_tde=true)\n- The source file has no header row — use column_names to inject field names\n- Batch size, thread count, or URI templates need configuring\n\nUSE ml_graph_put INSTEAD WHEN: you have a small RDF string (< ~1 MB) to load directly into a named graph without going through Flux.\nUSE ml_document_put INSTEAD WHEN: inserting fewer than ~10 individual documents, or writing a TDE template / SJS module to the Schemas or Modules database.\nUSE ml_eval_javascript INSTEAD WHEN: running server-side logic, calling MarkLogic built-ins, or custom in-database transforms — NOT for bulk insert.\n\nCANONICAL RECIPES:\n\n1. Import CSV from public URL with auto-TDE (most common):\n   subcommand=\"import-delimited-files\", http_url=\"https://example.com/data.csv\", collections=[\"my-data\"], generate_tde=true, tde_schema=\"myschema\", tde_view=\"myview\"\n\n2. Import Socrata open data — two valid options:\n   a) CSV (recommended for large imports): subcommand=\"import-delimited-files\", http_url=\"https://data.wa.gov/resource/abc.csv?$limit=50000\"\n   b) JSON resource API (returns proper objects): subcommand=\"import-files\", http_url=\"https://data.wa.gov/resource/abc.json?$limit=50000\"\n   WARNING: Use /resource/{id}.csv or /resource/{id}.json — NOT /rows.json (the Socrata bulk export). /rows.json returns array-of-arrays, not objects.\n\n3. Import headerless CSV (e.g. GDELT events — no column headers in source file):\n   subcommand=\"import-delimited-files\", http_url=\"https://...\", column_names=[\"Col1\",\"Col2\",...], extra_args=[\"--delimiter\",\"\\t\",\"--ignore-null-fields\"]\n\n4. Import from JDBC database:\n   subcommand=\"import-jdbc\", jdbc_url=\"jdbc:postgresql://host/db\", jdbc_driver=\"org.postgresql.Driver\", query=\"SELECT * FROM mytable\", collections=[\"my-data\"], generate_tde=true\n\n5. Import JSON or XML files from S3:\n   subcommand=\"import-files\", path=\"s3a://my-bucket/data/\", collections=[\"my-data\"]\n\n6. Import a Turtle/RDF file into a named graph:\n   subcommand=\"import-rdf-files\", http_url=\"https://example.org/data.ttl\", extra_args=[\"--graph\",\"http://example.org/mygraph\"]\n\n7. Import a JSON file that contains an array of records OR a JSONL file (one object per line):\n   Both cases use subcommand=\"import-aggregate-json-files\":\n   a) Flat JSON array at the root (e.g. [{...}, {...}]):\n      subcommand=\"import-aggregate-json-files\", http_url=\"https://example.com/records.json\", collections=[\"my-data\"]\n   b) JSONL / JSON Lines (one JSON object per line — the format written by Python scripts fetching API data):\n      subcommand=\"import-aggregate-json-files\", path=\"/tmp/data.jsonl\", extra_args=[\"--json-lines\"], uri_template=\"/data/{id}.json\", collections=[\"my-data\"]\n   NOTE: import-files treats each line as a separate file URI — it does NOT parse JSON inside lines. Always use import-aggregate-json-files for multi-record JSON files.\n   ⚠ NESTED WRAPPER LIMITATION: Many REST APIs return records inside a wrapper object (e.g. {\"results\":[...],\"count\":10000} from Federal Register, openFDA, GitHub). import-aggregate-json-files treats the entire wrapper as one record — uri_template variables (e.g. {document_number}) resolve to null, producing malformed URIs. Workarounds: (1) pre-process to JSONL: python3 -c \"import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)['results']]\" < wrapper.json > records.jsonl, then import with --json-lines via extra_args; (2) use ml_eval_javascript with vars for smaller payloads (< ~500 records); (3) paginate the API with smaller pages that return flat arrays.\n\n8. Import and classify content inline with Semaphore (auto-tag documents at ingest time):\n   Add to any import recipe: classify_with_semaphore=true\n   Or manually via extra_args: [\"--classifier-host\",\"<host>\",\"--classifier-port\",\"5058\",\"--classifier-path\",\"/\",\"--classifier-http\"]\n   First verify Semaphore is reachable with semaphore_status, then list available taxonomies with semaphore_publish_sets.\n   Semaphore categories are stored on each MarkLogic document at ingest time.\n\n9. Import locally-generated data (synthetic loads, test data, script output):\n   Do NOT use docker cp or local_file. Instead, serve the data over HTTP:\n   a) Generate JSONL in a script → write to a temp file\n   b) Start a temporary HTTP server: python3 -m http.server 19999 (in background)\n   c) Call flux_import with http_url=\"http://localhost:19999/data.jsonl\"\n   The runner downloads the file transparently. This pattern works because the runner\n   intercepts --http-url (a runner extension, NOT a Flux CLI flag — it won't appear in\n   flux_help output) and fetches to /tmp before passing --path to Flux.\n\nWARNING: Only the Socrata bulk export endpoint (/rows.json) returns array-of-arrays — avoid that. The resource API (/resource/{id}.csv or /resource/{id}.json?$limit=N) returns proper records and works correctly with flux_import.",
     {
@@ -213,9 +201,6 @@ export function registerFluxTools(
       ),
     },
     async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore, classifier_publish_sets, classifier_path }) => {
-      if (readonly) {
-        return refuseFluxWrite("flux_import");
-      }
       // Validate and convert permissions
       let fluxPermissions: string | undefined;
       if (permissions) {
@@ -578,7 +563,7 @@ export function registerFluxTools(
   );
 
   // ── flux_copy ────────────────────────────────────────────────────────────────
-  server.tool(
+  registerWriteTool(
     "flux_copy",
     "Copy documents between MarkLogic databases or instances using Flux, preserving collections, permissions, and metadata.",
     {
@@ -592,9 +577,6 @@ export function registerFluxTools(
       extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim"),
     },
     async ({ output_connection_string, collections, query, database, output_collections, thread_count, batch_size, extra_args }) => {
-      if (readonly) {
-        return refuseFluxWrite("flux_copy");
-      }
       const args: string[] = [
         "copy",
         "--connection-string", flux.connectionString(database),
@@ -615,7 +597,7 @@ export function registerFluxTools(
   );
 
   // ── flux_reprocess ───────────────────────────────────────────────────────────
-  server.tool(
+  registerWriteTool(
     "flux_reprocess",
     "Reprocess existing MarkLogic documents through a custom transformation module using Flux.\n\n" +
     "PREFERRED over ml_invoke_module / xdmp.invoke for any bulk server-side transform because Flux handles\n" +
@@ -729,9 +711,6 @@ export function registerFluxTools(
       ),
     },
     async ({ invoke_module, read_module, read_javascript, collections, query, database, thread_count, batch_size, extra_args, classify_with_semaphore, classifier_publish_sets, classifier_path }) => {
-      if (readonly) {
-        return refuseFluxWrite("flux_reprocess");
-      }
       // Coerce collections: accept string or array
       const collectionsArr: string[] | undefined = collections === undefined
         ? undefined

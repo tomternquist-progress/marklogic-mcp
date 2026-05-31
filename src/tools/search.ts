@@ -8,6 +8,44 @@ import {
   type ProjectedRow,
 } from "../utils/projection.js";
 
+// Append actionable recovery hints to search error text, matched on the error
+// signature — mirrors the pattern used in optic.ts (ml_optic_query) and
+// ml_parse_query so agents get a uniform self-correction contract across the
+// query tools, not just for Optic.
+function appendSearchHint(msg: string): string {
+  if (msg.includes("XDMP-ELEMRIDXNOTFOUND") || msg.includes("XDMP-RIDXNOTFOUND") || /no .*range index/i.test(msg)) {
+    return msg +
+      "\nHint: a range-query (or sorting on a field) requires a range index on that field. Run ml_indexes_list " +
+      "to see which fields are range-indexed. For exact-match filtering WITHOUT a range index, use a value-query " +
+      "instead: {\"query\":{\"value-query\":{\"json-property\":\"<field>\",\"text\":[\"<value>\"]}}}.";
+  }
+  if (msg.includes("SEARCH-BADQUERY") || msg.includes("XDMP-JSONDOC") || /unexpected.*node|invalid.*query/i.test(msg)) {
+    return msg +
+      "\nHint: structured_query must be a JSON object with a top-level 'query' key, e.g. " +
+      "{\"query\":{\"value-query\":{...}}}. Run ml_search_surface to discover queryable fields and example values.";
+  }
+  return msg;
+}
+
+// As appendSearchHint, specialised for ml_values_query, whose two most common
+// failures are a missing range index and a values definition that isn't present
+// in the named options set.
+function appendValuesHint(msg: string): string {
+  if (msg.includes("XDMP-ELEMRIDXNOTFOUND") || msg.includes("XDMP-RIDXNOTFOUND") || /range index/i.test(msg)) {
+    return msg +
+      "\nHint: ml_values_query needs BOTH a range index on the target field AND a named values definition that " +
+      "references it. Verify the index with ml_indexes_list and the definition with ml_search_options_get; create " +
+      "the definition with ml_search_options_put.";
+  }
+  if (/values?-option|no such|not found|undefined/i.test(msg)) {
+    return msg +
+      "\nHint: values_name must match a values/tuples definition in the named options set. Inspect available " +
+      "definitions with ml_search_options_get. If 'options' is omitted the default app-services set is used, which " +
+      "usually has no values defined (you'll get an empty result rather than an error).";
+  }
+  return msg;
+}
+
 export function registerSearchTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
     "ml_search",
@@ -188,7 +226,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
         }
         return { content: [{ type: "text", text: JSON.stringify(payload, null, 2) }] };
       } catch (err) {
-        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        return { content: [{ type: "text", text: appendSearchHint(toToolError(err)) }], isError: true };
       }
     }
   );
@@ -199,7 +237,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
     {
       qbe: z.record(z.unknown()).describe("Example document structure to match against"),
       start: z.number().int().positive().optional().describe("Pagination start (default: 1)"),
-      page_length: z.number().int().positive().max(100).optional().describe("Results per page (default: 10)"),
+      page_length: z.number().int().positive().max(200).optional().describe("Results per page (default: 10, max: 200 — matches ml_search)"),
       database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ qbe, start, page_length, database }) => {
@@ -207,7 +245,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
         const result = await clients.search.qbe(qbe, { start, pageLength: page_length, database });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
-        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        return { content: [{ type: "text", text: appendSearchHint(toToolError(err)) }], isError: true };
       }
     }
   );
@@ -243,7 +281,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
         const result = await clients.search.values(values_name, { query, limit, direction, aggregate, options, database });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       } catch (err) {
-        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        return { content: [{ type: "text", text: appendValuesHint(toToolError(err)) }], isError: true };
       }
     }
   );
@@ -276,7 +314,7 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
       lon_property: z.string().optional().describe("JSON property name for longitude within parent (default: 'longitude'). Must match the index."),
       // Scope
       collection: z.string().optional().describe("Limit search to this collection URI"),
-      page_length: z.number().int().positive().max(100).optional().describe("Max results to return (default: 10)"),
+      page_length: z.number().int().positive().max(200).optional().describe("Max results to return (default: 10, max: 200 — matches ml_search)"),
       database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),
     },
     async ({ region_type, center_lat, center_lon, radius_km, south, west, north, east, points,

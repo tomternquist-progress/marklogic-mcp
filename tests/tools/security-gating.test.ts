@@ -104,47 +104,41 @@ describe("flux tool gating", () => {
     };
   }
 
-  it("flux_import refuses with structured error when readonly=true", async () => {
+  // Flux write subcommands follow the same convention as document/eval/graph
+  // write tools: they are NOT registered when readonly=true (so they never
+  // appear in the tool list), rather than registering and refusing at call time.
+  it("flux write subcommands are NOT registered when readonly=true", () => {
     const { server, tools } = createMockServer();
     registerFluxTools(server as never, makeFluxClients() as never, "digest", true);
-    expect(tools.has("flux_import")).toBe(true);
 
-    const result = await tools.get("flux_import")!({
-      subcommand: "import-files",
-      path: "/tmp/data.json",
-      collections: ["c"],
-    });
-    expect(result.isError).toBe(true);
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.error.code).toBe("UNSUPPORTED_IN_BUILD");
-    expect(parsed.error.class).toBe("runtime_capability");
-    expect(parsed.error.hint).toMatch(/ML_READONLY=false/);
+    expect(tools.has("flux_import")).toBe(false);
+    expect(tools.has("flux_copy")).toBe(false);
+    expect(tools.has("flux_reprocess")).toBe(false);
   });
 
-  it("flux_copy and flux_reprocess also refuse when readonly=true", async () => {
+  it("flux write subcommands ARE registered when readonly=false", () => {
     const { server, tools } = createMockServer();
-    registerFluxTools(server as never, makeFluxClients() as never, "digest", true);
+    registerFluxTools(server as never, makeFluxClients() as never, "digest", false);
 
-    const copyResult = await tools.get("flux_copy")!({
-      output_connection_string: "u:p@h:8000",
-      collections: ["c"],
-    });
-    expect(copyResult.isError).toBe(true);
-    expect(JSON.parse(copyResult.content[0].text).error.code).toBe("UNSUPPORTED_IN_BUILD");
-
-    const reprocessResult = await tools.get("flux_reprocess")!({
-      invoke_module: "/m.sjs",
-      collections: ["c"],
-    });
-    expect(reprocessResult.isError).toBe(true);
-    expect(JSON.parse(reprocessResult.content[0].text).error.code).toBe("UNSUPPORTED_IN_BUILD");
+    expect(tools.has("flux_import")).toBe(true);
+    expect(tools.has("flux_copy")).toBe(true);
+    expect(tools.has("flux_reprocess")).toBe(true);
   });
 
   it("flux read-only commands stay registered even when readonly=true", () => {
     const { server, tools } = createMockServer();
     registerFluxTools(server as never, makeFluxClients() as never, "digest", true);
+    expect(tools.has("flux_export")).toBe(true);
     expect(tools.has("flux_preview")).toBe(true);
     expect(tools.has("flux_help")).toBe(true);
     expect(tools.has("flux_status")).toBe(true);
+  });
+
+  it("under oauth, every flux tool is registered only as a disabled stub", () => {
+    const { server, tools } = createMockServer();
+    registerFluxTools(server as never, makeFluxClients() as never, "oauth", false);
+    for (const name of ["flux_import", "flux_export", "flux_copy", "flux_reprocess", "flux_preview", "flux_help", "flux_status"]) {
+      expect(tools.has(name)).toBe(true);
+    }
   });
 });

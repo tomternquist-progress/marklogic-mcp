@@ -73,8 +73,9 @@ ML_READONLY is a TOOL-LAYER SAFETY BELT. When set to true:
   • Write tools are not registered: ml_document_put / _delete / _patch,
     ml_search_options_put / _delete, ml_extension_put / _delete, ml_graph_put /
     _delete, ml_database_set_forests, dhf_flow_run.
-  • Flux write subcommands (flux_import, flux_copy, flux_reprocess) refuse
-    with a structured UNSUPPORTED_IN_BUILD error.
+  • Flux write subcommands (flux_import, flux_copy, flux_reprocess) are not
+    registered. Read-only Flux subcommands (flux_export, flux_preview,
+    flux_help, flux_status) remain available.
   • Eval tools (ml_eval_javascript / _xquery / _sparql / ml_invoke_module /
     ml_profile_query / ml_force_merge) are NOT registered at all, because
     server-side eval can call any write API (xdmp.documentInsert,
@@ -197,6 +198,28 @@ logged loudly at startup and surfaced in that resource.
     Every response includes trace.attempts[] with the CTS, count, and elapsed
     ms for each search call the tool made — so operators can debug the chain
     without tool-hopping.
+
+── IDEMPOTENCY & RETRY SEMANTICS ──────────────────────────────────────────────
+
+Writes in MarkLogic are keyed by document URI, which makes most operations
+idempotent and safe to retry after a transient failure:
+
+  • ml_document_put — a put to an existing URI REPLACES it atomically (upsert).
+    It never errors on a pre-existing URI and never creates a duplicate. Safe to
+    retry verbatim after a network error.
+  • ml_tde_install / ml_search_options_put / ml_extension_put — re-installing the
+    same URI replaces the prior version atomically. No delete-first step needed.
+  • flux_import — a re-run re-writes documents at the SAME computed URIs (driven
+    by uri_template / source keys), so it overwrites rather than duplicates AS
+    LONG AS the URI derivation is deterministic. If URIs are randomly generated,
+    a re-run WILL create duplicates — make uri_template deterministic (derive it
+    from a stable source key) before retrying a partially-failed import.
+  • ml_document_delete — deleting an already-absent URI is a no-op, not an error.
+
+GUIDANCE: on a transient error (timeout, 5xx, dropped connection) during a
+write, retrying the same call is safe for URI-keyed operations. The one case
+that needs care is bulk import with non-deterministic URIs — make the URI
+template deterministic first.
 
 13. ml_search NOW PROJECTS AND AGGREGATES
     Pass select_fields=[...] to ml_search and each result includes the field values
