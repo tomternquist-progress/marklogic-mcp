@@ -531,3 +531,83 @@ describe("ml_parse_query handler", () => {
     expect(result.content[0].text).toContain("cts.andQuery");
   });
 });
+
+// ─── Signature-matched error-recovery hints ──────────────────────────────────
+// Verify that specific MarkLogic error signatures get an actionable Hint
+// appended (mirrors the ml_optic_query / ml_parse_query pattern), while
+// unrelated errors pass through untouched.
+
+describe("search error-recovery hints", () => {
+  let tools: Map<string, ToolHandler>;
+  let clients: ReturnType<typeof createMockClients>;
+
+  beforeEach(() => {
+    const mock = createMockServer();
+    clients = createMockClients();
+    registerSearchTools(mock.server as never, clients as never);
+    tools = mock.tools;
+  });
+
+  it("appends a range-index hint to ml_search on XDMP-ELEMRIDXNOTFOUND", async () => {
+    clients.search.search.mockRejectedValue(
+      new MarkLogicError("XDMP-ELEMRIDXNOTFOUND: No element range index", 500)
+    );
+
+    const result = await tools.get("ml_search")!({
+      structured_query: { query: { "range-query": { "json-property": "fyDeclared", value: ["2024"] } } },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("range index");
+    expect(result.content[0].text).toContain("value-query");
+  });
+
+  it("appends a structured-query hint to ml_search on SEARCH-BADQUERY", async () => {
+    clients.search.search.mockRejectedValue(new MarkLogicError("SEARCH-BADQUERY: malformed", 400));
+
+    const result = await tools.get("ml_search")!({ structured_query: { bogus: true } });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("ml_search_surface");
+  });
+
+  it("leaves unrelated ml_search errors unmodified (no spurious hint)", async () => {
+    clients.search.search.mockRejectedValue(new MarkLogicError("XDMP-DEADLOCK", 503));
+
+    const result = await tools.get("ml_search")!({ q: "hello" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain("Hint:");
+  });
+
+  it("appends a range-index hint to ml_search_qbe", async () => {
+    clients.search.qbe.mockRejectedValue(
+      new MarkLogicError("XDMP-RIDXNOTFOUND: missing range index", 500)
+    );
+
+    const result = await tools.get("ml_search_qbe")!({ qbe: { name: "x" } });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("range index");
+  });
+
+  it("appends a values-specific hint to ml_values_query on range-index errors", async () => {
+    clients.search.values.mockRejectedValue(
+      new MarkLogicError("XDMP-ELEMRIDXNOTFOUND: No element range index", 500)
+    );
+
+    const result = await tools.get("ml_values_query")!({ values_name: "categories" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("ml_search_options_put");
+  });
+
+  it("does not append a values hint to unrelated ml_values_query errors", async () => {
+    clients.search.values.mockRejectedValue(new MarkLogicError("XDMP-DEADLOCK", 503));
+
+    const result = await tools.get("ml_values_query")!({ values_name: "categories" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain("Hint:");
+  });
+});
