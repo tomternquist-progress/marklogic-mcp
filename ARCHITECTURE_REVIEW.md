@@ -5,6 +5,132 @@
 
 ---
 
+## Addendum — 2026-06-10 Review Pass
+
+Full architecture and code review (~22,850 lines across `src/`, plus tests, config,
+Docker, and the flux-runner sidecar). Baseline at review time: **build clean, lint
+clean, 792 tests passing across 40 unit-test files** (plus 36 live-integration files
+that skip without `ML_HOST`).
+
+Overall assessment: the architecture remains sound and has improved since the
+2026-05-30 pass. The layering (transport → server factory → tools/resources/prompts →
+typed clients → base client) is consistently respected; per-session server instances
+keep HTTP transport state isolated; readonly/eval gating is uniform, including the
+`effectiveAllowEval = allowEval && !readonly` belt-and-suspenders in
+`src/tools/index.ts` and startup security-posture warnings. A parameter-by-parameter
+sweep of every tool handler found **zero unused Zod parameters** — the bug class that
+produced BUG-2/BUG-3 in earlier passes appears to be eliminated, and per-group unit
+tests now guard it.
+
+### Confirmed bugs
+
+1. **`time_bounded_events` recipe builds a structured query that cannot work**
+   (`src/utils/recipes.ts:98-110`, reachable via the registered `ml_query_recipe`
+   tool in `src/tools/answer.ts:780`). Two independent problems:
+   - It emits a `range-constraint-query` whose `constraint-name` is the raw date
+     field name. `range-constraint-query` resolves against a **named constraint
+     defined in search options**; `ml_search` does not define one, so the query
+     fails (or silently matches nothing) unless the user happens to have matching
+     named options — contradicting the recipe's "fully-formed invocation" contract.
+   - Even with a valid constraint, a single `"range-operator": "GE"` over
+     `value: [start_date, end_date]` ORs the two values — it never applies the
+     upper bound. A date range needs an `and-query` of two range queries
+     (`GE start` and `LE end`).
+   **Severity: medium-high** (user-facing recipe produces a broken query).
+   Fix: build an `and-query` of two `range-query`/`element-range-query` clauses, or
+   route this recipe through `ml_optic_query`; add a unit test that asserts the
+   generated structured-query shape.
+
+2. **Wrong escaping for XQuery string literals in `getForestCounts`**
+   (`src/client/performance.ts:76`). `forestName.replace(/"/g, '\\"')` assumes
+   backslash escaping, but XQuery escapes a quote inside a string literal by
+   **doubling it** (`""`). A forest name containing `"` therefore produces a
+   malformed (and technically injectable) query rather than an escaped one.
+   **Severity: low** (eval-gated; forest names rarely contain quotes) but the
+   escape is semantically wrong. Fix: `replace(/"/g, '""')`, or pass the name via
+   `/v1/eval` external variables instead of interpolation.
+
+### Security & hardening (no exploitable issue in the default compose topology)
+
+3. **Flux credential handling** (`src/client/flux.ts:48-51`,
+   `src/tools/flux.ts:277,561,600,744,838`, `flux-runner/FluxServer.java:44-53`):
+   `connectionString()` embeds `user:password@host:port/db`; it is sent as JSON over
+   plain HTTP to the flux-runner, where it becomes a CLI argv element via
+   `ProcessBuilder` — visible to `ps` inside the runner container and potentially
+   echoed back in Flux error output (which is returned in tool results). The runner
+   itself exposes `/run`, `/run-stream`, and `/upload` with **no authentication**:
+   anything that can reach the runner port can execute arbitrary Flux jobs against
+   arbitrary connection strings and write files into the container. This is
+   acceptable on an isolated compose network (and `ProcessBuilder` with a `List`
+   argv means there is no shell-injection vector), but it should be hardened for
+   any shared network: add a shared-secret header check to the runner, never
+   publish its port, and consider redacting `--connection-string` values from any
+   echoed argv in error paths. Also note: a password containing `@`, `:`, or `/`
+   will garble the connection string — there is no escaping or validation.
+
+4. **MCP Dockerfile runs as root and has no HEALTHCHECK** (`Dockerfile`). The
+   flux-runner image has a healthcheck; the MCP image does not, and neither sets a
+   non-root `USER`. Severity: medium for container best practice.
+
+5. **Semaphore client interpolation robustness** (`src/client/semaphore.ts`):
+   `postXmlOp()` (line ~2006) interpolates `op`/`publishSet` into XML without
+   escaping (all current call sites pass hardcoded or server-derived values, so not
+   exploitable today); multipart `Content-Disposition` filenames are unescaped and
+   the boundary derives from `Date.now()` (line ~330) — use a crypto-random
+   boundary and escape quotes in filenames. Severity: low; cheap to harden.
+
+### Documentation drift — the CLAUDE.md sync mandate is not being met
+
+6. The codebase now registers **108 tools**, but `INSTRUCTIONS_TEXT`
+   (`src/resources/index.ts`) mentions only ~88 and the `problem_advisor` prompt's
+   Section 4 lists ~87. Missing from both, among others: `ml_suggest`,
+   `semaphore_classify_batch`, `semaphore_kid_template_get/set/diagnose`,
+   `semaphore_task_create/list/commit`; additionally missing from `problem_advisor`:
+   `ml_export_tabular` and `dhf_flow_run_jar`. The Semaphore group count annotation
+   "(27)" is stale. No references to nonexistent tools were found (no typos —
+   purely additive drift). **Recommendation**: beyond updating the two artifacts,
+   add a unit test that extracts registered tool names (the de-facto list already
+   exists in test helpers) and asserts each appears in `INSTRUCTIONS_TEXT` and the
+   `problem_advisor` text — this drift has now recurred across three review passes
+   and only a test will stop it.
+
+### Test & config gaps (minor)
+
+7. Coverage is now strong across all 18+ tool groups (792 unit tests, behavior-
+   driven, no tautological tests found in spot-checks), with two remaining holes:
+   **`src/prompts/index.ts` and `src/resources/index.ts` have zero tests** — which
+   is exactly where the sync drift in item 6 lives.
+8. Config validation gaps that surface only at runtime: Semaphore
+   username/password accepted without a host; DHF staging/jobs port relationship
+   unvalidated (`src/config/schema.ts`). Severity: very low.
+
+### Verified non-issues (checked and confirmed correct)
+
+- Digest auth (`src/utils/digest.ts`) is RFC 2617-compliant (qop/nc/cnonce quoting).
+- KMM token refresh single-flight guard (added 2026-05-30) is correct; failed
+  refreshes do not poison subsequent attempts.
+- HTTP transport session handling: token-binding (SHA-256) is enforced on POST,
+  GET/SSE, and DELETE; idle TTL eviction works; unknown session IDs get an
+  actionable 404. Rate limiting and optional CORS restriction are in place.
+- No committed secrets; `.env` is gitignored; README claims match the codebase.
+- Tools layer: all write tools readonly-gated at registration; all eval tools
+  skip registration when disabled; every handler wraps client calls in try/catch
+  with the standard `toToolError` envelope.
+
+### Structural observations (unchanged recommendations)
+
+- Size hotspots persist: `src/tools/semaphore.ts` (3,273 lines),
+  `src/prompts/index.ts` (3,127), `src/client/semaphore.ts` (2,022). The
+  2026-03-18 recommendation to split the Semaphore client into CLS / KMM /
+  publishing modules remains open and remains the right call.
+- `src/utils/eval-lint.ts` regexes don't handle nested parentheses
+  (false negatives only — advisory lint, acceptable).
+- `src/utils/security-posture.ts` admin-username regex is exact-match only
+  (`admin|root|superuser|sysadmin`) and misses e.g. "Administrator" — acceptable
+  for a documented best-effort heuristic.
+
+---
+
 ## Addendum — 2026-05-30 Review Pass
 
 A follow-up correctness review (~22,900 lines) found and fixed the following.
