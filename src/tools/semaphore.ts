@@ -19,7 +19,7 @@ import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 import { toToolError } from "../utils/errors.js";
 
-export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClients): void {
+export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClients, readonly = false): void {
   const { semaphore } = clients;
 
   // ── semaphore_status ──────────────────────────────────────────────────────────
@@ -58,12 +58,28 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
           isError: true,
         };
       }
-      return {
-        content: [{
-          type: "text",
-          text: `Semaphore Classification Server is healthy.\n\nURL: ${semaphore.baseUrl}\nVersion: ${version ?? "(unknown)"}`,
-        }],
-      };
+      const lines = [
+        "Semaphore Classification Server is healthy.",
+        "",
+        `URL: ${semaphore.baseUrl}`,
+        `Version: ${version ?? "(unknown)"}`,
+      ];
+      // Surface the server's actual tunable defaults (op: getparameterdefaults) —
+      // saves agents from guessing the threshold/language/clustering behaviour.
+      try {
+        const defaults = await semaphore.getClsParameterDefaults();
+        const interesting = ["threshold", "language", "clustering_type", "clustering_threshold",
+          "singlearticle", "feedback", "CharCountCutoff", "minimum_average_article_pagesize"];
+        const shown = defaults.filter(p => interesting.includes(p.name));
+        if (shown.length > 0) {
+          lines.push("", "SERVER PARAMETER DEFAULTS:");
+          for (const p of shown) {
+            lines.push(`  ${p.name.padEnd(34)} ${p.value}${p.translation ? `  (${p.translation})` : ""}`);
+          }
+          lines.push("", "Note: 'threshold' is on a 0–100 scale; response scores are 0.0–1.0 floats.");
+        }
+      } catch { /* older CLS builds may not support getparameterdefaults — version info is enough */ }
+      return { content: [{ type: "text", text: lines.join("\n") }] };
     }
   );
 
@@ -395,10 +411,12 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "  4. semaphore_task_commit — merge task into master (or via Studio UI)\n" +
     "  5. semaphore_publish model_uri=... — publish master to production CLS\n\n" +
     "COMPATIBILITY:\n" +
-    "  The KMM API reference documents POST /{model}/semsys:hasTask/rdf:instance for task creation,\n" +
-    "  but this endpoint is not yet implemented in Semaphore 5.10.x (the current latest release).\n" +
-    "  The tool falls back to the legacy teamwork:Tag endpoint. Tasks created via the legacy endpoint\n" +
-    "  may not appear in semaphore_task_list — use Studio UI for full task lifecycle support.",
+    "  The tool tries three endpoints in order:\n" +
+    "    1. POST sys/{model}/meta:hasTask with a sys:Task body (official Smartlogic Java-client endpoint)\n" +
+    "    2. POST {model}/semsys:hasTask/rdf:instance (KMM API reference)\n" +
+    "    3. POST {model}/teamwork:Tag/rdf:instance (legacy fallback)\n" +
+    "  Tasks created via the legacy fallback may not appear in semaphore_task_list —\n" +
+    "  the result indicates which path succeeded; use Studio UI if full support is unavailable.",
     {
       model_uri: z.string().describe(
         "KMM model URI to create the task for, e.g. 'model:IPTCMediaTopics'. " +
@@ -470,9 +488,11 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "This merges the task's delta graph (urn:x-evn-tag:{Model}:{Task}) into the model's\n" +
     "master graph (urn:x-evn-master:{Model}). After committing, publish master to CLS.\n\n" +
     "COMPATIBILITY:\n" +
-    "  The KMM API reference documents POST /sys/{taskGraphUri} for task commit,\n" +
-    "  but this endpoint is not yet implemented in Semaphore 5.10.x (current latest release).\n" +
-    "  The tool attempts the API call and provides Studio instructions as fallback.\n\n" +
+    "  The tool tries two endpoints in order:\n" +
+    "    1. POST sys/{taskGraphUri}/teamwork:Change/rdf:instance?action=commit\n" +
+    "       with a sem:Commit body (official Smartlogic Java-client endpoint)\n" +
+    "    2. POST sys/{taskGraphUri} (KMM API reference)\n" +
+    "  If neither is supported by the server, Studio instructions are returned instead.\n\n" +
     "AFTER COMMIT:\n" +
     "  semaphore_publish  model_uri=<model>  — publish master to production CLS",
     {
@@ -483,8 +503,11 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "Task name to commit, e.g. 'Test' from task:ATCDrugClassification:Test. " +
         "Use semaphore_task_list to discover open tasks."
       ),
+      message: z.string().optional().describe(
+        "Commit message recorded on the sem:Commit change record (defaults to 'Commit <task_name>')."
+      ),
     },
-    async ({ model_uri, task_name }) => {
+    async ({ model_uri, task_name, message }) => {
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -498,7 +521,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         };
       }
       try {
-        const result = await semaphore.commitKmmTask(model_uri, task_name);
+        const result = await semaphore.commitKmmTask(model_uri, task_name, message);
         const lines = [
           result.committed ? "SEMAPHORE TASK COMMITTED" : "SEMAPHORE TASK COMMIT — MANUAL ACTION REQUIRED",
           "─".repeat(50),
@@ -1375,8 +1398,30 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         "'unsdg', 'marklogic', 'biologicaltaxonomy', 'meddraadversereactions', 'awsservices', 'azureservices', " +
         "'softwareengineering', 'moviesmodel'. Names are typically the lowercase model prefix before the first dash."
       ),
+      title: z.string().optional().describe(
+        "Document title, sent to the CLS as a separate 'title' field (its own zone, pos=1 in KID rules). " +
+        "REQUIRED to exercise zone-biased templates (semaphore_kid_template_set title_weight/body_weight) — " +
+        "a title concatenated into 'content' is indistinguishable from body text and gets no title-zone weight. " +
+        "Also improves results for news/article content where the title carries strong topical signal."
+      ),
+      language: z.string().optional().describe(
+        "CLS indexed language code (e.g. 'en1', 'fr1') — NOT an ISO code like 'en' or 'en-US'. " +
+        "Run semaphore_cls_languages to discover installed codes and the default. " +
+        "Omit to use the CLS default language."
+      ),
+      article_type: z.enum(["singlearticle", "multiarticle"]).optional().describe(
+        "How the CLS splits the input: 'singlearticle' (default) treats the whole input as one article — " +
+        "best for classifying one document. 'multiarticle' lets the CLS split the input into articles, " +
+        "score each, and cluster article scores into document-level scores — use for very long documents " +
+        "(singlearticle evidence tables get expensive) or concatenated multi-document inputs."
+      ),
+      feedback: z.boolean().optional().describe(
+        "Request match EVIDENCE from the CLS (sends feedback=true). When set, the raw CLS XML response " +
+        "is appended to the output so you can inspect WHY each category fired (matched terms/evidence — " +
+        "shape depends on the CLS version). Use when debugging false positives before editing labels."
+      ),
     },
-    async ({ content, threshold, publish_set, publish_sets }) => {
+    async ({ content, threshold, publish_set, publish_sets, title, language, article_type, feedback }) => {
       if (!semaphore.configured) {
         return {
           content: [{ type: "text", text: "Semaphore is not configured. Set SEMAPHORE_URL in the MCP server .env." }],
@@ -1384,30 +1429,38 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         };
       }
       try {
-        const result = await semaphore.classify(content, threshold ?? 0, publish_set, publish_sets);
+        const result = await semaphore.classify(content, {
+          threshold: threshold ?? 0,
+          publishSet: publish_set,
+          publishSets: publish_sets,
+          title,
+          language,
+          articleType: article_type,
+          feedback,
+        });
         const cats = result.categories;
 
         if (cats.length === 0) {
-          return {
-            content: [{
-              type: "text",
-              text:
-                "SEMAPHORE CLASSIFICATION: No categories returned.\n\n" +
-                "Possible causes:\n" +
-                "  • Threshold is too high — all category scores are below the threshold value.\n" +
-                "    Retry with threshold=0 to see every candidate regardless of score.\n" +
-                "  • Score=0 for all matches — a freshly published rule set may score 0 while\n" +
-                "    the Semaphore Publisher service is still building the rulenet index.\n" +
-                "    Check Semaphore Studio → Publish tab for Publisher status, then retry.\n" +
-                "  • No publish sets are loaded — run semaphore_publish_sets to check.\n" +
-                "    If no sets are active, publish a model from Semaphore Studio first.\n" +
-                "  • The content does not match any classification rules in the active rulenet.\n\n" +
-                "Debug:\n" +
-                "  • semaphore_classes to confirm classification classes are active.\n" +
-                "  • semaphore_publish_diagnose to check rule count vs concept count.\n" +
-                "  • semaphore_kid_template_diagnose  symptom=missing_matches for a guided fix plan.",
-            }],
-          };
+          const emptyText =
+            "SEMAPHORE CLASSIFICATION: No categories returned.\n\n" +
+            "Possible causes:\n" +
+            "  • Threshold is too high — all category scores are below the threshold value.\n" +
+            "    Retry with threshold=0 to see every candidate regardless of score.\n" +
+            "  • Score=0 for all matches — a freshly published rule set may score 0 while\n" +
+            "    the Semaphore Publisher service is still building the rulenet index.\n" +
+            "    Check Semaphore Studio → Publish tab for Publisher status, then retry.\n" +
+            "  • No publish sets are loaded — run semaphore_publish_sets to check.\n" +
+            "    If no sets are active, publish a model from Semaphore Studio first.\n" +
+            "  • The content does not match any classification rules in the active rulenet.\n\n" +
+            "Debug:\n" +
+            "  • semaphore_classes to confirm classification classes are active.\n" +
+            "  • semaphore_publish_diagnose to check rule count vs concept count.\n" +
+            "  • semaphore_kid_template_diagnose  symptom=missing_matches for a guided fix plan." +
+            (feedback
+              ? "\n\n" + "─".repeat(50) + "\nRAW CLS RESPONSE (feedback=true):\n" +
+                (result.rawXml.length > 6000 ? result.rawXml.slice(0, 6000) + "\n… truncated" : result.rawXml)
+              : "");
+          return { content: [{ type: "text", text: emptyText }] };
         }
 
         // Group by className
@@ -1513,6 +1566,16 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
         lines.push("    4. Custom template (semaphore_kid_template_set content=...)  — advanced XML");
         lines.push("  Run: semaphore_kid_template_diagnose  symptom=<symptom>  for a guided action plan.");
 
+        if (feedback) {
+          const RAW_LIMIT = 6000;
+          lines.push("");
+          lines.push("─".repeat(50));
+          lines.push("RAW CLS RESPONSE (feedback=true — inspect for match evidence):");
+          lines.push(result.rawXml.length > RAW_LIMIT
+            ? result.rawXml.slice(0, RAW_LIMIT) + `\n… truncated (${result.rawXml.length - RAW_LIMIT} more chars)`
+            : result.rawXml);
+        }
+
         return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
@@ -1615,7 +1678,11 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
             const textContent = typeof doc.content === "string"
               ? doc.content
               : JSON.stringify(doc.content);
-            const clsResult = await semaphore.classify(textContent, threshold ?? 0, publish_set, publish_sets);
+            const clsResult = await semaphore.classify(textContent, {
+              threshold: threshold ?? 0,
+              publishSet: publish_set,
+              publishSets: publish_sets,
+            });
             results.push({ uri, categories: clsResult.categories });
           } catch (err) {
             results.push({ uri, error: err instanceof Error ? err.message : String(err) });
@@ -1785,7 +1852,7 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
     "⚠️  THIS ACTION IS IRREVERSIBLE. The model and all its triples are permanently removed.\n\n" +
     "IMPORTANT NOTES:\n" +
     "  • This does NOT remove published rule sets from the Classification Server (CLS).\n" +
-    "    Published rule sets remain active in the CLS until manually deactivated via the CLS API.\n" +
+    "    Use semaphore_publish_set_remove to deactivate/delete the CLS rule set afterwards.\n" +
     "  • You must set confirm=true to proceed — the tool will refuse without explicit confirmation.\n" +
     "  • Use semaphore_kmm_models_list to verify the model URI before deleting.",
     {
@@ -1835,6 +1902,82 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
               "Classification Server until manually deactivated.",
           }],
         };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_publish_set_remove ─────────────────────────────────────────────
+  server.tool(
+    "semaphore_publish_set_remove",
+    "Deactivate or delete a publish set (rule set) in the Semaphore Classification Server.\n\n" +
+    "USE THIS TOOL WHEN:\n" +
+    "  • A taxonomy model was deleted in KMM but its rules still classify documents\n" +
+    "    (semaphore_kmm_model_delete does NOT remove CLS rule sets — this tool does)\n" +
+    "  • You want to stop a stale/experimental taxonomy from contributing categories\n" +
+    "    without deleting its KMM model\n" +
+    "  • Cleaning up the CLS after testing (semaphore_publish_sets shows leftovers)\n\n" +
+    "ACTIONS:\n" +
+    "  deactivate — rule set stops being used for classification; pak files remain.\n" +
+    "               Reversible: re-publish the model from KMM to re-activate.\n" +
+    "  delete     — permanently remove the publish set's pak files from the CLS.\n" +
+    "               The CLS only deletes DEACTIVATED sets, so this tool deactivates first,\n" +
+    "               then deletes. Re-publishing from KMM recreates the set from the model.\n\n" +
+    "Use semaphore_publish_sets to list publish set names. After removal, run\n" +
+    "semaphore_publish_sets again to confirm, and semaphore_classify to verify the\n" +
+    "taxonomy's categories no longer appear.",
+    {
+      publish_set: z.string().describe(
+        "Publish set name exactly as shown by semaphore_publish_sets (e.g. 'iptcmediatopics')."
+      ),
+      action: z.enum(["deactivate", "delete"]).describe(
+        "'deactivate' stops classification use (reversible by re-publish); " +
+        "'delete' deactivates then permanently removes the pak files."
+      ),
+      confirm: z.boolean().describe(
+        "Must be explicitly set to true to proceed. The tool refuses without confirmation."
+      ),
+    },
+    async ({ publish_set, action, confirm }) => {
+      if (!semaphore.configured) {
+        return {
+          content: [{ type: "text", text: "Semaphore is not configured. Set SEMAPHORE_URL in the MCP server .env." }],
+          isError: true,
+        };
+      }
+      if (!confirm) {
+        return {
+          content: [{
+            type: "text",
+            text:
+              `${action === "delete" ? "Deletion" : "Deactivation"} of publish set "${publish_set}" was NOT executed.\n\n` +
+              "Set confirm=true to proceed." +
+              (action === "delete" ? " Deletion removes the rule set's pak files from the CLS (re-publish from KMM to recreate)." : ""),
+          }],
+        };
+      }
+      try {
+        const steps: string[] = [];
+        await semaphore.deactivatePublishSet(publish_set);
+        steps.push(`✓ Deactivated publish set "${publish_set}"`);
+        if (action === "delete") {
+          await semaphore.deletePublishSet(publish_set);
+          steps.push(`✓ Deleted publish set "${publish_set}" (pak files removed)`);
+        }
+        const lines = [
+          "PUBLISH SET " + (action === "delete" ? "DELETED" : "DEACTIVATED"),
+          "─".repeat(50),
+          "",
+          ...steps.map(s => `  ${s}`),
+          "",
+          "Verify:",
+          "  • semaphore_publish_sets — the set should be " + (action === "delete" ? "gone" : "inactive"),
+          "  • semaphore_classify     — its categories should no longer appear",
+          "",
+          "To restore: semaphore_publish  model_uri=<model>  (re-publishes from the KMM model).",
+        ];
+        return { content: [{ type: "text", text: lines.join("\n") }] };
       } catch (err) {
         return { content: [{ type: "text", text: toToolError(err) }], isError: true };
       }
@@ -3270,4 +3413,632 @@ LIMIT 500`;
       return { content: [{ type: "text", text: [...plan, ...footer].filter(l => l !== "").join("\n") }] };
     }
   );
+
+  // ── semaphore_concept_tree ────────────────────────────────────────────────────
+  server.tool(
+    "semaphore_concept_tree",
+    "Browse the hierarchy of a KMM taxonomy model as an ASCII tree.\n\n" +
+    "Shows either the top of the taxonomy (top concepts + descendants) or the neighbourhood of a " +
+    "specific concept (breadcrumb path to the root, plus the concept's descendants).\n\n" +
+    "USE THIS TO:\n" +
+    "  • Get oriented in an unfamiliar taxonomy before tuning or classifying\n" +
+    "  • Verify hierarchy after semaphore_kmm_skos_load (are children attached where expected?)\n" +
+    "  • Decide where a new concept belongs before adding it via semaphore_kmm_sparql_update\n" +
+    "  • Understand hierarchy-propagation classification behaviour (a child firing gives the parent\n" +
+    "    credit via the LowerInHierarchy linklist — see semaphore_kid_template_get)\n\n" +
+    "COMPLEMENTARY TOOLS:\n" +
+    "  semaphore_concept_search — find a concept by keyword (get its URI for concept_uri here)\n" +
+    "  semaphore_concept_get    — full label/relationship profile of one concept\n" +
+    "  semaphore_kmm_sparql     — arbitrary SPARQL for anything this tree view doesn't cover",
+    {
+      model_uri: z.string().describe(
+        "KMM model URI, e.g. 'model:IPTCMediaTopics'. Get from semaphore_kmm_models_list."
+      ),
+      concept_uri: z.string().optional().describe(
+        "Root the tree at this concept (full URI from semaphore_concept_search). " +
+        "Shows the breadcrumb path from the scheme root down to this concept, then its descendants. " +
+        "Omit to start from the taxonomy's top concepts."
+      ),
+      depth: z.number().int().min(1).max(4).optional().describe(
+        "How many levels of descendants to expand (default: 2, max: 4). " +
+        "Deeper trees on large taxonomies are truncated — re-run with concept_uri to zoom in."
+      ),
+      lang: z.string().optional().describe(
+        "Language tag for labels, e.g. 'en'. Default: show the first available prefLabel per concept."
+      ),
+    },
+    async ({ model_uri, concept_uri, depth = 2, lang }) => {
+      if (!semaphore.kmmBaseUrl) {
+        return { content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }], isError: true };
+      }
+      if (!semaphore.kmmConfigured) {
+        return { content: [{ type: "text", text: "KMM credentials not configured. Set SEMAPHORE_USERNAME and SEMAPHORE_PASSWORD." }], isError: true };
+      }
+
+      const PREFIX = "PREFIX skos: <http://www.w3.org/2004/02/skos/core#>\n";
+      const labelPattern = lang
+        ? `OPTIONAL { ?c skos:prefLabel ?label . FILTER(LANG(?label) = "${lang}" || LANG(?label) = "") }`
+        : `OPTIONAL { ?c skos:prefLabel ?label }`;
+
+      interface TreeNode { uri: string; label: string; children: TreeNode[]; moreChildren: number }
+      const MAX_CHILDREN_PER_NODE = 25;
+      const MAX_FRONTIER = 100;
+
+      const mkNode = (uri: string, label?: string): TreeNode =>
+        ({ uri, label: label || uri.split(/[/#]/).pop() || uri, children: [], moreChildren: 0 });
+
+      try {
+        // 1. Resolve root nodes
+        let roots: TreeNode[] = [];
+        const breadcrumb: Array<{ uri: string; label: string }> = [];
+
+        if (concept_uri) {
+          const uri = concept_uri.replace(/[<>]/g, "");
+          // Label of the focus concept
+          const focusRes = await semaphore.kmmSparqlQuery(model_uri,
+            PREFIX + `SELECT ?label WHERE { BIND(<${uri}> AS ?c) ${labelPattern} } LIMIT 1`);
+          const focus = mkNode(uri, focusRes.rows[0]?.label);
+          roots = [focus];
+
+          // Breadcrumb: walk skos:broader up to 12 levels (cycle-guarded)
+          let cur = uri;
+          const seen = new Set<string>([uri]);
+          for (let i = 0; i < 12; i++) {
+            const parentRes = await semaphore.kmmSparqlQuery(model_uri,
+              PREFIX + `SELECT ?c ?label WHERE { { <${cur}> skos:broader ?c } UNION { ?c skos:narrower <${cur}> } ${labelPattern} } LIMIT 3`);
+            const row = parentRes.rows.find(r => r.c && !seen.has(r.c));
+            if (!row?.c) break;
+            seen.add(row.c);
+            breadcrumb.unshift({ uri: row.c, label: row.label || row.c.split(/[/#]/).pop() || row.c });
+            cur = row.c;
+          }
+        } else {
+          // Top concepts of the scheme
+          const topRes = await semaphore.kmmSparqlQuery(model_uri,
+            PREFIX +
+            `SELECT DISTINCT ?c ?label WHERE {
+               { ?c skos:topConceptOf ?s } UNION { ?s skos:hasTopConcept ?c }
+               ${labelPattern}
+             } ORDER BY ?label LIMIT ${MAX_FRONTIER}`);
+          const byUri = new Map<string, TreeNode>();
+          for (const r of topRes.rows) {
+            if (r.c && !byUri.has(r.c)) byUri.set(r.c, mkNode(r.c, r.label));
+          }
+          roots = [...byUri.values()];
+
+          if (roots.length === 0) {
+            // Fallback: concepts with no broader (orphan roots)
+            const orphanRes = await semaphore.kmmSparqlQuery(model_uri,
+              PREFIX +
+              `SELECT DISTINCT ?c ?label WHERE {
+                 ?c a skos:Concept .
+                 FILTER NOT EXISTS { ?c skos:broader ?p }
+                 ${labelPattern}
+               } ORDER BY ?label LIMIT ${MAX_FRONTIER}`);
+            for (const r of orphanRes.rows) {
+              if (r.c && !byUri.has(r.c)) byUri.set(r.c, mkNode(r.c, r.label));
+            }
+            roots = [...byUri.values()];
+          }
+        }
+
+        if (roots.length === 0) {
+          return {
+            content: [{
+              type: "text",
+              text:
+                `No top concepts found in ${model_uri}.\n\n` +
+                "Possible causes:\n" +
+                "  • The model is empty — run semaphore_kmm_skos_load first\n" +
+                "  • No skos:topConceptOf / skos:hasTopConcept links exist — check with semaphore_taxonomy_validate\n" +
+                `  • Wrong model URI — check semaphore_kmm_models_list`,
+            }],
+          };
+        }
+
+        // 2. BFS expansion, level by level
+        let frontier = roots;
+        let truncated = false;
+        for (let level = 0; level < depth && frontier.length > 0; level++) {
+          const batch = frontier.slice(0, MAX_FRONTIER);
+          if (frontier.length > MAX_FRONTIER) truncated = true;
+          const values = batch.map(n => `<${n.uri}>`).join(" ");
+          const childRes = await semaphore.kmmSparqlQuery(model_uri,
+            PREFIX +
+            `SELECT DISTINCT ?parent ?c ?label WHERE {
+               VALUES ?parent { ${values} }
+               { ?parent skos:narrower ?c } UNION { ?c skos:broader ?parent }
+               ${labelPattern}
+             } ORDER BY ?parent ?label LIMIT 2000`);
+
+          const nodeByUri = new Map(batch.map(n => [n.uri, n]));
+          const childByKey = new Map<string, TreeNode>();
+          for (const r of childRes.rows) {
+            if (!r.parent || !r.c) continue;
+            const parent = nodeByUri.get(r.parent);
+            if (!parent) continue;
+            const key = `${r.parent}|${r.c}`;
+            if (childByKey.has(key)) continue; // dedupe label variants
+            const child = mkNode(r.c, r.label);
+            childByKey.set(key, child);
+            if (parent.children.length < MAX_CHILDREN_PER_NODE) {
+              parent.children.push(child);
+            } else {
+              parent.moreChildren++;
+            }
+          }
+          frontier = batch.flatMap(n => n.children);
+        }
+
+        // 3. Mark unexpanded children on the final frontier (single grouped count query)
+        if (frontier.length > 0) {
+          const batch = frontier.slice(0, MAX_FRONTIER);
+          const values = batch.map(n => `<${n.uri}>`).join(" ");
+          try {
+            const countRes = await semaphore.kmmSparqlQuery(model_uri,
+              PREFIX +
+              `SELECT ?parent (COUNT(DISTINCT ?c) AS ?n) WHERE {
+                 VALUES ?parent { ${values} }
+                 { ?parent skos:narrower ?c } UNION { ?c skos:broader ?parent }
+               } GROUP BY ?parent`);
+            const counts = new Map(countRes.rows.map(r => [r.parent, parseInt(r.n ?? "0", 10)]));
+            for (const n of batch) n.moreChildren = counts.get(n.uri) ?? 0;
+          } catch { /* non-fatal — tree renders without unexpanded-child counts */ }
+        }
+
+        // 4. Render
+        const lines: string[] = [
+          `TAXONOMY TREE — ${model_uri}`,
+          "─".repeat(60),
+        ];
+        if (breadcrumb.length > 0) {
+          lines.push(`Path to root: ${breadcrumb.map(b => b.label).join(" › ")} › ${roots[0].label}`);
+          lines.push("");
+        }
+        let nodeCount = 0;
+        const render = (node: TreeNode, indent: string, isLast: boolean, isRoot: boolean) => {
+          nodeCount++;
+          const branch = isRoot ? "" : indent + (isLast ? "└─ " : "├─ ");
+          const suffix = node.children.length === 0 && node.moreChildren > 0
+            ? `  (+${node.moreChildren} narrower — not expanded)`
+            : node.moreChildren > 0
+              ? `  (+${node.moreChildren} more children not shown)`
+              : "";
+          lines.push(`${branch}${node.label}${suffix}`);
+          lines.push(`${isRoot ? "" : indent + (isLast ? "   " : "│  ")}  ${node.uri}`);
+          const childIndent = isRoot ? "" : indent + (isLast ? "   " : "│  ");
+          node.children.forEach((c, i) => render(c, childIndent, i === node.children.length - 1, false));
+        };
+        roots.forEach((r, i) => {
+          render(r, "", i === roots.length - 1, roots.length === 1);
+          if (roots.length > 1 && i < roots.length - 1) lines.push("");
+        });
+
+        lines.push("");
+        lines.push(`Nodes shown: ${nodeCount} | Depth: ${depth}${truncated ? " | ⚠ frontier truncated (large taxonomy)" : ""}`);
+        lines.push("");
+        lines.push("NEXT STEPS:");
+        lines.push("  • Zoom in:        semaphore_concept_tree  concept_uri=\"<uri above>\"  depth=3");
+        lines.push("  • Inspect labels: semaphore_concept_get   concept_uri=\"<uri above>\"");
+        lines.push("  • Find a concept: semaphore_concept_search keyword=\"...\"");
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_classify_eval ───────────────────────────────────────────────────
+  server.tool(
+    "semaphore_classify_eval",
+    "Measure classification quality against a labelled test set and recommend a threshold.\n\n" +
+    "Classifies each test case once (threshold=0 to capture every candidate), compares the returned " +
+    "categories against the expected labels, and reports precision / recall / F1 at a range of " +
+    "candidate thresholds. This turns threshold selection from guesswork into measurement.\n\n" +
+    "USE THIS TOOL WHEN:\n" +
+    "  • Choosing the production threshold for a classification pipeline (flux_import / semaphore_enrich)\n" +
+    "  • Verifying that a taxonomy change (labels, KID template) improved quality — run before AND after\n" +
+    "  • Quantifying a false-positive or missing-match complaint before tuning\n\n" +
+    "BUILDING A TEST SET:\n" +
+    "  5–25 cases is enough to be useful. Each case is a text (or a MarkLogic document URI) plus the " +
+    "list of concept labels you expect it to be tagged with. Use representative real documents — " +
+    "include known-difficult cases (the false positives / misses you're trying to fix).\n\n" +
+    "READING THE RESULTS:\n" +
+    "  precision — of the categories returned at this threshold, how many were expected\n" +
+    "  recall    — of the expected categories, how many were returned\n" +
+    "  F1        — harmonic mean; the recommended threshold maximises F1 (ties → higher threshold)\n" +
+    "  Per-case misses/unexpected at the recommended threshold tell you WHAT to fix next:\n" +
+    "  unexpected (false positives) → semaphore_concept_get + semaphore_concept_labels_update action=remove\n" +
+    "  missed (false negatives)     → add altLabels, or lower the threshold\n\n" +
+    "SCOPE TO THE RIGHT TAXONOMY: pass publish_sets=[...] — evaluating against all active publish " +
+    "sets counts unrelated taxonomies' categories as false positives.",
+    {
+      cases: z.array(z.object({
+        text: z.string().optional().describe("Text to classify. Provide text OR uri."),
+        uri: z.string().optional().describe("MarkLogic document URI to fetch and classify instead of inline text."),
+        title: z.string().optional().describe("Optional document title (sent as the CLS title zone)."),
+        expected: z.array(z.string()).describe(
+          "Concept labels (or IDs, when match_on='id') this case SHOULD be tagged with. " +
+          "Labels are matched case-insensitively against the category label. May be empty for " +
+          "negative cases (text that should match nothing)."
+        ),
+      })).min(1).max(25).describe("Labelled test cases (1–25)."),
+      thresholds: z.array(z.number().int().min(0).max(100)).optional().describe(
+        "Candidate thresholds to evaluate. Default: [0, 20, 30, 40, 48, 55, 65, 75]."
+      ),
+      publish_set: z.string().optional().describe("Restrict to a single publish set (see semaphore_publish_sets)."),
+      publish_sets: z.array(z.string()).optional().describe(
+        "Restrict to specific publish sets — STRONGLY recommended so unrelated taxonomies don't count as false positives."
+      ),
+      language: z.string().optional().describe("CLS indexed language code (e.g. 'en1'). See semaphore_cls_languages."),
+      match_on: z.enum(["label", "id"]).optional().describe(
+        "Match expected entries against category labels (default, case-insensitive) or stable concept IDs."
+      ),
+      database: z.string().optional().describe("Database for uri-based cases."),
+    },
+    async ({ cases, thresholds, publish_set, publish_sets, language, match_on = "label", database }) => {
+      if (!semaphore.configured) {
+        return { content: [{ type: "text", text: "Semaphore is not configured. Set SEMAPHORE_URL in the MCP server .env." }], isError: true };
+      }
+      const badCase = cases.findIndex(c => !c.text && !c.uri);
+      if (badCase >= 0) {
+        return { content: [{ type: "text", text: `Case ${badCase + 1} has neither text nor uri — provide one of them.` }], isError: true };
+      }
+      const candidateThresholds = [...new Set(thresholds?.length ? thresholds : [0, 20, 30, 40, 48, 55, 65, 75])].sort((a, b) => a - b);
+
+      try {
+        // 1. Classify every case once at threshold=0; dedupe categories by match key keeping max score
+        interface EvalCase {
+          name: string;
+          expected: Set<string>;
+          candidates: Map<string, { label: string; score: number }>;
+          error?: string;
+        }
+        const evalCases: EvalCase[] = [];
+        for (let i = 0; i < cases.length; i++) {
+          const c = cases[i];
+          const name = c.uri ?? `case ${i + 1}`;
+          const expected = new Set(c.expected.map(e => match_on === "label" ? e.trim().toLowerCase() : e.trim()));
+          try {
+            let text = c.text;
+            if (!text) {
+              const doc = await clients.documents.get(c.uri!, database, false);
+              text = typeof doc.content === "string" ? doc.content : JSON.stringify(doc.content);
+            }
+            const res = await semaphore.classify(text!, {
+              threshold: 0,
+              publishSet: publish_set,
+              publishSets: publish_sets,
+              language,
+              title: c.title,
+            });
+            const candidates = new Map<string, { label: string; score: number }>();
+            for (const cat of res.categories) {
+              const key = match_on === "label" ? cat.label.trim().toLowerCase() : cat.id;
+              const prev = candidates.get(key);
+              if (!prev || cat.score > prev.score) candidates.set(key, { label: cat.label, score: cat.score });
+            }
+            evalCases.push({ name, expected, candidates });
+          } catch (err) {
+            evalCases.push({ name, expected, candidates: new Map(), error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+
+        const okCases = evalCases.filter(c => !c.error);
+        if (okCases.length === 0) {
+          const errs = evalCases.map(c => `  • ${c.name}: ${c.error}`).join("\n");
+          return { content: [{ type: "text", text: `All ${evalCases.length} case(s) failed to classify:\n${errs}` }], isError: true };
+        }
+
+        // Detect the all-scores-zero failure mode before computing misleading metrics
+        const allScores = okCases.flatMap(c => [...c.candidates.values()].map(v => v.score));
+        const allZero = allScores.length > 0 && allScores.every(s => s === 0);
+
+        // 2. Compute micro-averaged P/R/F1 at each candidate threshold
+        const metrics = candidateThresholds.map(t => {
+          let tp = 0, fp = 0, fn = 0;
+          for (const c of okCases) {
+            const predicted = new Set([...c.candidates.entries()].filter(([, v]) => v.score * 100 >= t).map(([k]) => k));
+            for (const k of predicted) (c.expected.has(k) ? tp++ : fp++);
+            for (const k of c.expected) if (!predicted.has(k)) fn++;
+          }
+          const precision = tp + fp > 0 ? tp / (tp + fp) : (fn === 0 ? 1 : 0);
+          const recall = tp + fn > 0 ? tp / (tp + fn) : 1;
+          const f1 = precision + recall > 0 ? 2 * precision * recall / (precision + recall) : 0;
+          return { t, tp, fp, fn, precision, recall, f1 };
+        });
+
+        // 3. Recommend: max F1, ties broken toward the HIGHER threshold (favour precision)
+        const best = [...metrics].sort((a, b) => b.f1 - a.f1 || b.t - a.t)[0];
+
+        const pct = (x: number) => (x * 100).toFixed(0).padStart(3) + "%";
+        const lines: string[] = [
+          "CLASSIFICATION EVALUATION",
+          "─".repeat(60),
+          `Cases: ${okCases.length} evaluated${evalCases.length > okCases.length ? ` (${evalCases.length - okCases.length} failed)` : ""}` +
+            ` | Expected labels: ${okCases.reduce((n, c) => n + c.expected.size, 0)} | Match on: ${match_on}` +
+            (publish_sets?.length ? ` | Publish sets: ${publish_sets.join(", ")}` : publish_set ? ` | Publish set: ${publish_set}` : " | ⚠ ALL active publish sets"),
+          "",
+        ];
+
+        if (allZero) {
+          lines.push("⚠ ALL CANDIDATE SCORES ARE 0 — the CLS rulenet index is likely still building");
+          lines.push("  after a recent publish. Threshold metrics below are meaningless (every threshold > 0");
+          lines.push("  returns nothing). Wait 1–2 minutes and re-run this evaluation.");
+          lines.push("");
+        }
+
+        lines.push("threshold  precision  recall  F1     TP   FP   FN");
+        lines.push("─".repeat(52));
+        for (const m of metrics) {
+          const marker = m.t === best.t ? "  ◄ RECOMMENDED" : "";
+          lines.push(
+            `${String(m.t).padStart(7)}    ${pct(m.precision)}       ${pct(m.recall)}    ${m.f1.toFixed(2)}   ` +
+            `${String(m.tp).padStart(3)}  ${String(m.fp).padStart(3)}  ${String(m.fn).padStart(3)}${marker}`
+          );
+        }
+        lines.push("");
+        lines.push(`RECOMMENDED THRESHOLD: ${best.t}  (F1=${best.f1.toFixed(2)}, precision=${pct(best.precision).trim()}, recall=${pct(best.recall).trim()})`);
+        lines.push("");
+
+        // 4. Per-case breakdown at the recommended threshold
+        lines.push(`PER-CASE DETAIL AT THRESHOLD ${best.t}:`);
+        for (const c of evalCases) {
+          if (c.error) {
+            lines.push(`  ✗ ${c.name}: ERROR — ${c.error}`);
+            continue;
+          }
+          const predicted = new Map([...c.candidates.entries()].filter(([, v]) => v.score * 100 >= best.t));
+          const matched = [...c.expected].filter(k => predicted.has(k));
+          const missed = [...c.expected].filter(k => !predicted.has(k));
+          const unexpected = [...predicted.entries()].filter(([k]) => !c.expected.has(k))
+            .sort((a, b) => b[1].score - a[1].score);
+          const status = missed.length === 0 && unexpected.length === 0 ? "✓" : "⚠";
+          lines.push(`  ${status} ${c.name}: ${matched.length}/${c.expected.size} expected matched` +
+            `${unexpected.length > 0 ? `, ${unexpected.length} unexpected` : ""}`);
+          if (missed.length > 0) {
+            const missDetail = missed.map(k => {
+              const cand = c.candidates.get(k);
+              return cand ? `"${cand.label}" (scored ${cand.score.toFixed(2)} — below threshold)` : `"${k}" (never fired)`;
+            });
+            lines.push(`      missed:     ${missDetail.join(", ")}`);
+          }
+          if (unexpected.length > 0) {
+            lines.push(`      unexpected: ${unexpected.slice(0, 5).map(([, v]) => `"${v.label}" [${v.score.toFixed(2)}]`).join(", ")}` +
+              (unexpected.length > 5 ? ` … +${unexpected.length - 5} more` : ""));
+          }
+        }
+
+        lines.push("");
+        lines.push("─".repeat(60));
+        lines.push("NEXT STEPS:");
+        const anyNeverFired = okCases.some(c => [...c.expected].some(k => !c.candidates.has(k)));
+        const anyUnexpected = metrics.find(m => m.t === best.t)!.fp > 0;
+        if (anyNeverFired) {
+          lines.push("  • Expected labels that NEVER fired: verify the label text matches the taxonomy prefLabel");
+          lines.push("    (semaphore_concept_search), then add altLabels for the document vocabulary");
+          lines.push("    (semaphore_concept_labels_update action=add) and re-publish.");
+        }
+        if (anyUnexpected) {
+          lines.push("  • Unexpected categories: inspect with semaphore_concept_get — remove over-broad altLabels");
+          lines.push("    (semaphore_concept_labels_update action=remove), or scope with publish_sets=[...].");
+        }
+        lines.push(`  • Use threshold=${best.t} in production: semaphore_enrich threshold=${best.t}, or Flux`);
+        lines.push("    flux_import classify_with_semaphore=true (threshold via classifier options).");
+        lines.push("  • After ANY taxonomy/template change: re-publish, then RE-RUN this eval to confirm improvement.");
+
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      } catch (err) {
+        return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+      }
+    }
+  );
+
+  // ── semaphore_enrich ──────────────────────────────────────────────────────────
+  if (!readonly) {
+    server.tool(
+      "semaphore_enrich",
+      "Classify MarkLogic documents with Semaphore and WRITE the results back into each document — " +
+      "the complete auto-tagging round trip in one call.\n\n" +
+      "For each target document: fetches it from MarkLogic, classifies it against the CLS, and merges a " +
+      "classification block into the document content:\n" +
+      '  "<property_name>": {\n' +
+      '    "categories": [{ "className", "label", "id", "score" }, ...],   // top_n, sorted by score\n' +
+      '    "topCategory": { ... },\n' +
+      '    "threshold": 48, "publishSets": [...], "classifiedAt": "<ISO timestamp>"\n' +
+      "  }\n\n" +
+      "USE THIS TOOL WHEN:\n" +
+      "  • Enriching an existing corpus (up to ~50 docs per call) with taxonomy tags\n" +
+      "  • Re-tagging documents after a taxonomy change (re-publish, then re-run this tool)\n" +
+      "  • Building searchable classification metadata for facets (see AFTER ENRICHMENT below)\n\n" +
+      "FOR LARGER CORPORA (100+ documents): use flux_import / flux_reprocess with " +
+      "classify_with_semaphore=true — Flux classifies in parallel at ingest scale.\n\n" +
+      "LIMITATIONS:\n" +
+      "  • JSON documents only (content is fetched, merged, and re-written as JSON). XML documents are\n" +
+      "    skipped with a per-document error — use a Flux/DHF transform for XML corpora.\n" +
+      "  • The whole document is re-written (read-modify-write). Avoid running concurrently with other\n" +
+      "    writers to the same documents.\n" +
+      "  • Documents whose classification returns no categories are SKIPPED by default (no empty blocks);\n" +
+      "    set write_empty=true to write an empty block anyway (useful to mark 'processed').\n\n" +
+      "RECOMMENDED WORKFLOW:\n" +
+      "  1. semaphore_publish_sets — pick the taxonomy publish set(s)\n" +
+      "  2. semaphore_classify_eval — measure and choose the right threshold first\n" +
+      "  3. semaphore_enrich dry_run=true — preview what would be written\n" +
+      "  4. semaphore_enrich — write for real\n\n" +
+      "AFTER ENRICHMENT — surface the tags in MarkLogic search:\n" +
+      "  • Path range index on <property_name>/categories/label → facets + ml_values_query counts\n" +
+      "  • ml_search with a path-range constraint to filter by category\n" +
+      "  (see the semaphore_integration_advisor prompt for the full pattern)",
+      {
+        uris: z.array(z.string()).max(50).optional().describe(
+          "Document URIs to enrich (max 50). Provide this OR collection (or both)."
+        ),
+        collection: z.string().optional().describe(
+          "Enrich documents in this collection (up to page_length per call; paginate with start)."
+        ),
+        start: z.number().int().positive().optional().describe("Pagination start for collection listing (default: 1)."),
+        page_length: z.number().int().positive().max(50).optional().describe(
+          "Number of documents to fetch from the collection (default: 20, max: 50)."
+        ),
+        threshold: z.number().int().min(0).max(100).optional().describe(
+          "Minimum confidence threshold 0–100 (default: 48 — the CLS production default). " +
+          "Choose with semaphore_classify_eval rather than guessing."
+        ),
+        publish_set: z.string().optional().describe("Restrict to a single publish set (see semaphore_publish_sets)."),
+        publish_sets: z.array(z.string()).optional().describe(
+          "Restrict to specific publish sets — STRONGLY recommended; without it every active taxonomy " +
+          "contributes categories."
+        ),
+        language: z.string().optional().describe("CLS indexed language code (e.g. 'en1'). See semaphore_cls_languages."),
+        top_n: z.number().int().min(1).max(50).optional().describe(
+          "Max categories to store per document (default: 10, sorted by score descending)."
+        ),
+        property_name: z.string().optional().describe(
+          "Name of the property to write into the document (default: 'classification'). " +
+          "An existing property with this name is overwritten — safe for re-tagging runs."
+        ),
+        write_empty: z.boolean().optional().describe(
+          "Write an empty classification block when no categories meet the threshold (default: false = skip)."
+        ),
+        dry_run: z.boolean().optional().describe(
+          "Preview mode: classify and report what WOULD be written, without writing (default: false)."
+        ),
+        database: z.string().optional().describe("Database name for document retrieval and writes."),
+      },
+      async ({ uris, collection, start, page_length, threshold, publish_set, publish_sets, language, top_n, property_name, write_empty, dry_run, database }) => {
+        if (!semaphore.configured) {
+          return { content: [{ type: "text", text: "Semaphore is not configured. Set SEMAPHORE_URL in the MCP server .env." }], isError: true };
+        }
+        if (!uris?.length && !collection) {
+          return { content: [{ type: "text", text: "Provide at least one of: uris (list of document URIs) or collection." }], isError: true };
+        }
+        const prop = property_name ?? "classification";
+        const limit = top_n ?? 10;
+        try {
+          const targetUris: string[] = [...(uris ?? [])];
+          if (collection) {
+            const listing = await clients.documents.list({
+              collection,
+              start: start ?? 1,
+              pageLength: page_length ?? 20,
+              database,
+            });
+            for (const u of listing.uris ?? []) {
+              if (!targetUris.includes(u)) targetUris.push(u);
+            }
+          }
+          if (targetUris.length === 0) {
+            return { content: [{ type: "text", text: "No documents found to enrich." }] };
+          }
+
+          const results: Array<{
+            uri: string;
+            status: "enriched" | "skipped-empty" | "skipped-not-json" | "error";
+            categoryCount?: number;
+            top?: string;
+            error?: string;
+          }> = [];
+
+          for (const uri of targetUris) {
+            try {
+              const doc = await clients.documents.get(uri, database, false);
+              const content = doc.content;
+              if (typeof content !== "object" || content === null || Array.isArray(content)) {
+                results.push({
+                  uri,
+                  status: "skipped-not-json",
+                  error: "Content is not a JSON object — semaphore_enrich supports JSON documents only.",
+                });
+                continue;
+              }
+              const text = JSON.stringify(content);
+              const clsResult = await semaphore.classify(text, {
+                threshold: threshold ?? 48,
+                publishSet: publish_set,
+                publishSets: publish_sets,
+                language,
+              });
+              const categories = [...clsResult.categories]
+                .sort((a, b) => b.score - a.score)
+                .slice(0, limit);
+
+              if (categories.length === 0 && !write_empty) {
+                results.push({ uri, status: "skipped-empty", categoryCount: 0 });
+                continue;
+              }
+
+              const block = {
+                categories,
+                topCategory: categories[0] ?? null,
+                threshold: threshold ?? 48,
+                ...(publish_sets?.length ? { publishSets: publish_sets } : publish_set ? { publishSets: [publish_set] } : {}),
+                classifiedAt: new Date().toISOString(),
+              };
+              if (!dry_run) {
+                const updated = { ...(content as Record<string, unknown>), [prop]: block };
+                await clients.documents.put(uri, JSON.stringify(updated), "application/json", { database });
+              }
+              results.push({
+                uri,
+                status: "enriched",
+                categoryCount: categories.length,
+                top: categories[0] ? `${categories[0].label} [${categories[0].score.toFixed(2)}]` : undefined,
+              });
+            } catch (err) {
+              results.push({ uri, status: "error", error: err instanceof Error ? err.message : String(err) });
+            }
+          }
+
+          const enriched = results.filter(r => r.status === "enriched");
+          const skippedEmpty = results.filter(r => r.status === "skipped-empty");
+          const skippedNotJson = results.filter(r => r.status === "skipped-not-json");
+          const failed = results.filter(r => r.status === "error");
+
+          const lines = [
+            dry_run ? "SEMAPHORE ENRICHMENT — DRY RUN (nothing written)" : "SEMAPHORE ENRICHMENT RESULTS",
+            "─".repeat(60),
+            `  ${dry_run ? "Would enrich" : "Enriched"}:  ${enriched.length}/${targetUris.length} document(s)` +
+              ` | property: "${prop}" | threshold: ${threshold ?? 48}`,
+            skippedEmpty.length > 0 ? `  Skipped (no categories ≥ threshold): ${skippedEmpty.length}` : "",
+            skippedNotJson.length > 0 ? `  Skipped (not JSON): ${skippedNotJson.length}` : "",
+            failed.length > 0 ? `  Failed: ${failed.length}` : "",
+            "",
+          ].filter(s => s !== "");
+
+          for (const r of enriched) {
+            lines.push(`  ✓ ${r.uri}`);
+            lines.push(`      ${r.categoryCount} categories — top: ${r.top ?? "(none)"}`);
+          }
+          if (skippedEmpty.length > 0) {
+            lines.push("", "  NO CATEGORIES (≥ threshold) — not written:");
+            for (const r of skippedEmpty) lines.push(`    ○ ${r.uri}`);
+            lines.push("    Try a lower threshold (run semaphore_classify_eval), or check publish_sets scoping.");
+          }
+          if (skippedNotJson.length > 0) {
+            lines.push("", "  NOT JSON — skipped:");
+            for (const r of skippedNotJson) lines.push(`    ○ ${r.uri}`);
+            lines.push("    XML corpora: use flux_reprocess with a server-side transform instead.");
+          }
+          if (failed.length > 0) {
+            lines.push("", "  ERRORS:");
+            for (const r of failed) lines.push(`    ✗ ${r.uri}: ${r.error}`);
+          }
+
+          lines.push("", "─".repeat(60));
+          if (dry_run) {
+            lines.push("Dry run complete. Re-run with dry_run=false (or omit dry_run) to write.");
+          } else if (enriched.length > 0) {
+            lines.push("NEXT STEPS — surface the tags in search:");
+            lines.push(`  • Path range index on ${prop}/categories/label → enables facets + ml_values_query`);
+            lines.push(`  • ml_values_query on that index → category counts across the corpus`);
+            lines.push(`  • Re-tag after taxonomy changes: re-publish, then re-run semaphore_enrich on the same scope`);
+          }
+
+          return { content: [{ type: "text", text: lines.join("\n") }] };
+        } catch (err) {
+          return { content: [{ type: "text", text: toToolError(err) }], isError: true };
+        }
+      }
+    );
+  }
 }

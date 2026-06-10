@@ -689,6 +689,30 @@ function classify(task: string): ToolRecipe[] {
       not_this_tool:
         "If the quality problem is systematic (affects most/all concepts, not just one), use template tuning instead.",
     });
+
+    // Measure quality before and after any tuning change
+    results.push({
+      tool: "semaphore_classify_eval",
+      description: "MEASURE classification quality (precision/recall/F1) and pick a threshold — run before AND after tuning",
+      use_when: ["threshold-tuning", "classification-quality", "quality-measurement", "regression-check"],
+      recipe: {
+        step1_build_test_set: {
+          note: "Collect 5–25 representative texts (or MarkLogic URIs) with the concept labels each SHOULD get — include the known-difficult cases.",
+        },
+        step2_evaluate: {
+          tool: "semaphore_classify_eval",
+          cases: '[{"text": "...", "expected": ["Label A", "Label B"]}, {"uri": "/doc.json", "expected": [...]}]',
+          publish_sets: '["<taxonomy publish set>"]',
+          note: "Reports P/R/F1 at candidate thresholds and recommends the best-F1 threshold.",
+        },
+        step3_tune_and_rerun: {
+          note: "Apply label/template fixes, semaphore_publish, then RE-RUN the same eval to confirm improvement (no regressions).",
+        },
+      },
+      rationale:
+        "Threshold selection and tuning verification should be measured, not guessed. Running the same labelled " +
+        "eval before and after a taxonomy or template change is the only reliable way to confirm the change helped.",
+    });
   }
 
   // ── Create new taxonomy from scratch ────────────────────────────────────────
@@ -852,6 +876,40 @@ function classify(task: string): ToolRecipe[] {
           "Run semaphore_publish_sets and semaphore_classes to confirm what taxonomies and rules are active.",
         ],
       });
+      // Mid-scale path: classify + write back without Flux (up to ~50 docs/call)
+      results.push({
+        tool: "semaphore_enrich",
+        description: "Classify MarkLogic documents and write the classification block back into each document",
+        use_when: ["enrich-existing-docs", "tag-collection", "re-tag-after-taxonomy-change"],
+        recipe: {
+          step1_choose_threshold: {
+            tool: "semaphore_classify_eval",
+            note: "Measure P/R/F1 on labelled examples and get a recommended threshold first.",
+          },
+          step2_preview: {
+            tool: "semaphore_enrich",
+            collection: "<collection>",
+            publish_sets: '["<taxonomy>"]',
+            threshold: "<from eval>",
+            dry_run: true,
+          },
+          step3_write: {
+            tool: "semaphore_enrich",
+            collection: "<collection>",
+            publish_sets: '["<taxonomy>"]',
+            threshold: "<from eval>",
+            note: "Paginate with start/page_length for collections larger than 50 docs, or switch to Flux.",
+          },
+        },
+        rationale:
+          "semaphore_enrich is the complete round trip for small/mid corpora: fetch → classify → merge a " +
+          "'classification' block (categories, topCategory, threshold, timestamp) into each JSON document. " +
+          "No Flux runner or SJS transform needed. For 100+ documents prefer flux_import/flux_reprocess.",
+        warnings: [
+          "JSON documents only — XML corpora need a Flux/DHF transform.",
+          "Disabled when ML_READONLY=true.",
+        ],
+      });
     } else {
       // Single-document / exploratory classification
       results.push({
@@ -865,10 +923,12 @@ function classify(task: string): ToolRecipe[] {
         rationale:
           "semaphore_classify sends text to the Semaphore Classification Server and returns scored taxonomy categories. " +
           "Use threshold=0 to see all candidate categories regardless of confidence. " +
+          "Pass title separately (title param) for zone-aware scoring, feedback=true for match evidence, " +
+          "and publish_sets=[...] to scope to specific taxonomies. " +
           "Run semaphore_publish_sets and semaphore_classes first to understand the loaded taxonomies.",
         not_this_tool:
-          "For bulk classification of an existing collection, use flux_reprocess with an SJS transform instead — " +
-          "semaphore_classify is for interactive/exploratory use only.",
+          "For tagging documents already in MarkLogic use semaphore_enrich (≤50 docs/call, writes results back); " +
+          "for bulk classification use flux_import/flux_reprocess — semaphore_classify is for interactive/exploratory use only.",
         warnings: [
           "Requires SEMAPHORE_URL to be set in the MCP server .env.",
           "Run semaphore_status first to confirm connectivity.",

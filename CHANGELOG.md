@@ -9,6 +9,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`semaphore_enrich` tool** (`src/tools/semaphore.ts`)
+  The complete auto-tagging round trip: fetches MarkLogic documents (by URI list or
+  collection), classifies them against the CLS, and writes a curated `classification`
+  block (top-N categories, topCategory, threshold, timestamp) back into each JSON
+  document. Supports `dry_run` preview, `write_empty`, custom `property_name`, and
+  publish-set scoping. Readonly-gated: `registerSemaphoreTools` now receives the
+  `readonly` flag and skips registration when writes are disabled.
+
+- **`semaphore_classify_eval` tool** (`src/tools/semaphore.ts`)
+  Quality measurement for classification pipelines: classifies a labelled test set
+  (inline text or MarkLogic URIs) once at threshold=0, then reports micro-averaged
+  precision/recall/F1 at a range of candidate thresholds and recommends the best-F1
+  threshold. Per-case detail distinguishes expected labels that scored below threshold
+  from labels that never fired, with targeted next-step guidance.
+
+- **`semaphore_concept_tree` tool** (`src/tools/semaphore.ts`)
+  ASCII hierarchy browser for KMM models: top concepts + descendants (BFS, depth 1–4),
+  or a specific concept with its breadcrumb path to the root. Marks unexpanded children
+  so agents can zoom in incrementally.
+
+- **`semaphore_publish_set_remove` tool** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
+  Deactivate or delete CLS publish sets via the documented `publish_set_deactivate` /
+  `publish_set_delete` XML_INPUT ops (delete auto-deactivates first). Closes the gap
+  where `semaphore_kmm_model_delete` left orphaned rule sets active in the CLS.
+  Requires `confirm=true`.
+
+- **`semaphore_classify` request options** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
+  `classify()` now takes an options object supporting `title` (separate CLS title zone —
+  required for zone-biased KID templates to differentiate scores), `language` (indexed
+  CLS codes, e.g. `en1`), `article_type` (`singlearticle`/`multiarticle`), and `feedback`
+  (returns the raw CLS response for match-evidence inspection). All verified against the
+  official Smartlogic Semaphore-CS-Client parameter set.
+
+- **`semaphore_status` parameter defaults** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
+  New `getClsParameterDefaults()` client method (XML_INPUT op `getparameterdefaults`)
+  surfaces the server's actual defaults (threshold, language, clustering, char cutoff)
+  in the status output, so agents discover real server behaviour instead of guessing.
+
+### Changed
+
+- **KMM task lifecycle uses the official Smartlogic endpoints first**
+  (`src/client/semaphore.ts`): `createKmmTask` now tries
+  `POST sys/{model}/meta:hasTask` with a `sys:Task` body (the endpoint used by the
+  official `OEClientReadWrite.createTask`), and `commitKmmTask` tries
+  `POST sys/{task}/teamwork:Change/rdf:instance?action=commit` with a `sem:Commit`
+  body (per `OEClientReadWrite.commitTask`), before falling back to the previously
+  used endpoints. `semaphore_task_commit` gained an optional `message` parameter.
+
 - **`semaphore_publish_diagnose` tool** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
   Triangulates KMM concept count (OE API), labeled English concept count (SPARQL with GRAPH
   clause), and CLS estimated rule count to identify the root cause of publish failures.

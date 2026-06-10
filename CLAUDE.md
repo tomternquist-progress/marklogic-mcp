@@ -148,7 +148,7 @@ src/
     performance.ts      — database/forest metrics, merge/reindex status (eval-gated bits)
     dhf.ts              — Data Hub Framework flow run/scaffold (eval + readonly + JAR gated)
     ml-gradle.ts        — ml-gradle project scaffolding / command guidance
-    semaphore.ts        — CLS + KMM + taxonomy + KID templates (~27 tools)
+    semaphore.ts        — CLS + KMM + taxonomy + KID templates + enrich/eval (~31 tools)
   resources/
     index.ts         — all resources; INSTRUCTIONS_TEXT constant at top
   prompts/

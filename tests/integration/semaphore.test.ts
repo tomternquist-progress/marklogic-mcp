@@ -163,7 +163,7 @@ describeIfLive("SemaphoreClient CLS (live)", () => {
     it("classifies text without error", async () => {
       const result = await semaphore.classify(
         "Artificial intelligence and machine learning are transforming industries.",
-        48
+        { threshold: 48 }
       );
       expect(result).toBeDefined();
       expect(Array.isArray(result.categories)).toBe(true);
@@ -173,7 +173,7 @@ describeIfLive("SemaphoreClient CLS (live)", () => {
     it("each returned category has className, label, id, and score", async () => {
       const result = await semaphore.classify(
         "Climate change and global warming are major environmental issues.",
-        0 // low threshold to get more results
+        { threshold: 0 } // low threshold to get more results
       );
       for (const cat of result.categories) {
         expect(typeof cat.className).toBe("string");
@@ -185,7 +185,7 @@ describeIfLive("SemaphoreClient CLS (live)", () => {
     });
 
     it("rawXml contains XML content", async () => {
-      const result = await semaphore.classify("Technology and software development.", 0);
+      const result = await semaphore.classify("Technology and software development.", { threshold: 0 });
       expect(result.rawXml).toContain("<");
     });
   });

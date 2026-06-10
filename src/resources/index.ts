@@ -308,10 +308,17 @@ enrichment           SJS module                 ml_document_patch
 
 Content              Semaphore Classification   semaphore_classify        semaphore_status
 classification /     Server (CLS) + KMM         semaphore_classify_batch  semaphore_publish_sets
-auto-tagging         taxonomy authoring         semaphore_publish_sets    semaphore_classes
-(taxonomy /          (Progress Data Platform)   semaphore_classes         semaphore_kmm_models_list
-concept extraction)  Classify via Flux or       semaphore_kmm_models_list
-                     pre-classify app-side      semaphore_kmm_model_create
+auto-tagging         taxonomy authoring         semaphore_enrich          semaphore_classes
+(taxonomy /          (Progress Data Platform)   (classify + write back    semaphore_kmm_models_list
+concept extraction)  Classify via Flux or        to MarkLogic docs)
+                     pre-classify app-side      semaphore_classify_eval
+                                                  (precision/recall +
+                                                   threshold recommendation)
+                                                semaphore_publish_sets
+                                                semaphore_classes
+                                                semaphore_concept_tree
+                                                semaphore_kmm_models_list
+                                                semaphore_kmm_model_create
                                                 semaphore_kmm_skos_load
                                                 semaphore_kmm_sparql
                                                 semaphore_kmm_sparql_update
@@ -842,6 +849,12 @@ TOOLS FOR SEMAPHORE:
   semaphore_publish_sets        — list active taxonomy rule sets in CLS
   semaphore_classes             — browse classification class names in active rulenet
   semaphore_classify            — classify sample text (exploratory / small scale)
+                                  supports title zone, CLS language codes, article splitting
+  semaphore_classify_eval       — measure precision/recall against a labelled test set
+                                  and recommend a threshold (run before production tagging)
+  semaphore_enrich              — classify MarkLogic docs AND write the classification
+                                  block back into each document (readonly-gated)
+  semaphore_concept_tree        — browse taxonomy hierarchy as an ASCII tree
   semaphore_kmm_models_list     — list all taxonomy models in KMM/Studio
   semaphore_kmm_model_create    — create a new model container in KMM
   semaphore_kmm_skos_load       — load a SKOS vocabulary from a public URL into KMM
@@ -856,6 +869,13 @@ TOOLS FOR SEMAPHORE:
                                   the workspace ZIP; run BEFORE semaphore_publish for
                                   UNESCO, EuroVoc, AGROVOC, and similar vocabularies
   semaphore_integration_advisor (prompt) — full architectural design guidance
+
+CLASSIFICATION QUALITY WORKFLOW (recommended order):
+  1. semaphore_publish_sets — pick the right taxonomy publish set(s) to scope to
+  2. semaphore_classify_eval — measure P/R/F1 on 5–25 labelled examples, get a threshold
+  3. Tune: labels (semaphore_concept_labels_update) → threshold → KID template
+     (semaphore_kid_template_set); re-publish + re-run the eval after each change
+  4. semaphore_enrich (small corpora) or flux_import classify_with_semaphore (bulk)
 
 PLAIN SKOS WORKFLOW (UNESCO / EuroVoc / AGROVOC):
   1. semaphore_kmm_model_create
@@ -949,15 +969,18 @@ Extensions (3–5, config-dependent):
                ml_extension_list, ml_extension_get, ml_extension_call
                [write-enabled] ml_extension_put, ml_extension_delete
 
-Semaphore (27): semaphore_status, semaphore_studio_status,
-                semaphore_publish_sets, semaphore_classes, semaphore_classify,
-                semaphore_classify_batch, semaphore_cls_languages,
+Semaphore (31): semaphore_status, semaphore_studio_status,
+                semaphore_publish_sets, semaphore_publish_set_remove,
+                semaphore_classes, semaphore_classify,
+                semaphore_classify_batch, semaphore_classify_eval,
+                semaphore_enrich, semaphore_cls_languages,
                 semaphore_kmm_models_list, semaphore_kmm_model_create,
                 semaphore_kmm_model_delete, semaphore_kmm_skos_load,
                 semaphore_kmm_sparql, semaphore_kmm_sparql_update,
                 semaphore_publish, semaphore_publish_config_fix_plain_skos,
                 semaphore_publish_diagnose, semaphore_concept_search,
-                semaphore_concept_get, semaphore_concept_labels_update,
+                semaphore_concept_get, semaphore_concept_tree,
+                semaphore_concept_labels_update,
                 semaphore_taxonomy_validate, semaphore_taxonomy_scaffold,
                 semaphore_kid_template_get, semaphore_kid_template_set,
                 semaphore_kid_template_diagnose,

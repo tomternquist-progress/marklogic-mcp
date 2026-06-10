@@ -687,19 +687,21 @@ export class SemaphoreClient {
   /**
    * Create a new task (working copy) for a model.
    *
-   * DOCUMENTED ENDPOINT (KMM API reference):
+   * OFFICIAL ENDPOINT (Smartlogic Java client OEClientReadWrite.createTask):
+   *   POST /kmm/api/sys/{modelUri}/meta:hasTask
+   *   Body: { "@type": ["sys:Task"], "rdfs:label": { "@value": label } }
+   *
+   * OLDER DOCUMENTED ENDPOINT (KMM API reference):
    *   POST /{graphUri}/semsys:hasTask/rdf:instance
    *   Body: JSON-LD with @type, rdfs:label, rdfs:comment
    *   Response: 201 Created
    *
-   * LEGACY ENDPOINT (Semaphore 5.10.x — current latest release):
+   * LEGACY ENDPOINT (last resort):
    *   POST /{modelUri}/teamwork:Tag/rdf:instance
    *   — Creates a model-level tag but NOT a system-level task (does not appear
    *     in the global task list, lacks dcterms:created, and has no urn:x-evn-tag graph).
    *
-   * This method tries the documented semsys:hasTask endpoint first. If it fails (HTTP 400
-   * with "missing rdf:type" on semsys:hasTask — meaning the property isn't defined on this
-   * KMM version), it falls back to the legacy teamwork:Tag endpoint with a warning.
+   * This method tries the endpoints in that order, falling through on failure.
    *
    * @returns The task ID (e.g. "task:MyModel:MyTask") if the server returns one, or a
    *          constructed ID based on the model and label.
@@ -712,7 +714,34 @@ export class SemaphoreClient {
     const modelName = modelUri.replace(/^model:/, "");
     const token = await this.kmmApiKey();
 
-    // Body for the documented semsys:hasTask endpoint
+    // Attempt 1 — official Java-client endpoint: POST sys/{modelUri}/meta:hasTask
+    // with a sys:Task JSON-LD body (mirrors OEClientReadWrite.createTask).
+    try {
+      const officialBody = {
+        "@type": ["sys:Task"],
+        "rdfs:label": { "@value": label },
+        ...(description ? { "rdfs:comment": { "@value": description } } : {}),
+      };
+      const res = await this.kmmHttp.post(
+        `/kmm/api/sys/${modelUri}/meta:hasTask`,
+        officialBody,
+        {
+          headers: { "x-api-key": token, "Content-Type": "application/ld+json" },
+          validateStatus: (s) => s < 500,
+        }
+      );
+      if (res.status === 201 || res.status === 200) {
+        const location = res.headers?.location as string | undefined;
+        const graphMatch = location?.match(/(task:[^/\s]+|urn:x-tags:[^/\s]+)/);
+        const id = graphMatch?.[1]?.replace(/^urn:x-tags:/, "task:") ?? `task:${modelName}:${label}`;
+        return { id, fullSupport: true };
+      }
+      logger.debug("createKmmTask: meta:hasTask endpoint declined", { status: res.status });
+    } catch (e) {
+      logger.debug("createKmmTask: meta:hasTask endpoint failed, trying semsys:hasTask", { err: String(e) });
+    }
+
+    // Body for the older documented semsys:hasTask endpoint
     const body = {
       "@graph": [{
         "rdfs:label": label,
@@ -720,7 +749,7 @@ export class SemaphoreClient {
       }],
     };
 
-    // Try documented endpoint first
+    // Attempt 2 — semsys:hasTask endpoint
     try {
       const res = await this.kmmHttp.post(
         `/kmm/api/${modelUri}/semsys:hasTask/rdf:instance`,
@@ -774,23 +803,61 @@ export class SemaphoreClient {
   /**
    * Commit (merge) a task's changes into master.
    *
-   * DOCUMENTED ENDPOINT (KMM API reference):
+   * OFFICIAL ENDPOINT (Smartlogic Java client OEClientReadWrite.commitTask):
+   *   POST /kmm/api/sys/{taskGraphUri}/teamwork:Change/rdf:instance
+   *        ?action=commit&filter=subject(teamwork:status = teamwork:Uncommitted)
+   *   Body: { "@graph": { "@type": ["sem:Commit"], "rdfs:label": [...], "rdfs:comment": [...] } }
+   *
+   * OLDER DOCUMENTED ENDPOINT (KMM API reference):
    *   POST /sys/{taskGraphUri}
-   *   Merges the task delta graph into the master graph.
+   *   Merges the task delta graph into the master graph. Returns "not yet supported"
+   *   on some Semaphore 5.10.x builds.
    *
-   * AVAILABILITY: This endpoint returns "not yet supported" on Semaphore 5.10.x
-   * (the current latest release). Tasks must be committed via the Studio UI.
+   * This method tries the official endpoint first, then the older one. If neither
+   * works, it returns committed=false with Studio UI instructions.
    *
-   * @throws Error with a descriptive message if the server doesn't support this endpoint.
+   * @throws Error with a descriptive message on unexpected HTTP failures.
    */
   async commitKmmTask(
     modelUri: string,
-    taskName: string
+    taskName: string,
+    commitMessage?: string
   ): Promise<{ committed: boolean; message: string }> {
     const modelName = modelUri.replace(/^model:/, "");
     const taskGraphUri = `task:${modelName}:${taskName}`;
     const token = await this.kmmApiKey();
 
+    // Attempt 1 — official Java-client commit: POST a sem:Commit change record
+    // with action=commit, filtered to uncommitted changes.
+    try {
+      const qs = new URLSearchParams({
+        action: "commit",
+        filter: "subject(teamwork:status = teamwork:Uncommitted)",
+      });
+      const commitBody = {
+        "@graph": {
+          "@type": ["sem:Commit"],
+          "rdfs:label": [{ "@value": commitMessage ?? `Commit ${taskName}` }],
+          "rdfs:comment": [{ "@value": commitMessage ?? `Committed via MCP semaphore_task_commit` }],
+        },
+      };
+      const res = await this.kmmHttp.post(
+        `/kmm/api/sys/${taskGraphUri}/teamwork:Change/rdf:instance?${qs.toString()}`,
+        commitBody,
+        {
+          headers: { "x-api-key": token, "Content-Type": "application/ld+json" },
+          validateStatus: (s) => s < 500,
+        }
+      );
+      if (res.status === 200 || res.status === 201 || res.status === 204) {
+        return { committed: true, message: `Task "${taskName}" committed (sem:Commit change record created).` };
+      }
+      logger.debug("commitKmmTask: teamwork:Change commit declined", { status: res.status });
+    } catch (e) {
+      logger.debug("commitKmmTask: teamwork:Change commit failed, trying legacy endpoint", { err: String(e) });
+    }
+
+    // Attempt 2 — older documented endpoint
     const res = await this.kmmHttp.post(
       `/kmm/api/sys/${taskGraphUri}`,
       {},
@@ -805,11 +872,11 @@ export class SemaphoreClient {
     }
 
     const errMsg = JSON.stringify(res.data);
-    if (errMsg.includes("not yet supported")) {
+    if (errMsg.includes("not yet supported") || res.status === 400 || res.status === 404 || res.status === 405) {
       return {
         committed: false,
         message:
-          `Task commit via API is not supported on this Semaphore version.\n` +
+          `Task commit via API is not supported on this Semaphore version (HTTP ${res.status}).\n` +
           `Use Semaphore Studio: open ${modelUri} → Working Copies → ${taskName} → Submit → Merge to Master.`,
       };
     }
@@ -1943,30 +2010,107 @@ export class SemaphoreClient {
   }
 
   /**
+   * Fetch the CLS server's default values for all tunable request parameters.
+   *
+   * XML_INPUT op: getparameterdefaults
+   * Response: <response><Parameters><Param name="threshold" value="48" translation=""/>…
+   *
+   * Lets callers discover the server's actual defaults (threshold, language,
+   * clustering_type/threshold, CharCountCutoff …) instead of hardcoding them.
+   */
+  async getClsParameterDefaults(): Promise<Array<{ name: string; value: string; translation?: string }>> {
+    const xml = await this.postXmlOp("getparameterdefaults");
+    const params: Array<{ name: string; value: string; translation?: string }> = [];
+    for (const el of xmlAll(xml, "Param")) {
+      const a = xmlAttrs(el);
+      if (a.name !== undefined) {
+        params.push({ name: a.name, value: a.value ?? "", translation: a.translation || undefined });
+      }
+    }
+    return params;
+  }
+
+  /**
+   * Deactivate a live publish set in the CLS (XML_INPUT op: publish_set_deactivate).
+   * The rule set stops being used for classification but its pak files remain on
+   * the server; it can be re-activated by re-publishing from KMM.
+   */
+  async deactivatePublishSet(publishSetName: string): Promise<string> {
+    const xml = await this.postXmlOp("publish_set_deactivate", publishSetName);
+    if (/<error/i.test(xml)) {
+      throw new Error(`publish_set_deactivate failed for "${publishSetName}": ${xml.slice(0, 500)}`);
+    }
+    return xml;
+  }
+
+  /**
+   * Delete a DEACTIVATED publish set from the CLS (XML_INPUT op: publish_set_delete).
+   * The publish set must be deactivated first (deactivatePublishSet) — the CLS
+   * refuses to delete an active set.
+   */
+  async deletePublishSet(publishSetName: string): Promise<string> {
+    const xml = await this.postXmlOp("publish_set_delete", publishSetName);
+    if (/<error/i.test(xml)) {
+      throw new Error(`publish_set_delete failed for "${publishSetName}": ${xml.slice(0, 500)}`);
+    }
+    return xml;
+  }
+
+  /**
    * Classify text content.
    *
-   * @param content      Plain text or HTML to classify.
-   * @param threshold    Minimum confidence threshold, integer 0–100 (default: 48). Lower = more results.
-   *                     Use 0 to return all candidates regardless of score.
-   *                     Note: the threshold is on a 0–100 integer scale, but the CLS XML @score
-   *                     attribute is a 0.0–1.0 float (e.g. threshold=48 filters below score 0.48).
-   * @param publishSet   Restrict to a single publish set (e.g. "softwareengineering").
-   *                     Passed as a multipart form field "publish_set".
-   * @param publishSets  Restrict to multiple publish sets (e.g. ["iptcmediatopics", "unescothesaurus"]).
-   *                     Passed as "publish_set_name_list" (pipe-separated). Takes precedence over publishSet.
-   *                     When neither is supplied all active publish sets are used.
+   * @param content  Plain text or HTML to classify (sent as the "body" form field).
+   * @param options  Classification options:
+   *   threshold    Minimum confidence threshold, integer 0–100 (default: 48). Lower = more results.
+   *                Use 0 to return all candidates regardless of score.
+   *                Note: the threshold is on a 0–100 integer scale, but the CLS XML @score
+   *                attribute is a 0.0–1.0 float (e.g. threshold=48 filters below score 0.48).
+   *   publishSet   Restrict to a single publish set (e.g. "softwareengineering").
+   *                Passed as a multipart form field "publish_set".
+   *   publishSets  Restrict to multiple publish sets (e.g. ["iptcmediatopics", "unescothesaurus"]).
+   *                Passed as "publish_set_name_list" (pipe-separated). Takes precedence over publishSet.
+   *                When neither is supplied all active publish sets are used.
+   *   language     CLS indexed language code (e.g. "en1", "fr1" — NOT ISO codes like "en").
+   *                Discover installed codes with listClsLanguages(). When omitted the CLS
+   *                default language is used.
+   *   title        Document title, sent as the separate "title" form field. The CLS indexes
+   *                the title as its own zone (pos=1 in KID rules), so zone-biased rule
+   *                templates (title_weight/body_weight) only differentiate scores when the
+   *                title is supplied here rather than concatenated into the body.
+   *   articleType  How the CLS splits the input into articles:
+   *                "singlearticle" (default here) — treat the whole input as one article.
+   *                  Best for individual documents; large inputs cost more memory/time.
+   *                "multiarticle" — the CLS splits the input into articles, scores each,
+   *                  then clusters article scores into document-level scores (the CLS
+   *                  server-side default; what Flux uses for batch classification).
+   *   feedback     Send feedback=true to request match evidence in the response
+   *                (the official Semaphore-CS-Client "feedback" flag; server default is
+   *                FEEDBACK_NONE). The evidence shape is CLS-version-dependent — inspect
+   *                the rawXml field of the result.
    */
   async classify(
     content: string,
-    threshold = 48,
-    publishSet?: string,
-    publishSets?: string[]
+    options: {
+      threshold?: number;
+      publishSet?: string;
+      publishSets?: string[];
+      language?: string;
+      title?: string;
+      articleType?: "singlearticle" | "multiarticle";
+      feedback?: boolean;
+    } = {}
   ): Promise<SemaphoreClassificationResult> {
+    const { threshold = 48, publishSet, publishSets, language, title, articleType, feedback } = options;
     const fields: Array<{ name: string; value: string }> = [
       { name: "body", value: content },
       { name: "threshold", value: String(threshold) },
-      { name: "singlearticle", value: "true" },
     ];
+    // Article-type fields are mutually exclusive boolean flags on the CLS API.
+    const at = articleType ?? "singlearticle";
+    fields.push({ name: at, value: "true" });
+    if (title) fields.push({ name: "title", value: title });
+    if (language) fields.push({ name: "language", value: language });
+    if (feedback) fields.push({ name: "feedback", value: "true" });
     if (publishSets && publishSets.length > 0) {
       // pipe-separated list filters to the specified publish sets
       fields.push({ name: "publish_set_name_list", value: publishSets.join("|") });

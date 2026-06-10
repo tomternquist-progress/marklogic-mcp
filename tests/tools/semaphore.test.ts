@@ -33,6 +33,9 @@ function createMockSemaphore(overrides: Record<string, unknown> = {}) {
     listPublishSets: vi.fn(),
     listClasses: vi.fn(),
     listClsLanguages: vi.fn(),
+    getClsParameterDefaults: vi.fn().mockResolvedValue([]),
+    deactivatePublishSet: vi.fn(),
+    deletePublishSet: vi.fn(),
     classify: vi.fn(),
     listKmmModels: vi.fn(),
     createKmmModel: vi.fn(),
@@ -67,10 +70,10 @@ function createMockClients(semaphoreOverrides?: Record<string, unknown>) {
   };
 }
 
-function setup(semaphoreOverrides?: Record<string, unknown>) {
+function setup(semaphoreOverrides?: Record<string, unknown>, readonly = false) {
   const { server, tools } = createMockServer();
   const clients = createMockClients(semaphoreOverrides);
-  registerSemaphoreTools(server as never, clients as never);
+  registerSemaphoreTools(server as never, clients as never, readonly);
   return { tools, clients };
 }
 
@@ -92,10 +95,23 @@ describe("registerSemaphoreTools – registration", () => {
       "semaphore_kmm_skos_load",
       "semaphore_kmm_sparql",
       "semaphore_kmm_sparql_update",
+      "semaphore_concept_tree",
+      "semaphore_classify_eval",
+      "semaphore_enrich",
+      "semaphore_publish_set_remove",
     ];
     for (const name of expectedTools) {
       expect(tools.has(name), `expected tool ${name} to be registered`).toBe(true);
     }
+  });
+
+  it("does not register semaphore_enrich when readonly is true", () => {
+    const { tools } = setup(undefined, true);
+    expect(tools.has("semaphore_enrich")).toBe(false);
+    // Read-only Semaphore tools remain available
+    expect(tools.has("semaphore_classify")).toBe(true);
+    expect(tools.has("semaphore_classify_eval")).toBe(true);
+    expect(tools.has("semaphore_concept_tree")).toBe(true);
   });
 });
 
@@ -314,7 +330,14 @@ describe("semaphore_classify handler", () => {
     const { tools, clients } = setup();
     (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({ categories: [] });
     await tools.get("semaphore_classify")!({ content: "text to classify", threshold: 70 });
-    expect(clients.semaphore.classify).toHaveBeenCalledWith("text to classify", 70, undefined, undefined);
+    expect(clients.semaphore.classify).toHaveBeenCalledWith("text to classify", {
+      threshold: 70,
+      publishSet: undefined,
+      publishSets: undefined,
+      title: undefined,
+      language: undefined,
+      articleType: undefined,
+    });
   });
 
   it("passes publish_set and publish_sets to the client", async () => {
@@ -326,12 +349,14 @@ describe("semaphore_classify handler", () => {
       publish_set: "iptcmediatopics",
       publish_sets: ["iptcmediatopics", "unescothesaurus"],
     });
-    expect(clients.semaphore.classify).toHaveBeenCalledWith(
-      "sample",
-      0,
-      "iptcmediatopics",
-      ["iptcmediatopics", "unescothesaurus"]
-    );
+    expect(clients.semaphore.classify).toHaveBeenCalledWith("sample", {
+      threshold: 0,
+      publishSet: "iptcmediatopics",
+      publishSets: ["iptcmediatopics", "unescothesaurus"],
+      title: undefined,
+      language: undefined,
+      articleType: undefined,
+    });
   });
 
   it("sets isError on classify failure", async () => {
@@ -407,12 +432,11 @@ describe("semaphore_classify_batch handler", () => {
       publish_sets: ["iptcmediatopics", "unescothesaurus"],
     });
 
-    expect(clients.semaphore.classify).toHaveBeenCalledWith(
-      "text",
-      60,
-      undefined,
-      ["iptcmediatopics", "unescothesaurus"]
-    );
+    expect(clients.semaphore.classify).toHaveBeenCalledWith("text", {
+      threshold: 60,
+      publishSet: undefined,
+      publishSets: ["iptcmediatopics", "unescothesaurus"],
+    });
   });
 
   it("records document fetch errors without aborting the whole batch", async () => {
@@ -788,5 +812,359 @@ describe("semaphore_kid_template_set handler", () => {
     (clients.semaphore.kmmSetKidTemplate as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("zip error"));
     const result = await tools.get("semaphore_kid_template_set")!({ model_uri: "model:Test" });
     expect(result.isError).toBe(true);
+  });
+});
+
+// ─── semaphore_concept_tree ──────────────────────────────────────────────────
+
+describe("semaphore_concept_tree handler", () => {
+  it("returns error when KMM is not configured", async () => {
+    const { tools } = setup({ kmmBaseUrl: null });
+    const result = await tools.get("semaphore_concept_tree")!({ model_uri: "model:Test" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("KMM is not configured");
+  });
+
+  it("renders top concepts and their children as a tree", async () => {
+    const { tools, clients } = setup();
+    const sparql = clients.semaphore.kmmSparqlQuery as ReturnType<typeof vi.fn>;
+    // 1: top concepts, 2: BFS level 1 (children of A), 3: BFS level 2 (children of B — none)
+    sparql
+      .mockResolvedValueOnce({ rows: [{ c: "http://x/A", label: "Animals" }] })
+      .mockResolvedValueOnce({ rows: [{ parent: "http://x/A", c: "http://x/B", label: "Birds" }] })
+      .mockResolvedValueOnce({ rows: [] });
+    const result = await tools.get("semaphore_concept_tree")!({ model_uri: "model:Test" });
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("Animals");
+    expect(text).toContain("Birds");
+    expect(text).toContain("http://x/A");
+    expect(text).toContain("http://x/B");
+  });
+
+  it("shows a breadcrumb path when concept_uri is provided", async () => {
+    const { tools, clients } = setup();
+    const sparql = clients.semaphore.kmmSparqlQuery as ReturnType<typeof vi.fn>;
+    sparql.mockImplementation(async (_model: string, query: string) => {
+      if (query.includes("BIND(<http://x/C> AS ?c)")) return { rows: [{ label: "Crows" }] };
+      if (query.includes("<http://x/C> skos:broader")) return { rows: [{ c: "http://x/B", label: "Birds" }] };
+      if (query.includes("<http://x/B> skos:broader")) return { rows: [] };
+      if (query.includes("VALUES ?parent { <http://x/C> }") && query.includes("?label")) return { rows: [] };
+      return { rows: [] };
+    });
+    const result = await tools.get("semaphore_concept_tree")!({
+      model_uri: "model:Test",
+      concept_uri: "http://x/C",
+      depth: 1,
+    });
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    expect(text).toContain("Path to root: Birds › Crows");
+  });
+
+  it("reports when no top concepts are found", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmSparqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({ rows: [] });
+    const result = await tools.get("semaphore_concept_tree")!({ model_uri: "model:Empty" });
+    expect(result.content[0].text).toContain("No top concepts found");
+  });
+
+  it("sets isError on SPARQL failure", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.kmmSparqlQuery as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("boom"));
+    const result = await tools.get("semaphore_concept_tree")!({ model_uri: "model:Test" });
+    expect(result.isError).toBe(true);
+  });
+});
+
+// ─── semaphore_classify_eval ─────────────────────────────────────────────────
+
+describe("semaphore_classify_eval handler", () => {
+  it("returns error when Semaphore is not configured", async () => {
+    const { tools } = setup({ configured: false });
+    const result = await tools.get("semaphore_classify_eval")!({
+      cases: [{ text: "x", expected: ["A"] }],
+    });
+    expect(result.isError).toBe(true);
+  });
+
+  it("rejects a case with neither text nor uri", async () => {
+    const { tools } = setup();
+    const result = await tools.get("semaphore_classify_eval")!({
+      cases: [{ expected: ["A"] }],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("neither text nor uri");
+  });
+
+  it("computes per-threshold metrics and recommends the best F1 threshold", async () => {
+    const { tools, clients } = setup();
+    const classify = clients.semaphore.classify as ReturnType<typeof vi.fn>;
+    classify
+      .mockResolvedValueOnce({
+        categories: [
+          { className: "X", label: "Sports", id: "1", score: 0.9 },
+          { className: "X", label: "Politics", id: "2", score: 0.3 },
+        ],
+      })
+      .mockResolvedValueOnce({
+        categories: [{ className: "X", label: "Politics", id: "2", score: 0.7 }],
+      });
+    const result = await tools.get("semaphore_classify_eval")!({
+      cases: [
+        { text: "match report", expected: ["Sports"] },
+        { text: "election news", expected: ["Politics"] },
+      ],
+      thresholds: [0, 50],
+    });
+    expect(result.isError).toBeUndefined();
+    const text = result.content[0].text;
+    // At threshold 0: TP=2 FP=1 FN=0. At 50: TP=2 FP=0 FN=0 → F1=1 → recommended.
+    expect(text).toContain("RECOMMENDED THRESHOLD: 50");
+    expect(text).toContain("PER-CASE DETAIL AT THRESHOLD 50");
+    // classify must be called with threshold 0 to capture every candidate
+    expect(classify).toHaveBeenCalledWith("match report", expect.objectContaining({ threshold: 0 }));
+  });
+
+  it("reports missed labels that scored below threshold vs never fired", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({
+      categories: [{ className: "X", label: "Sports", id: "1", score: 0.2 }],
+    });
+    const result = await tools.get("semaphore_classify_eval")!({
+      cases: [{ text: "t", expected: ["Sports", "Politics"] }],
+      thresholds: [48],
+    });
+    const text = result.content[0].text;
+    expect(text).toContain("below threshold");
+    expect(text).toContain("never fired");
+  });
+
+  it("fetches text from MarkLogic when a case uses uri", async () => {
+    const { tools, clients } = setup();
+    (clients.documents.get as ReturnType<typeof vi.fn>).mockResolvedValue({ content: { body: "doc text" } });
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({ categories: [] });
+    await tools.get("semaphore_classify_eval")!({
+      cases: [{ uri: "/doc/a.json", expected: [] }],
+    });
+    expect(clients.documents.get).toHaveBeenCalledWith("/doc/a.json", undefined, false);
+    expect(clients.semaphore.classify).toHaveBeenCalledWith(
+      JSON.stringify({ body: "doc text" }),
+      expect.objectContaining({ threshold: 0 })
+    );
+  });
+
+  it("warns when all candidate scores are zero", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({
+      categories: [{ className: "X", label: "Sports", id: "1", score: 0 }],
+    });
+    const result = await tools.get("semaphore_classify_eval")!({
+      cases: [{ text: "t", expected: ["Sports"] }],
+    });
+    expect(result.content[0].text).toContain("ALL CANDIDATE SCORES ARE 0");
+  });
+});
+
+// ─── semaphore_enrich ────────────────────────────────────────────────────────
+
+describe("semaphore_enrich handler", () => {
+  function enrichSetup() {
+    const { tools, clients } = setup();
+    (clients.documents.get as ReturnType<typeof vi.fn>).mockResolvedValue({ content: { headline: "Cup final" } });
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({
+      categories: [
+        { className: "IPTC", label: "Sport", id: "s1", score: 0.91 },
+        { className: "IPTC", label: "Soccer", id: "s2", score: 0.85 },
+      ],
+    });
+    (clients.documents.put as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    return { tools, clients };
+  }
+
+  it("returns error when Semaphore is not configured", async () => {
+    const { tools } = setup({ configured: false });
+    const result = await tools.get("semaphore_enrich")!({ uris: ["/a.json"] });
+    expect(result.isError).toBe(true);
+  });
+
+  it("requires uris or collection", async () => {
+    const { tools } = setup();
+    const result = await tools.get("semaphore_enrich")!({});
+    expect(result.isError).toBe(true);
+  });
+
+  it("classifies and writes the classification block back to the document", async () => {
+    const { tools, clients } = enrichSetup();
+    const result = await tools.get("semaphore_enrich")!({ uris: ["/news/1.json"], threshold: 60 });
+    expect(result.isError).toBeUndefined();
+    expect(clients.documents.put).toHaveBeenCalledTimes(1);
+    const [uri, body, contentType] = (clients.documents.put as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(uri).toBe("/news/1.json");
+    expect(contentType).toBe("application/json");
+    const written = JSON.parse(body);
+    expect(written.headline).toBe("Cup final"); // original content preserved
+    expect(written.classification.categories).toHaveLength(2);
+    expect(written.classification.topCategory.label).toBe("Sport");
+    expect(written.classification.threshold).toBe(60);
+    expect(result.content[0].text).toContain("Enriched:  1/1");
+  });
+
+  it("respects top_n and custom property_name", async () => {
+    const { tools, clients } = enrichSetup();
+    await tools.get("semaphore_enrich")!({
+      uris: ["/news/1.json"],
+      top_n: 1,
+      property_name: "semaphore",
+    });
+    const written = JSON.parse((clients.documents.put as ReturnType<typeof vi.fn>).mock.calls[0][1]);
+    expect(written.semaphore.categories).toHaveLength(1);
+    expect(written.classification).toBeUndefined();
+  });
+
+  it("does not write in dry_run mode", async () => {
+    const { tools, clients } = enrichSetup();
+    const result = await tools.get("semaphore_enrich")!({ uris: ["/news/1.json"], dry_run: true });
+    expect(clients.documents.put).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("DRY RUN");
+  });
+
+  it("skips non-JSON documents with an explanatory note", async () => {
+    const { tools, clients } = enrichSetup();
+    (clients.documents.get as ReturnType<typeof vi.fn>).mockResolvedValue({ content: "<xml/>" });
+    const result = await tools.get("semaphore_enrich")!({ uris: ["/a.xml"] });
+    expect(clients.documents.put).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("NOT JSON");
+  });
+
+  it("skips documents with no categories unless write_empty is set", async () => {
+    const { tools, clients } = enrichSetup();
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({ categories: [] });
+    const result = await tools.get("semaphore_enrich")!({ uris: ["/news/1.json"] });
+    expect(clients.documents.put).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("NO CATEGORIES");
+
+    await tools.get("semaphore_enrich")!({ uris: ["/news/1.json"], write_empty: true });
+    expect(clients.documents.put).toHaveBeenCalledTimes(1);
+  });
+
+  it("records per-document errors without aborting the batch", async () => {
+    const { tools, clients } = enrichSetup();
+    (clients.documents.get as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("404 not found"))
+      .mockResolvedValueOnce({ content: { ok: true } });
+    const result = await tools.get("semaphore_enrich")!({ uris: ["/missing.json", "/ok.json"] });
+    const text = result.content[0].text;
+    expect(text).toContain("404 not found");
+    expect(text).toContain("✓ /ok.json");
+  });
+});
+
+// ─── semaphore_publish_set_remove ────────────────────────────────────────────
+
+describe("semaphore_publish_set_remove handler", () => {
+  it("refuses without confirm=true", async () => {
+    const { tools, clients } = setup();
+    const result = await tools.get("semaphore_publish_set_remove")!({
+      publish_set: "oldset",
+      action: "delete",
+      confirm: false,
+    });
+    expect(result.content[0].text).toContain("NOT executed");
+    expect(clients.semaphore.deactivatePublishSet).not.toHaveBeenCalled();
+    expect(clients.semaphore.deletePublishSet).not.toHaveBeenCalled();
+  });
+
+  it("deactivates only when action=deactivate", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.deactivatePublishSet as ReturnType<typeof vi.fn>).mockResolvedValue("<response/>");
+    const result = await tools.get("semaphore_publish_set_remove")!({
+      publish_set: "oldset",
+      action: "deactivate",
+      confirm: true,
+    });
+    expect(result.isError).toBeUndefined();
+    expect(clients.semaphore.deactivatePublishSet).toHaveBeenCalledWith("oldset");
+    expect(clients.semaphore.deletePublishSet).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("DEACTIVATED");
+  });
+
+  it("deactivates then deletes when action=delete", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.deactivatePublishSet as ReturnType<typeof vi.fn>).mockResolvedValue("<response/>");
+    (clients.semaphore.deletePublishSet as ReturnType<typeof vi.fn>).mockResolvedValue("<response/>");
+    const result = await tools.get("semaphore_publish_set_remove")!({
+      publish_set: "oldset",
+      action: "delete",
+      confirm: true,
+    });
+    expect(clients.semaphore.deactivatePublishSet).toHaveBeenCalledWith("oldset");
+    expect(clients.semaphore.deletePublishSet).toHaveBeenCalledWith("oldset");
+    expect(result.content[0].text).toContain("DELETED");
+  });
+
+  it("sets isError on CLS failure", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.deactivatePublishSet as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("CLS down"));
+    const result = await tools.get("semaphore_publish_set_remove")!({
+      publish_set: "x",
+      action: "deactivate",
+      confirm: true,
+    });
+    expect(result.isError).toBe(true);
+  });
+});
+
+// ─── semaphore_classify feedback + semaphore_status defaults ────────────────
+
+describe("semaphore_classify feedback option", () => {
+  it("passes feedback through and appends the raw CLS response", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({
+      categories: [{ className: "X", label: "Sports", id: "1", score: 0.9 }],
+      rawXml: "<response><STRUCTUREDDOCUMENT>evidence-here</STRUCTUREDDOCUMENT></response>",
+    });
+    const result = await tools.get("semaphore_classify")!({ content: "text", feedback: true });
+    expect(clients.semaphore.classify).toHaveBeenCalledWith("text", expect.objectContaining({ feedback: true }));
+    expect(result.content[0].text).toContain("RAW CLS RESPONSE");
+    expect(result.content[0].text).toContain("evidence-here");
+  });
+
+  it("does not include raw response without feedback", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.classify as ReturnType<typeof vi.fn>).mockResolvedValue({
+      categories: [{ className: "X", label: "Sports", id: "1", score: 0.9 }],
+      rawXml: "<response>hidden</response>",
+    });
+    const result = await tools.get("semaphore_classify")!({ content: "text" });
+    expect(result.content[0].text).not.toContain("RAW CLS RESPONSE");
+  });
+});
+
+describe("semaphore_status parameter defaults", () => {
+  it("shows server parameter defaults when available", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.healthCheck as ReturnType<typeof vi.fn>).mockResolvedValue({ healthy: true, version: "5.10" });
+    (clients.semaphore.getClsParameterDefaults as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { name: "threshold", value: "48" },
+      { name: "language", value: "en1", translation: "English" },
+      { name: "irrelevant_param", value: "x" },
+    ]);
+    const result = await tools.get("semaphore_status")!({});
+    const text = result.content[0].text;
+    expect(text).toContain("SERVER PARAMETER DEFAULTS");
+    expect(text).toContain("threshold");
+    expect(text).toContain("48");
+    expect(text).toContain("English");
+    expect(text).not.toContain("irrelevant_param");
+  });
+
+  it("still reports healthy when getparameterdefaults fails", async () => {
+    const { tools, clients } = setup();
+    (clients.semaphore.healthCheck as ReturnType<typeof vi.fn>).mockResolvedValue({ healthy: true, version: "5.6" });
+    (clients.semaphore.getClsParameterDefaults as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("op unsupported"));
+    const result = await tools.get("semaphore_status")!({});
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("healthy");
   });
 });

@@ -817,13 +817,18 @@ Available tools (use only these):
   Extensions: ml_extension_list, ml_extension_get, ml_extension_put,
               ml_extension_delete, ml_extension_call
   Semaphore:  semaphore_status, semaphore_studio_status, semaphore_publish_sets,
-              semaphore_classes, semaphore_classify, semaphore_cls_languages,
+              semaphore_publish_set_remove (deactivate/delete CLS rule sets),
+              semaphore_classes, semaphore_classify, semaphore_classify_batch,
+              semaphore_classify_eval (precision/recall + threshold recommendation),
+              semaphore_enrich (classify + write back to MarkLogic docs),
+              semaphore_cls_languages,
               semaphore_kmm_models_list, semaphore_kmm_model_create,
               semaphore_kmm_model_delete, semaphore_kmm_skos_load,
               semaphore_kmm_sparql, semaphore_kmm_sparql_update,
               semaphore_publish, semaphore_publish_config_fix_plain_skos,
               semaphore_publish_diagnose, semaphore_concept_search,
-              semaphore_concept_get, semaphore_concept_labels_update,
+              semaphore_concept_get, semaphore_concept_tree (hierarchy browser),
+              semaphore_concept_labels_update,
               semaphore_taxonomy_validate, semaphore_taxonomy_scaffold
   DHF:        dhf_status, dhf_flows_list, dhf_job_status,
               dhf_flow_run (allowEval + write-enabled; async — returns job ID)
