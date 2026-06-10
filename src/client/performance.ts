@@ -73,7 +73,7 @@ export class PerformanceClient {
   async getForestCounts(forestName: string): Promise<{ active: number; deleted: number; standCount: number; docCount: number } | null> {
     const xq = `
       declare namespace fs = "http://marklogic.com/xdmp/status/forest";
-      let $id := xdmp:forest("${forestName.replace(/"/g, '\\"')}")
+      let $id := xdmp:forest("${forestName.replace(/"/g, '""')}")
       let $c := xdmp:forest-counts($id)
       return xdmp:to-json(map:new((
         map:entry("active",     fn:sum($c//fs:active-fragment-count/fn:data(.))),
@@ -105,7 +105,7 @@ export class PerformanceClient {
   async forceMerge(database: string): Promise<{ merged: string[] }> {
     const xq = `
       xquery version "1.0-ml";
-      let $forests := xdmp:database-forests(xdmp:database("${database.replace(/"/g, '\\"')}"))
+      let $forests := xdmp:database-forests(xdmp:database("${database.replace(/"/g, '""')}"))
       return (
         for $f in $forests
         return xdmp:merge(
