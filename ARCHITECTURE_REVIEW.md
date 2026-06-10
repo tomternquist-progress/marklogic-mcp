@@ -37,9 +37,11 @@ tests now guard it.
      upper bound. A date range needs an `and-query` of two range queries
      (`GE start` and `LE end`).
    **Severity: medium-high** (user-facing recipe produces a broken query).
-   Fix: build an `and-query` of two `range-query`/`element-range-query` clauses, or
-   route this recipe through `ml_optic_query`; add a unit test that asserts the
-   generated structured-query shape.
+   **FIXED (2026-06-10, this branch)**: the recipe now emits an `and-query` of two
+   `range-query` clauses (`GE start`, `LE end`) against the JSON property, with an
+   optional `date_type` parameter (default `xs:dateTime`) and the range-index
+   prerequisite stated in the description and explanation. Shape locked by
+   `tests/utils/recipes.test.ts`.
 
 2. **Wrong escaping for XQuery string literals in `getForestCounts`**
    (`src/client/performance.ts:76`). `forestName.replace(/"/g, '\\"')` assumes
@@ -47,8 +49,12 @@ tests now guard it.
    **doubling it** (`""`). A forest name containing `"` therefore produces a
    malformed (and technically injectable) query rather than an escaped one.
    **Severity: low** (eval-gated; forest names rarely contain quotes) but the
-   escape is semantically wrong. Fix: `replace(/"/g, '""')`, or pass the name via
-   `/v1/eval` external variables instead of interpolation.
+   escape is semantically wrong.
+   **FIXED (2026-06-10, this branch)**: both occurrences (`getForestCounts` and the
+   same pattern in `forceMerge`) now double embedded quotes. The semaphore client's
+   backslash escaping was checked and left alone — those sites build SPARQL/Turtle
+   literals, where backslash escaping is correct. Locked by
+   `tests/client/performance-escaping.test.ts` (nock-based body capture).
 
 ### Security & hardening (no exploitable issue in the default compose topology)
 
@@ -81,25 +87,31 @@ tests now guard it.
 
 ### Documentation drift — the CLAUDE.md sync mandate is not being met
 
-6. The codebase now registers **108 tools**, but `INSTRUCTIONS_TEXT`
-   (`src/resources/index.ts`) mentions only ~88 and the `problem_advisor` prompt's
-   Section 4 lists ~87. Missing from both, among others: `ml_suggest`,
+6. The codebase registers **108 tools**. A word-boundary-aware sweep (added as
+   `tests/resources/guidance-sync.test.ts`) showed the drift was confined to the
+   `problem_advisor` prompt: **13 tools were missing from its Section 4 list**
+   (`ml_database_set_forests`, `ml_logs_list`, `ml_logs_read`,
+   `ml_document_patch_batch`, `semaphore_task_list/create/commit`,
    `semaphore_classify_batch`, `semaphore_kid_template_get/set/diagnose`,
-   `semaphore_task_create/list/commit`; additionally missing from `problem_advisor`:
-   `ml_export_tabular` and `dhf_flow_run_jar`. The Semaphore group count annotation
-   "(27)" is stale. No references to nonexistent tools were found (no typos —
-   purely additive drift). **Recommendation**: beyond updating the two artifacts,
-   add a unit test that extracts registered tool names (the de-facto list already
-   exists in test helpers) and asserts each appears in `INSTRUCTIONS_TEXT` and the
-   `problem_advisor` text — this drift has now recurred across three review passes
-   and only a test will stop it.
+   `dhf_flow_run_jar`, `ml_gradle_scaffold`). `INSTRUCTIONS_TEXT` was verified
+   complete — the initial estimate of ~20 missing entries there was a
+   measurement artifact, corrected here for the record. No references to
+   nonexistent tools exist in either artifact (no typos — purely additive drift).
+   **FIXED (2026-06-10, this branch)**: `problem_advisor` Section 4 updated with
+   all 13 names, and a sync-guard test now registers the full permissive tool
+   surface against a capturing server and asserts (a) every tool name appears in
+   `INSTRUCTIONS_TEXT`, (b) every tool name appears in the `problem_advisor`
+   text, and (c) every tool-shaped token in either text resolves to a real tool
+   or prompt. Future drift is a build failure, not a review finding.
 
 ### Test & config gaps (minor)
 
-7. Coverage is now strong across all 18+ tool groups (792 unit tests, behavior-
-   driven, no tautological tests found in spot-checks), with two remaining holes:
-   **`src/prompts/index.ts` and `src/resources/index.ts` have zero tests** — which
-   is exactly where the sync drift in item 6 lives.
+7. Coverage is now strong across all 18+ tool groups (792 unit tests at review
+   time, behavior-driven, no tautological tests found in spot-checks), with two
+   remaining holes: **`src/prompts/index.ts` and `src/resources/index.ts` had zero
+   tests** — exactly where the sync drift in item 6 lived. Partially addressed by
+   the new guidance-sync test (804 tests after this pass); content-level prompt
+   tests remain a nice-to-have.
 8. Config validation gaps that surface only at runtime: Semaphore
    username/password accepted without a host; DHF staging/jobs port relationship
    unvalidated (`src/config/schema.ts`). Severity: very low.

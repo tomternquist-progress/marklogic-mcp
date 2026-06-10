@@ -4,7 +4,9 @@ import type { AppConfig } from "../config/index.js";
 import { toToolError } from "../utils/errors.js";
 import { analyzeSecurityPosture, renderSecurityPosture } from "../utils/security-posture.js";
 
-const INSTRUCTIONS_TEXT = `\
+// Exported so tests can assert every registered tool appears in this text
+// (see tests/resources/guidance-sync.test.ts and the CLAUDE.md sync mandate).
+export const INSTRUCTIONS_TEXT = `\
 MARKLOGIC MCP — PROBLEM-FIRST DECISION GUIDE
 ============================================
 

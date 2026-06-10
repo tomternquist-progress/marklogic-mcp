@@ -89,33 +89,45 @@ export const QUERY_RECIPES: RecipeDefinition[] = [
     name: "time_bounded_events",
     description:
       "Find documents in a date range and project the requested fields. " +
-      "Requires the date field to exist on each document (range index recommended for large sets).",
+      "REQUIRES a range index of the matching type on the date field (verify with " +
+      "ml_indexes_list first). Optional date_type selects the index type " +
+      "(default xs:dateTime; use xs:date for date-only indexes).",
     requiredParams: ["collection", "date_field", "start_date", "end_date"],
-    build: (args) => ({
-      tool: "ml_search",
-      params: {
-        collection: args.collection,
-        structured_query: {
-          "and-query": {
-            queries: [
-              {
-                "range-constraint-query": {
-                  "constraint-name": args.date_field,
-                  value: [args.start_date, args.end_date],
-                  "range-operator": "GE",
-                },
-              },
-            ],
-          },
+    build: (args) => {
+      const dateType = args.date_type ?? "xs:dateTime";
+      // A bounded range needs TWO range-queries ANDed together: a single
+      // range-query with multiple values ORs them, so GE [start, end] would
+      // degenerate to ">= start" and never apply the upper bound.
+      const rangeQuery = (operator: "GE" | "LE", value: unknown) => ({
+        "range-query": {
+          type: dateType,
+          "json-property": args.date_field,
+          value: [value],
+          "range-operator": operator,
         },
-        select_fields: args.select_fields ?? [args.date_field],
-        page_length: args.limit ?? 50,
-        normalize_whitespace: true,
-      },
-      explanation:
-        `Returns documents in "${args.collection}" with ${args.date_field} between ` +
-        `${args.start_date} and ${args.end_date}.`,
-    }),
+      });
+      return {
+        tool: "ml_search",
+        params: {
+          collection: args.collection,
+          structured_query: {
+            "and-query": {
+              queries: [
+                rangeQuery("GE", args.start_date),
+                rangeQuery("LE", args.end_date),
+              ],
+            },
+          },
+          select_fields: args.select_fields ?? [args.date_field],
+          page_length: args.limit ?? 50,
+          normalize_whitespace: true,
+        },
+        explanation:
+          `Returns documents in "${args.collection}" with ${args.date_field} between ` +
+          `${args.start_date} and ${args.end_date} (inclusive). Requires a ${dateType} ` +
+          `range index on ${args.date_field}.`,
+      };
+    },
   },
   {
     name: "entities_mentioning_term",

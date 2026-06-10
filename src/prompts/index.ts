@@ -774,10 +774,11 @@ List the MCP tools for the main task, in order:
 
 Available tools (use only these):
   Admin:      ml_cluster_status, ml_databases_list, ml_database_properties,
-              ml_database_statistics, ml_forests_list, ml_servers_list,
-              ml_server_properties, ml_reindex_status
+              ml_database_statistics, ml_database_set_forests, ml_forests_list,
+              ml_servers_list, ml_server_properties, ml_reindex_status,
+              ml_logs_list, ml_logs_read
   Documents:  ml_document_get, ml_document_list, ml_document_sample, ml_document_put,
-              ml_document_delete, ml_document_patch
+              ml_document_delete, ml_document_patch, ml_document_patch_batch
   Search:     ml_search, ml_search_qbe, ml_values_query, ml_suggest, ml_facets_query,
               ml_geospatial_search, ml_parse_query
               (ml_search supports select_fields=, distinct=, group_by=,
@@ -817,16 +818,22 @@ Available tools (use only these):
   Extensions: ml_extension_list, ml_extension_get, ml_extension_put,
               ml_extension_delete, ml_extension_call
   Semaphore:  semaphore_status, semaphore_studio_status, semaphore_publish_sets,
-              semaphore_classes, semaphore_classify, semaphore_cls_languages,
+              semaphore_classes, semaphore_classify, semaphore_classify_batch,
+              semaphore_cls_languages,
               semaphore_kmm_models_list, semaphore_kmm_model_create,
               semaphore_kmm_model_delete, semaphore_kmm_skos_load,
               semaphore_kmm_sparql, semaphore_kmm_sparql_update,
               semaphore_publish, semaphore_publish_config_fix_plain_skos,
               semaphore_publish_diagnose, semaphore_concept_search,
               semaphore_concept_get, semaphore_concept_labels_update,
+              semaphore_task_list, semaphore_task_create, semaphore_task_commit,
+              semaphore_kid_template_get, semaphore_kid_template_set,
+              semaphore_kid_template_diagnose,
               semaphore_taxonomy_validate, semaphore_taxonomy_scaffold
   DHF:        dhf_status, dhf_flows_list, dhf_job_status,
-              dhf_flow_run (allowEval + write-enabled; async — returns job ID)
+              dhf_flow_run (allowEval + write-enabled; async — returns job ID),
+              dhf_flow_run_jar (write-enabled + ML_DHF_CLIENT_JAR; for large datasets)
+  Scaffolding: ml_gradle_scaffold (generate an ml-gradle project layout)
   Security:   ml_users_list, ml_roles_list, ml_document_permissions
   Performance: ml_explain_optic, ml_search_query_plan, ml_forest_metrics,
               ml_force_merge (eval-gated), ml_profile_query (eval-gated)
