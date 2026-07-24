@@ -198,11 +198,50 @@ diffable, and impossible to half-update.
 
 ---
 
-## 9. The one real caveat
+## 9. Portability — skills are a cross-vendor standard, not a Claude feature
 
-**Skills are a Claude Code / Claude.ai construct. They are not part of the MCP spec.**
-If this server is consumed by other MCP clients, guidance moved out of tool descriptions
-becomes invisible to them.
+**Agent Skills is an open specification, not a Claude Code construct.** The canonical
+spec lives at [agentskills.io/specification](https://agentskills.io/specification);
+`anthropics/skills` carries only a pointer file to it. A skill is a directory containing
+`SKILL.md` — YAML frontmatter plus Markdown — with exactly two required fields:
+
+```yaml
+---
+name: marklogic-bulk-import        # ≤64 chars, lowercase/digits/hyphens
+description: ...                   # ≤1024 chars — what it does AND when to use it
+---
+```
+
+Everything else (`license`, `allowed-tools`, `metadata`, `compatibility`) is optional.
+
+**This matters for us: GitHub Copilot reads `.claude/skills` directly.** Copilot's
+project-level skill discovery paths are `.github/skills`, `.claude/skills`, and
+`.agents/skills`; personal skills live in `~/.copilot/skills` or `~/.agents/skills`.
+Support spans Copilot CLI, the Copilot coding agent, code review, and agent mode in
+VS Code and JetBrains. So the layout proposed in §10 is portable to Copilot CLI with
+**zero changes and no second copy** — no symlink, no build step, no vendor-specific
+directory.
+
+Practical consequences for the plan:
+
+- Write skills to `.claude/skills/` as proposed. Copilot CLI, Claude Code, and the other
+  spec-adopting agents all pick them up from there. If you'd rather signal
+  vendor-neutrality in the repo layout, `.agents/skills/` is read by both — but Claude
+  Code's native path is `.claude/skills`, so that is the safer default.
+- **Keep descriptions inside the 1,024-char limit.** Several current tool descriptions
+  blow past it by 4–5× (`flux_import` at 5,752, `ml_sparql_query` at 5,010). Those cannot
+  be pasted into frontmatter wholesale — the description must become a genuine
+  *trigger* ("use when importing bulk data into MarkLogic from a URL, file, JDBC, or S3"),
+  with the recipes moving into the skill body and `references/`. That constraint is a
+  feature: it forces the split this evaluation is arguing for.
+- Skills are discovered by directory scan, so they work for any client implementing the
+  spec — including ones that never speak MCP at all.
+
+### The residual caveat
+
+The portability story covers *skill-aware* clients. A plain MCP client that implements
+only the base protocol still sees nothing but tool descriptions. So the fallback below
+is still required — it is just a narrower gap than it looked before:
 
 Mitigation, and I'd treat this as a requirement rather than an option:
 
@@ -210,8 +249,11 @@ Mitigation, and I'd treat this as a requirement rather than an option:
    same source files the skills use, so there is one authored copy and two rendered
    outputs — that keeps the §8 benefit intact rather than reintroducing the duplication
    under a new name.
-2. **Ship skills in-repo** under `.claude/skills/`, so anyone cloning the repo or running
-   the server via Claude Code gets them automatically.
+2. **Ship skills in-repo** under `.claude/skills/`, so anyone cloning the repo picks them
+   up automatically — in Claude Code *and* Copilot CLI, both of which scan that path.
+   Optionally publish them for one-line install via `gh skills install` (GitHub CLI
+   v2.90.0+), which installs spec-compliant skills for Copilot, Claude Code, and Cursor
+   alike.
 3. **Trim descriptions to interface contracts, not to stubs.** Prerequisites
    ("requires a TDE template in the Schemas database"), gating flags, and
    "use X instead when Y" pointers must *stay* in the tool description — a generic
@@ -224,6 +266,9 @@ worse off than today.
 ---
 
 ## 10. Proposed skill set
+
+Spec-compliant `SKILL.md` layout — read as-is by Claude Code, Copilot CLI, and other
+agents implementing the Agent Skills spec:
 
 ```
 .claude/skills/
@@ -272,6 +317,24 @@ the client layer, the transports, or the 60 tools in Bucket C.
 | Tools | 90 | 84 |
 | Always-on tool tokens | 50,730 | ~14,000 |
 | Guidance copies to hand-sync per change | 3 | 1 |
+| Agents the guidance reaches | MCP clients only | any Agent Skills–compliant agent |
 
 The tools are not the problem — the documentation stuffed inside them is. Keep every
 tool that touches MarkLogic; move every tool that only explains MarkLogic.
+
+---
+
+## Sources
+
+- [Agent Skills specification](https://agentskills.io/specification) — canonical spec
+  (`anthropics/skills` `spec/agent-skills-spec.md` is a pointer to it)
+- [GitHub Copilot now supports Agent Skills](https://github.blog/changelog/2025-12-18-github-copilot-now-supports-agent-skills/)
+- [Adding agent skills for GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-skills)
+- [About agent skills — GitHub Docs](https://docs.github.com/en/copilot/concepts/agents/about-agent-skills)
+- [Use Agent Skills in VS Code](https://code.visualstudio.com/docs/agent-customization/agent-skills)
+- [anthropics/skills](https://github.com/anthropics/skills)
+
+Token counts in §1–§5 were measured directly against this repo's built server via a live
+`tools/list` over an in-memory MCP transport. The frontmatter field limits in §9 are from
+the published spec summaries; confirm against agentskills.io before relying on the exact
+character caps.
