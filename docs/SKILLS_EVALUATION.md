@@ -1,9 +1,8 @@
 # Tooling → Skills Evaluation
 
-> **Status: partially implemented.** Steps 1–3 of §11 have landed — see
+> **Status: steps 1–4 implemented.** See
 > [§12 Implementation results](#12-implementation-results) for measured outcomes.
-> Steps 4 (prompt conversion) and 5 (generating `INSTRUCTIONS_TEXT` from skill sources)
-> are still outstanding.
+> Step 5 (generating `INSTRUCTIONS_TEXT` from skill sources) is still outstanding.
 
 An assessment of which parts of the MarkLogic MCP server belong as MCP tools, which
 should become skills, and which should stay as tools but be *complemented* by a skill.
@@ -404,10 +403,77 @@ is preserved byte-for-byte rather than paraphrased.
 **731 tests pass across 40 files**, including `guidance-sync.test.ts`, which enforces
 the CLAUDE.md sync mandate and would fail on any stale tool reference left behind.
 
+## 13. Step 4 results — prompts converted to skills
+
+**22 of 25 prompts became skills.** Three remain: `gdelt_import`,
+`quicksight_dataset_designer`, `quicksight_dashboard_planner` — narrow, one-shot flows
+where explicit slash-command invocation is genuinely the right ergonomics.
+
+`src/prompts/index.ts` went from **152,889 → 6,802 characters (−96%)**.
+
+### Seven new skills
+
+| Skill | Absorbed from |
+|---|---|
+| `marklogic-data-modeling` | `data_modeling_advisor`, `uri_designer`, `envelope_pattern_advisor` |
+| `marklogic-rag` | `rag_pipeline_designer` |
+| `marklogic-performance` | `performance_advisor` |
+| `marklogic-server-side-code` | `sjs_module_generator`, `xquery_function_generator`, `tde_schema_generator`, `rest_extension_generator` |
+| `marklogic-oauth-setup` | `oauth_setup_advisor` |
+| `marklogic-fasttrack` | `fasttrack_search_designer`, `fasttrack_app_scaffold` |
+| `semaphore-integration` | `semaphore_integration_advisor` |
+
+Six more folded into existing skills: `nl_to_search_query` + `query_approach_advisor` +
+the three query builders → `marklogic-query-authoring`; `data_import_advisor` →
+`marklogic-bulk-import`; `semaphore_model_workflow` → `semaphore-taxonomy`;
+`project_setup_advisor` → `marklogic-project-setup`; `problem_advisor` → the `marklogic`
+router.
+
+**13 skills total, all spec-valid**, descriptions between 464 and 624 chars.
+
+### The `problem_advisor` question
+
+`problem_advisor` held the canonical list of every registered tool, and
+`guidance-sync.test.ts` asserted against it. Deleting the prompt would have deleted that
+guard, so the tool index moved into the `marklogic` router skill and the test now reads
+`.claude/skills/marklogic/SKILL.md` **from disk** and asserts every registered tool
+appears there.
+
+The guard is therefore preserved and now protects a file that agents actually read.
+
+### Token effect
+
+| | Before step 4 | After |
+|---|---:|---:|
+| Prompts registered | 25 | 3 |
+| Prompt list tokens | ~5,600 | 386 |
+| Tool tokens | 37,832 | 37,855 |
+| **Total always-on** | ~43,400 | **38,241** |
+
+Against the original **56,330** baseline (50,730 tools + ~5,600 prompts), that is a
+**−32%** reduction overall.
+
+But the token saving was never the point of step 4 — prompt bodies were already lazily
+loaded. The real change is **discovery**: MCP prompts are user-invoked in most clients,
+so `rag_pipeline_designer` (17,471 chars of design methodology) only ever fired if
+someone typed its name. As a skill it engages whenever the task matches.
+
+### Content preserved, not paraphrased
+
+The migration kept the hard-won specifics rather than summarising them — the
+`vec.vectorScore` ascending-rank semantics and the four TDE vector-column failure modes;
+the `xdmp.httpPost` body-must-be-a-Node requirement and the CLS 0–100-vs-0.0–1.0 score
+scale mismatch; the OAuth external-names mechanism and the element-ordering trap; the
+FastTrack `name`-not-`label` bucket rule; the ConceptScheme URI convention that silently
+yields a one-rule publish. Several are annotated "verified by live testing" in the
+original prompts, which is exactly the knowledge that should not be lost in a refactor.
+
+### Verification
+
+Build, lint, and `npm run validate:skills` clean; **731 tests pass across 40 files**.
+
 ### Not yet done
 
-- **Step 4** — converting the ~20 advisor and generator prompts to skills. They still
-  work as prompts; this is a behaviour improvement (auto-discovery), not a token one.
 - **Step 5** — generating `INSTRUCTIONS_TEXT` from the skill sources. Today it holds an
   index of the skills rather than a copy of them, which removes the drift risk but
   still leaves two authored artifacts.

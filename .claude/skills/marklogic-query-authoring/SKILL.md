@@ -51,9 +51,11 @@ when round-tripping a string query through MarkLogic's parser to canonicalise it
 
 ## Natural language → query pipeline
 
-1. An LLM writes a string-grammar query: `diabetes AND state:TX AND age GE 65`
-2. `ml_parse_query` validates it and returns structured-query JSON
-3. `ml_search` executes that JSON via `structured_query`
+1. `ml_search_surface` — fields, range indexes, options sets in one call. **Never skip
+   this**; guessing field names is what produces empty results.
+2. Write a string-grammar query: `diabetes AND state:TX AND age GE 65`
+3. `ml_parse_query` validates it and returns structured-query JSON
+4. `ml_search` executes that JSON via `structured_query`
 
 The parsed output is in exactly the shape `ml_search` accepts, so it can be piped
 through, stored, or modified first.
@@ -66,6 +68,12 @@ words are recognised — `state:TX` becomes a literal word query for the token `
 qtext: "diabetes AND importedAt GE 2024-01-01"
 bindings: { importedAt: { type: "element-range", name: "importedAt", scalar_type: "dateTime" } }
 ```
+
+Grammar is strict: comparison operators need spaces on both sides (`age >= 65`, never
+`age:>=65`), and the only legal colon is the `tag:value` equality delimiter.
+
+Full translation method — intent extraction, the no-range-index fallback, bindings, and
+how to state assumptions — is in `references/nl-to-query.md`.
 
 ## Optic over TDE views
 

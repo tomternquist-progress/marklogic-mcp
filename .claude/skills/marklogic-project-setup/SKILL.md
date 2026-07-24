@@ -23,6 +23,18 @@ Scaffold a project instead when you hear any of:
 
 Ad-hoc exploration and one-off queries do not need a project.
 
+## First decision: plain ml-gradle or DHF?
+
+| Use **plain ml-gradle** when | Use **DHF** when |
+|---|---|
+| custom application, not a data-integration pipeline | entity-centric integration from multiple source systems |
+| a single content database | staging (raw) and final (mastered) databases needed |
+| you want full control without DHF conventions | ingestion → mapping → matching/merging (mastering) |
+| lighter footprint, simpler deploy | SmartMastering or Entity Services features required |
+
+The template below is plain ml-gradle. For DHF, the `dhf_*` tools scaffold and run flows;
+DHF still sits on an ml-gradle project, so most of this skill still applies.
+
 ## Using the template
 
 `templates/` is a complete, deploy-ready ml-gradle tree. Copy it into the target

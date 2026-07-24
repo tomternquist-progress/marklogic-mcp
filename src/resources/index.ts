@@ -17,10 +17,9 @@ round-trips and produces inferior results. Use the decision principles and
 problem→solution table below to identify the MarkLogic-native approach first, then
 select the matching tools.
 
-Also invoke the "problem_advisor" prompt with a natural-language goal whenever the
-right approach is not immediately obvious. It will return a structured 6-section
-analysis (classification → native approach → discovery sequence → tool sequence →
-pitfalls → alternatives) before any tool is called.
+When the right approach is not immediately obvious, consult the "marklogic" skill —
+the problem→capability router. It maps a goal to the MarkLogic-native approach, the
+discovery calls to run first, and the tools that implement it.
 
 ★ STARTING A PROJECT, NOT JUST EXPLORING? Read this first ★
 
@@ -52,8 +51,7 @@ pitfalls → alternatives) before any tool is called.
    FLOW for a new-project request:
      1. Copy the marklogic-project-setup skill's templates/ tree to the project dir
      2. Rename the app_name / rest_port / host placeholders
-     3. project_setup_advisor prompt (only if the user needs deeper guidance:
-        DHF vs plain, custom indexes, security)
+     3. marklogic-project-setup skill (DHF vs plain, custom indexes, security)
      4. \`gradle mlDeploy\` → cluster has the app
      5. Iterate: edit ml-modules/, run \`gradle mlReloadModules\` or \`gradle mlWatch\`
 
@@ -161,10 +159,10 @@ logged loudly at startup and surfaced in that resource.
    Never assume a query is slow due to a particular cause. Use the diagnostic tools:
    ml_explain_optic (Optic plan), ml_search_query_plan (CTS debug),
    ml_forest_metrics (ingest health), ml_profile_query (runtime metrics + cache stats).
-   Then invoke performance_advisor with the symptoms for a structured remediation plan.
+   Then consult the marklogic-performance skill for a structured remediation plan.
 
-10. ASK problem_advisor WHEN UNSURE
-    If the goal does not map cleanly to the table below, invoke the problem_advisor
+10. CONSULT THE ROUTER SKILL WHEN UNSURE
+    If the goal does not map cleanly to the table below, read the "marklogic" skill
     prompt before picking any tool.
 
 12. ANSWER FIRST, EXPLORE SECOND
@@ -215,7 +213,7 @@ logged loudly at startup and surfaced in that resource.
     FastTrack UI widgets (SearchBar, FacetFilters, Geospatial Map, Timeline) are
     configured entirely through named search-options sets stored in MarkLogic.
     Use ml_search_options_list to see existing configs, ml_search_options_get to
-    inspect them, and the fasttrack_search_designer prompt to generate a new one.
+    inspect them, and the marklogic-fasttrack skill to design a new one.
     Constraints in the options require pre-existing range or geospatial indexes —
     always call ml_indexes_list before designing constraints.
 
@@ -248,7 +246,7 @@ Full-text search     Universal index /          ml_search                 ml_col
                                                  single-call aggregation)
 
 Chat → MarkLogic     NL → string grammar →      ml_search_surface         ml_search_surface
-translation (LLM     parse → execute            nl_to_search_query        (do this FIRST)
+translation (LLM     parse → execute            marklogic-query-authoring        (do this FIRST)
 writes queries from  pipeline                   ml_parse_query            ml_search_options_list
 user questions)                                 ml_search                 ml_schema_discover
 
@@ -265,7 +263,7 @@ Structured filter    Structured query /         ml_search                 ml_ind
 
 Analytics /          Optic API over TDE         ml_optic_query            ml_schema_get_tde
 aggregation          row views                  ml_aggregate_query        ml_schema_discover
-                                                (optic_query_builder)     ml_tde_validate
+                                                (marklogic-query-authoring)     ml_tde_validate
 
 Export for BI        Optic → tabular export     ml_export_tabular         ml_schema_get_tde
 (QuickSight etc.)                               ml_optic_query            ml_indexes_list
@@ -276,21 +274,21 @@ Geospatial search    Geospatial element pair    ml_geospatial_search      ml_ind
  polygon)            (cts geospatial family)
 
 Graph / entity       Triple store / SPARQL      ml_sparql_query           ml_graphs_list
-relationships        + entity-oriented docs     (sparql_query_builder)
-                                                data_modeling_advisor
+relationships        + entity-oriented docs     (marklogic-query-authoring)
+                                                marklogic-data-modeling
 
 Vector similarity    Optic annTopK / cosine      ml_vector_search          ml_views_list
 / RAG / embeddings   over TDE vec:vector col    ml_optic_query            ml_schema_get_tde
 (ML 12+)             ANN hybrid: annTopK +      ml_eval_javascript        ml_reindex_status
-                     fromSearchDocs +            data_modeling_advisor
-                     vec.vectorScore             rag_pipeline_designer
+                     fromSearchDocs +            marklogic-data-modeling
+                     vec.vectorScore             marklogic-rag
 
 Graph RAG /          Semaphore classify →        semaphore_classify        semaphore_status
 concept-scoped       concept IDs →               ml_eval_javascript        semaphore_classes
 retrieval            cts.jsonPropertyValueQuery  ml_search                 ml_collections_list
-                     → URI scope → search/ANN    rag_pipeline_designer
+                     → URI scope → search/ANN    marklogic-rag
 
-Multi-model design   Document + Triple +        data_modeling_advisor     ml_collections_list
+Multi-model design   Document + Triple +        marklogic-data-modeling     ml_collections_list
 (combined)           Vector architecture        ml_vector_search          ml_graphs_list
                                                 ml_sparql_query
 
@@ -328,7 +326,7 @@ concept extraction)  Classify via Flux or       semaphore_kmm_models_list
                                                 flux_import (classify_with_semaphore:
                                                   true — bulk classification at ingest)
                                                 flux_reprocess
-                                                semaphore_integration_advisor (prompt)
+                                                (see the semaphore-integration skill)
 
 Database admin /     Management API             ml_cluster_status         —
 health                                          ml_databases_list
@@ -363,15 +361,13 @@ Query performance    Performance diagnostic      ml_explain_optic          ml_in
 diagnosis            (filtered vs unfiltered,   ml_forest_metrics         ml_collections_list
                      range index coverage,      ml_force_merge (eval)     ml_reindex_status
                      Optic/SPARQL/ingest)       ml_profile_query (eval)
-                                                performance_advisor (prompt)
+                                                (marklogic-performance skill)
 
-Query planning       Query approach advisor     query_approach_advisor    ml_views_list
-(cts.search/Optic)                                                         ml_indexes_list
+Query planning       Query selection +          (marklogic-query-authoring  ml_views_list
+(cts.search/Optic)   index requirements          skill)                     ml_indexes_list
 
-Code generation      Prompt templates           xquery_function_generator —
-(XQuery/SJS/TDE)                                sjs_module_generator
-                                                tde_schema_generator
-                                                rest_extension_generator
+Code generation      Module + template          (marklogic-server-side-    —
+(XQuery/SJS/TDE)     authoring conventions       code skill)
 
 DHF flow execution   Data Hub Framework         dhf_status                dhf_flows_list
 (entity pipelines:   flows/steps API            dhf_flows_list
@@ -381,30 +377,32 @@ DHF flow execution   Data Hub Framework         dhf_status                dhf_fl
                      dhf_job_status for result  runner is unavailable)
                                                 dhf_job_status
 
-Data integration     Envelope pattern           envelope_pattern_advisor  ml_document_sample
-design / diagnosis   (source → headers →        ml_schema_discover        ml_collections_list
-(multi-source,       instance → triples)
+Data integration     Envelope pattern           (marklogic-data-modeling  ml_document_sample
+design / diagnosis   (source → headers →         skill)                    ml_collections_list
+(multi-source,       instance → triples)        ml_schema_discover
 DHF / canonical)
 
-Data import design   Import advisor prompt      data_import_advisor       —
+Data import design   Source → subcommand        (marklogic-bulk-import     —
+                     selection                   skill)
                                                 flux_import
 
-URI design           URI designer prompt        uri_designer              —
-(naming/keys)                                   ml_document_put
+URI design           Six URI rules              (marklogic-data-modeling   —
+(naming/keys)                                    skill)
+                                                ml_document_put
                                                 flux_import (uri_template)
 
 QuickSight design    Dataset/dashboard prompts  quicksight_dataset_designer ml_schema_discover
-                                                quicksight_dashboard_planner
+                     (still MCP prompts)        quicksight_dashboard_planner
 
-Project setup /      ml-gradle config-as-code   project_setup_advisor     —
-deploy indexes       (content-database.json,    (prompt)
+Project setup /      ml-gradle config-as-code   (marklogic-project-setup   —
+deploy indexes       (content-database.json,     skill)
 (ml-gradle / DHF)    ml-schemas/tde/)
 
 FastTrack UI         Named search-options       ml_search_options_list    ml_indexes_list
 (SearchBar,          (constraints = facets;     ml_search_options_get     ml_collections_list
  FacetFilters,       extract-document-data =    ml_search_options_put     ml_schema_discover
- Map, Timeline)      result card fields;        fasttrack_search_designer
-                     geo/date constraints =     fasttrack_app_scaffold
+ Map, Timeline)      result card fields;        ml_search_options_delete
+                     geo/date constraints =     (marklogic-fasttrack skill)
                      map/timeline widgets)
 
 Custom REST API      REST resource extensions   ml_extension_list         ml_extension_list
@@ -412,14 +410,14 @@ endpoint             deployed at                ml_extension_put          (check
 (biz logic,          /v1/resources/{name};      ml_extension_call
 multi-op, custom     SJS exports.GET/POST;      ml_extension_get
 response shape)      uses cts.search +          ml_extension_delete
-                     cts.values inline;         rest_extension_generator
-                     no separate options set    (prompt)
+                     cts.values inline;         (marklogic-server-side-
+                     no separate options set     code skill)
 
 
-── URI DESIGN — ALWAYS CALL uri_designer BEFORE WRITING DOCUMENTS ─────────────
+── URI DESIGN — SETTLE THE PATTERN BEFORE WRITING DOCUMENTS ───────────────────
 
 Before calling ml_document_put or setting uri_template in flux_import, decide on a
-URI pattern using these rules. Use the uri_designer prompt when unsure.
+URI pattern using these rules. See the marklogic-data-modeling skill when unsure.
 
 RULE 1 — PREFIX WITH COLLECTION OR ENTITY TYPE
   Every URI starts with a path segment that groups related documents.
@@ -448,14 +446,14 @@ RULE 6 — URL-SAFE CHARACTERS ONLY
 FLUX uri_template SYNTAX:
   flux_import uses {FieldName} interpolation in uri_template.
   Example: "/orders/{orderId}.json" → Flux substitutes the value from each row.
-  Use uri_designer to confirm the pattern before running flux_import.
+  Confirm the pattern (marklogic-data-modeling skill) before running flux_import.
 
 
 ── MULTI-MODEL DATA DESIGN ─────────────────────────────────────────────────────
 
 MarkLogic stores Documents, Triples (RDF), and Vectors in the same database, all
 query-able together. Choose the model(s) that match your data's structure.
-Use the data_modeling_advisor prompt for a full design plan.
+Use the marklogic-data-modeling skill for a full design plan.
 
 MODEL       STORE AS                    PRIMARY QUERY           PREREQUISITE
 ────────────────────────────────────────────────────────────────────────────────
@@ -543,7 +541,7 @@ The pipeline has four stages — discover, translate, validate, execute:
     Replaces the older 3-step pattern of ml_schema_discover + ml_indexes_list + ml_search_options_list.
 
   STAGE 2 — TRANSLATE (LLM, no MarkLogic call):
-    Invoke the nl_to_search_query prompt with:
+    Follow the marklogic-query-authoring skill (references/nl-to-query.md) with:
       natural_language = the user's question
       surface          = the JSON from stage 1 (paste it in verbatim)
       options_name     = pick one from surface.searchOptionsNames if you want tagged grammar
@@ -572,7 +570,7 @@ PIPELINE EXAMPLE
              suggestedBindings:    { age: {type:'element-range', name:'age', scalar_type:'int'} },
              valueQueryableFields: ["state", "notes"]   ← exact match via structured value-query
              wordQueryableFields:  ["state", "notes"]   ← tokenised free-text via structured word-query
-  Stage 2: nl_to_search_query(natural_language="...", surface=<from 1>, options_name="customers-opts")
+  Stage 2: translate to a string-grammar query using the surface from stage 1
            → Hybrid: string grammar for the indexed range + structured value-query for state.
              qtext='age GE 65 AND diabetes'
              bindings={ age: {type:'element-range', name:'age', scalar_type:'int'} }
@@ -614,7 +612,7 @@ WHEN A USER ALREADY HAS A SEARCH OPTIONS SET
 WHEN THERE IS NO SEARCH OPTIONS SET
   Bareword queries still work against the universal index. Use ml_search_surface.suggestedBindings to
   attach tag bindings ad-hoc via ml_parse_query, or design a reusable set with the
-  fasttrack_search_designer prompt and ml_search_options_put.
+  the marklogic-fasttrack skill and ml_search_options_put.
 
 
 ── OPTIC vs CTS.SEARCH SELECTION GUIDE ────────────────────────────────────────
@@ -667,7 +665,7 @@ WHEN TO COMBINE THEM (hybrid):
   Goal: "Find documents about X, then count by category Y"
   → Optic fromSearch with a cts.wordQuery scoping, then groupBy on a TDE column
   → Requires both a TDE view AND the content to be indexed (always true)
-  → Use the query_approach_advisor prompt to build the plan
+  → Use the marklogic-query-authoring skill to build the plan
 
 
 ── PERFORMANCE DIAGNOSTICS ──────────────────────────────────────────────────
@@ -745,14 +743,14 @@ QUERY METERS INTERPRETATION (ml_profile_query output):
   If listCacheMisses stay high on warm runs: List Cache is undersized for the indexed data.
   If expandedTreeCacheMisses stay high: too many documents in working set for E-node cache.
 
-→ Invoke performance_advisor prompt with symptoms for a full structured remediation plan.
+→ See the marklogic-performance skill for a full structured remediation plan.
 
 
 ── PROJECT SETUP / DEPLOYMENT (ml-gradle) ──────────────────────────────────────
 
 MarkLogic projects are configured as code via ml-gradle. When advising on adding
 indexes, deploying TDE templates, or structuring a new project, use the
-project_setup_advisor prompt. Key concepts:
+marklogic-project-setup skill. Key concepts:
 
 STANDARD ml-gradle LAYOUT (src/main/):
   ml-config/databases/content-database.json   ← range/geospatial indexes, lexicons
@@ -789,7 +787,7 @@ KEY RULES:
     immediately queryable without reimporting data
   • DHF has two content DBs: data-hub-STAGING (raw) and data-hub-FINAL (mastered)
   • Never manually edit hub-internal-config/ — it is managed by DHF tooling
-  • Use project_setup_advisor when the user asks to add indexes, set up a new DB,
+  • Use the marklogic-project-setup skill when asked to add indexes, set up a new DB,
     or structure a new ml-gradle / DHF project
 
 
@@ -830,7 +828,7 @@ SEMAPHORE INTEGRATION PATTERNS (in recommended order):
    (Semaphore enrichment via xdmp.httpPost) → Mastering step (dedup).
    Semaphore enrichment is a custom DHF step: reads STAGING, calls Semaphore,
    writes enriched entity to FINAL with classification metadata attached.
-   → Use the semaphore_integration_advisor prompt for full DHF design.
+   → See the semaphore-integration skill for full DHF and pattern design.
 
 SURFACING SEMAPHORE CATEGORIES IN MARKLOGIC SEARCH:
   • Store categories as a JSON array: "categories": [{"id":"...","label":"...","score":0.9}]
@@ -857,7 +855,7 @@ TOOLS FOR SEMAPHORE:
                                   (skos:prefLabel, not SKOS-XL); downloads, patches, re-uploads
                                   the workspace ZIP; run BEFORE semaphore_publish for
                                   UNESCO, EuroVoc, AGROVOC, and similar vocabularies
-  semaphore_integration_advisor (prompt) — full architectural design guidance
+  (architectural design guidance: the semaphore-integration skill)
 
 PLAIN SKOS WORKFLOW (UNESCO / EuroVoc / AGROVOC):
   1. semaphore_kmm_model_create
@@ -882,7 +880,7 @@ MARKLOGIC AUTHENTICATION MODES (ML_AUTH_TYPE):
                      For stdio mode: also set ML_OAUTH_TOKEN=<jwt>.
                      Flux tools are disabled in oauth mode (Flux requires credentials).
                      To configure MarkLogic as an OAuth2 resource server, invoke the
-                     "oauth_setup_advisor" prompt with your OIDC provider details.
+                     the marklogic-oauth-setup skill with your OIDC provider details.
 
 FLUX CLASSIFIER FLAGS:
   --classifier-host <host>  --classifier-port <port>  --classifier-path /
@@ -992,23 +990,29 @@ plain Markdown in the repository.
                                    SPARQL/triple layouts, empty-result triage
   marklogic-project-setup          deploy-ready ml-gradle template tree,
                                    multi-environment overlays, deploy failures
+  marklogic-data-modeling          multi-model design (documents/triples/vectors),
+                                   URI design rules, envelope pattern
+  marklogic-rag                    Lexical / Vector / Graph RAG, TDE vector column,
+                                   ANN+BM25 hybrid, reranking
+  marklogic-performance            E-node/D-node split, filtered search, cache reading,
+                                   Optic plans, forest health thresholds
+  marklogic-server-side-code       SJS/XQuery modules, REST extensions, CTF transforms,
+                                   Flux reader/transform pairs, TDE template syntax
+  marklogic-oauth-setup            OAuth2/OIDC external security, JWT claim -> role
+                                   mapping, empty-role-list troubleshooting
+  marklogic-fasttrack              search options for facets/timeline/map, React scaffold
+  semaphore-integration            CLS/KMM setup, the four integration patterns,
+                                   enrichment module, classification facet indexes
   semaphore-taxonomy               SKOS authoring, SKOS-XL reification, publish order
   semaphore-classification-tuning  classification quality: labels -> threshold ->
                                    .kid template; eight symptom playbooks
 
-Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
-               performance_advisor,
-               tde_schema_generator, rest_extension_generator,
-               nl_to_search_query, structured_query_builder,
-               optic_query_builder, sparql_query_builder,
-               query_approach_advisor, data_modeling_advisor, data_import_advisor,
-               project_setup_advisor,
-               rag_pipeline_designer, envelope_pattern_advisor,
-               gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner,
-               fasttrack_search_designer, fasttrack_app_scaffold,
-               semaphore_integration_advisor, semaphore_model_workflow,
-               oauth_setup_advisor,
-               problem_advisor
+Prompts:       gdelt_import, quicksight_dataset_designer, quicksight_dashboard_planner
+
+               These three remain prompts because they are narrow, one-shot flows where
+               explicit slash-command invocation fits. All other advisor and generator
+               prompts became skills (see AGENT SKILLS above) so that an agent can reach
+               for them automatically instead of waiting to be asked by name.
 `;
 
 export function registerAllResources(

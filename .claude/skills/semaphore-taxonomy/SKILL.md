@@ -7,14 +7,58 @@ description: Author, load, validate, and publish SKOS taxonomies in Semaphore KM
 
 ## Build order (follow exactly — steps 5 and 6 are the ones people miss)
 
-1. **Create the model** — `semaphore_kmm_model_create`
+0. **Check connectivity** — `semaphore_status`, `semaphore_studio_status`
+1. **Create the model** — `semaphore_kmm_model_create(name=…, default_namespace=…)`
+   → model URI is `model:<Name>`
 2. **Author the SKOS Turtle** — start from `templates/taxonomy-skeleton.ttl`
 3. **Load it** — `semaphore_kmm_skos_load` with `skos_content=<turtle>`
 4. **Validate structure** — `semaphore_taxonomy_validate`
 5. **⚠ Add SKOS-XL reification — REQUIRED, immediately after loading**
 6. **Fix plain-SKOS publish config** — `semaphore_publish_config_fix_plain_skos`
-7. **Publish** — `semaphore_publish`
-8. **Verify** — `semaphore_classify` on representative text
+7. **Publish** — `semaphore_publish(wait_for_completion=true)`
+8. **Confirm active** — `semaphore_publish_sets` shows the model (lowercased) as ACTIVE
+9. **Verify** — `semaphore_classify(content=…, threshold=0)` on representative text
+
+## ⚠ The ConceptScheme URI convention
+
+The ConceptScheme URI **must** be `{namespace}{ModelId}Taxonomy`. For a model named
+`Example` in namespace `http://example.com/tax/`, that is
+`http://example.com/tax/ExampleTaxonomy`.
+
+Get this wrong and the publish appears to succeed but emits **one rule** — for the
+scheme root — instead of one per concept.
+
+```turtle
+@prefix ns: <http://example.com/tax/> .
+ns:ExampleTaxonomy a skos:ConceptScheme ;
+    skos:prefLabel "Example Taxonomy"@en ;
+    skos:hasTopConcept ns:TopConcept1 .
+```
+
+## ⚠ SKOS only — no OWL
+
+KMM supports SKOS, not OWL. Loading an OWL ontology yields **0 concepts** with no
+obvious error. Convert first:
+
+| OWL | SKOS |
+|---|---|
+| `owl:Class` | `skos:Concept` |
+| `rdfs:subClassOf` | `skos:broader` |
+| `owl:Ontology` | `skos:ConceptScheme` |
+
+`sem:guid` is generated automatically by KMM during `semaphore_kmm_skos_load` — no
+manual INSERT needed.
+
+## Verifying a load
+
+```
+semaphore_kmm_sparql(model_uri="model:<Name>",
+  query="PREFIX skos: <http://www.w3.org/2004/02/skos/core#>
+         SELECT (COUNT(?c) AS ?n)
+         WHERE { GRAPH <urn:x-evn-master:<Name>> { ?c a skos:Concept } }")
+```
+
+The model's named graph is `urn:x-evn-master:<ModelName>`.
 
 ## Step 5: SKOS-XL reification (the "No preferred labels" fix)
 
@@ -114,9 +158,25 @@ If classification quality is the problem rather than structure, use the
 **semaphore-classification-tuning** skill instead — label edits are only the first of
 three fix levels.
 
+## Common pitfalls
+
+| Symptom | Cause |
+|---|---|
+| Only **1 rule** published | ConceptScheme URI does not match `{ns}{ModelId}Taxonomy`, or the plain-SKOS config fix was skipped |
+| **0 concepts** after load | an OWL ontology was loaded instead of SKOS |
+| Studio shows "No preferred labels" | SKOS-XL reification (step 5) not applied |
+| Label/language check returns 0 | `prefLabel`s missing their `@en` (or correct) language tag |
+| Publishes but classifies nothing | plain-SKOS publisher config not fixed |
+| `score=0` right after publish | Rulenet index still building — wait 1–2 minutes and retry |
+| Low rule count warning | run `semaphore_publish_diagnose`, then retry the publish |
+
+Rule count should be roughly proportionate to concept count. A large mismatch means one
+of the first two rows above.
+
 ## Authentication
 
 KMM uses a separate credential path from the Classification Server. If
 `semaphore_kmm_*` tools fail while `semaphore_classify` works, check
 `SEMAPHORE_USERNAME` / `SEMAPHORE_PASSWORD` and the KMM port
-(`SEMAPHORE_KMM_PORT`) rather than the CLS settings.
+(`SEMAPHORE_KMM_PORT`) rather than the CLS settings. KMM uses Java EE form auth, not
+Basic auth.

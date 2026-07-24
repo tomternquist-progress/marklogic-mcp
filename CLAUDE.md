@@ -57,9 +57,11 @@ Run `npm run validate:skills` after any change — it enforces both limits, the
 name/directory match, and that every `references/` or `templates/` path mentioned in a
 SKILL.md actually exists.
 
-Current skills: `marklogic` (router), `marklogic-bulk-import`,
-`marklogic-query-authoring`, `marklogic-project-setup`, `semaphore-taxonomy`,
-`semaphore-classification-tuning`.
+Current skills (13): `marklogic` (router), `marklogic-bulk-import`,
+`marklogic-query-authoring`, `marklogic-data-modeling`, `marklogic-rag`,
+`marklogic-performance`, `marklogic-server-side-code`, `marklogic-project-setup`,
+`marklogic-oauth-setup`, `marklogic-fasttrack`, `semaphore-taxonomy`,
+`semaphore-integration`, `semaphore-classification-tuning`.
 
 **What belongs in a tool description** (keep it to a few lines):
 - what the tool does
@@ -94,11 +96,21 @@ Keep the text in plain `text/plain` with ASCII column alignment. Do not use JSON
 `tests/resources/guidance-sync.test.ts` fails the build if a registered tool is missing
 from this text, or if this text names a tool that no longer exists.
 
-### `problem_advisor` prompt (`src/prompts/index.ts`)
+### The `marklogic` router skill (`.claude/skills/marklogic/SKILL.md`)
 
-This is the structured planning prompt that maps a natural-language goal to MarkLogic
-tools. The tool list in Section 4 of the prompt text must mirror the actual registered
-tools. **When adding a new tool, add it to the relevant group in Section 4.**
+This is the problem→capability router and the canonical **complete tool index**. It
+replaced the `problem_advisor` prompt. **When adding a new tool, add it to the relevant
+group in the "Complete tool index" section** — `tests/resources/guidance-sync.test.ts`
+reads this file from disk and fails the build if any registered tool is missing from it.
+
+### MCP prompts (`src/prompts/index.ts`)
+
+Only three remain — `gdelt_import`, `quicksight_dataset_designer`,
+`quicksight_dashboard_planner` — because they are narrow, one-shot flows where explicit
+slash-command invocation is the right ergonomics. **Do not add advisor or generator
+prompts.** MCP prompts are user-invoked in most clients, so an advisor only fires if the
+human already knew to ask for it; a skill is model-invoked and fires when the task
+matches. Write a skill instead.
 
 ---
 
@@ -144,7 +156,7 @@ empty results when the real cause is a missing permission or disabled feature.
 4. Update `INSTRUCTIONS_TEXT` in `src/resources/index.ts`:
    - Add row(s) to the problem table
    - Add the tool group to TOOL GROUPS AT A GLANCE
-5. Update the tool list in the `problem_advisor` prompt (Section 4).
+5. Add the tool to the "Complete tool index" in `.claude/skills/marklogic/SKILL.md`.
 5b. If the new group needs more than a few lines of explanation, create a skill under
    `.claude/skills/` for it rather than growing the tool descriptions, and add one line
    to the AGENT SKILLS section of `INSTRUCTIONS_TEXT`. Run `npm run validate:skills`.
@@ -153,23 +165,17 @@ empty results when the real cause is a missing permission or disabled feature.
 
 ## Adding a New Prompt
 
+Prefer a **skill**. Add an MCP prompt only for a narrow, one-shot flow the user will
+invoke explicitly by name (the three QuickSight/GDELT prompts are the pattern). Anything
+advisory, exploratory, or reference-shaped belongs in `.claude/skills/`.
+
+If a prompt really is right:
+
 1. Add a `server.prompt()` call in `src/prompts/index.ts` inside `registerAllPrompts()`.
 2. All parameters must have `.describe()` strings.
 3. Return `{ messages: [{ role: "user", content: { type: "text", text: "..." } }] }`.
-4. For **advisor/planning prompts**: use a numbered fill-in template so the LLM produces
-   structured output that downstream agents can parse section by section.
-5. For **code-generation prompts**: include explicit requirements as a bullet list and
-   end with "Generate the code now." so the output is directly usable.
-6. Add the prompt name to the `problem_advisor` Section 4 tool list.
-
-## Adding a New Resource
-
-1. Add a `server.resource()` call in `src/resources/index.ts` inside `registerAllResources()`.
-2. Use URI scheme `marklogic://<domain>/<name>`.
-3. **Static resources** (no client calls): return immediately, no try/catch needed.
-   See the `marklogic_document_info` and `marklogic_instructions` patterns.
-4. **Dynamic resources** (client calls): wrap in try/catch, use `toToolError(err)` for
-   the error text. See `marklogic_databases` and `marklogic_forests` patterns.
+4. Include explicit requirements as a bullet list so the output is directly usable.
+5. Add the prompt name to the Prompts line in `INSTRUCTIONS_TEXT`.
 
 ---
 
@@ -178,11 +184,18 @@ empty results when the real cause is a missing permission or disabled feature.
 ```
 .claude/skills/       — Agent Skills (spec: agentskills.io); read by Claude Code,
                         Copilot CLI, and other spec-adopting agents
-  marklogic/                        — problem -> capability router
+  marklogic/                        — problem -> capability router + complete tool index
   marklogic-bulk-import/            — Flux recipes, wrappers, reprocess transforms
   marklogic-query-authoring/        — query selection, structured-query cookbook, SPARQL
+  marklogic-data-modeling/          — multi-model design, URI rules, envelope pattern
+  marklogic-rag/                    — lexical/vector/graph RAG, TDE vector column
+  marklogic-performance/            — E/D nodes, filtered search, caches, forest health
+  marklogic-server-side-code/       — SJS/XQuery modules, REST extensions, TDE syntax
   marklogic-project-setup/          — ml-gradle template tree (templates/)
+  marklogic-oauth-setup/            — OIDC external security, JWT -> role mapping
+  marklogic-fasttrack/              — search options for facets/timeline/map
   semaphore-taxonomy/               — SKOS authoring + Turtle template
+  semaphore-integration/            — CLS/KMM setup, four integration patterns
   semaphore-classification-tuning/  — classification quality playbooks
 scripts/
   validate-skills.mjs   — Agent Skills spec compliance check (npm run validate:skills)
@@ -210,7 +223,7 @@ src/
   resources/
     index.ts         — all resources; INSTRUCTIONS_TEXT constant at top
   prompts/
-    index.ts         — all prompts; problem_advisor first, then domain-specific
+    index.ts         — the 3 remaining one-shot prompts (gdelt, quicksight x2)
   client/
     index.ts         — MarkLogicClients factory + interface
     base.ts          — Axios HTTP + Digest/Basic/OAuth auth + error mapping
