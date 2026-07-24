@@ -98,60 +98,10 @@ export function registerSchemaTools(server: McpServer, clients: MarkLogicClients
 
   server.tool(
     "ml_search_surface",
-    "ONE-SHOT \"what can I query?\" discovery for a collection. Returns everything an LLM (or " +
-    "ml_parse_query, structured_query_builder, nl_to_search_query) needs to translate a natural-language " +
-    "question into a working MarkLogic query — in a single tool call instead of three or four.\n\n" +
-    "PRIMARY USE: chat → MarkLogic translation pipeline. Before asking an LLM to write a query, call " +
-    "ml_search_surface to retrieve the field catalogue, range indexes, and search-options names. " +
-    "Pass the result into the LLM's context; pipe its generated string-grammar query into ml_parse_query " +
-    "(for validation), then ml_search (for execution).\n\n" +
-    "RETURNS a JSON object:\n" +
-    "  • collection / database / documentCount\n" +
-    "  • inferredFields[]   — path, type, cardinality, hasRangeIndex, exampleValues (from doc sample)\n" +
-    "  • rangeIndexes[]     — range/geospatial indexes configured on the database\n" +
-    "  • searchOptionsNames[] — named search-options sets available on the server (any of which can be\n" +
-    "                          passed to ml_search via options= for tagged-grammar parsing and faceting)\n" +
-    "  • suggestedBindings  — pre-built ml_parse_query bindings map: ONLY range-indexed fields. Each\n" +
-    "                          entry is a {type, name, scalar_type} ready to pass to ml_parse_query.\n" +
-    "                          cts.parse SJS requires a range index for every tagged binding — but a\n" +
-    "                          range index is NOT the only way to query a field (see below).\n" +
-    "  • valueQueryableFields[] — top-level fields whose EXACT VALUES can be matched by passing a\n" +
-    "                          structured_query to ml_search, with no range index needed. JSON\n" +
-    "                          property/element/field value indexes are on by default in MarkLogic, so\n" +
-    "                          { value-query: { json-property: 'incidentType', text: ['Hurricane'] } }\n" +
-    "                          returns ONLY docs whose incidentType property literally equals 'Hurricane'.\n" +
-    "                          PREFER this over bareword `q='Hurricane'`, which also matches docs that\n" +
-    "                          merely mention the term in some other field.\n" +
-    "  • wordQueryableFields[] — same fields, available for tokenised free-text matching via\n" +
-    "                          { word-query: { json-property: 'description', text: ['hurricane'] } }\n" +
-    "                          or via the universal index with bareword `q='hurricane'`.\n" +
-    "  • barewordFields[]    — alias of wordQueryableFields, kept for backwards compatibility. Note the\n" +
-    "                          earlier framing was misleading — a bareword query goes through the\n" +
-    "                          universal index and matches ANYWHERE in the document, not just the named\n" +
-    "                          field. For field-scoped matching, use valueQueryableFields with a\n" +
-    "                          structured value-query.\n\n" +
-    "QUERY-CONSTRUCTOR PICKER (no range index needed for any of these):\n" +
-    "  EXACT VALUE on a JSON property → cts.jsonPropertyValueQuery(name, [values])\n" +
-    "  EXACT VALUE on a field          → cts.fieldValueQuery(field, [values])\n" +
-    "  EXACT VALUE on an XML element   → cts.elementValueQuery(qname, [values])\n" +
-    "  WORD/STEMMED in a property      → cts.jsonPropertyWordQuery(name, text)\n" +
-    "  WORD/STEMMED anywhere           → cts.wordQuery(text)\n" +
-    "  IN A COLLECTION                 → cts.collectionQuery(uri)\n" +
-    "  UNDER A DIRECTORY               → cts.directoryQuery(uri, depth)\n" +
-    "  AND/OR/NOT                      → cts.andQuery / cts.orQuery / cts.notQuery\n" +
-    "RANGE INDEX REQUIRED (only for these):\n" +
-    "  RANGE comparison (>, <, GE, LE) → cts.jsonPropertyRangeQuery / cts.elementRangeQuery /\n" +
-    "                                    cts.fieldRangeQuery / cts.pathRangeQuery\n" +
-    "  TAGGED grammar in cts.parse     → every binding produces a cts.<kind>Reference\n" +
-    "  Faceting / lexicon iteration    → ml_facets_query / ml_values_query\n\n" +
-    "GOOD NEXT STEPS:\n" +
-    "  → For exact-value filtering on non-indexed fields: build a structured value-query and pass to\n" +
-    "    ml_search via structured_query. NO range index required.\n" +
-    "      ml_search collection='X' structured_query='{\"query\":{\"value-query\":{\"json-property\":\"f\",\"text\":[\"v\"]}}}'\n" +
-    "  → For LLM query generation: feed the JSON into the nl_to_search_query prompt with the user's question\n" +
-    "  → For programmatic range queries: pick a field from rangeIndexes; build a structured range-query for ml_search\n" +
-    "  → For richer faceting: pick a name from searchOptionsNames and call ml_search_options_get to read\n" +
-    "    its constraint definitions, then pass that name to ml_search via the options= parameter",
+    "One-shot discovery for query building: returns the queryable fields, available range indexes, and any stored search-options sets for a collection or database, in a single call.\n\n" +
+    "CALL THIS FIRST when translating a natural-language question into a MarkLogic query — it prevents guessing at field names and at which fields are range-indexed (the two most common causes of empty results and XDMP-ELEMRIDXNOTFOUND).\n\n" +
+    "TYPICAL PIPELINE: ml_search_surface -> ml_parse_query (or hand-built structured_query) -> ml_search.\n\n" +
+    "GUIDANCE: the marklogic-query-authoring skill has the tool-selection table, index requirements per query type, and empty-result triage.",
     {
       collection: z.string().optional().describe("Collection URI to inspect. Omit to sample the whole database."),
       database: z.string().optional().describe("Database name. Default: server's content DB (usually 'Documents'). Projects have their own DBs — run ml_databases_list to discover them."),

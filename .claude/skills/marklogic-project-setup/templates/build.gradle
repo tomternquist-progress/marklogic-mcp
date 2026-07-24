@@ -1,0 +1,11 @@
+plugins {
+  // Reads gradle-${environmentName}.properties on top of gradle.properties.
+  // Switch environments with: gradle -PenvironmentName=dev mlDeploy
+  id "net.saliman.properties" version "1.5.2"
+
+  id "com.marklogic.ml-gradle" version "6.1.0"
+}
+
+repositories {
+  mavenCentral()
+}

@@ -141,7 +141,12 @@ export function registerFluxTools(
   // ── flux_import ──────────────────────────────────────────────────────────────
   server.tool(
     "flux_import",
-    "Import data into MarkLogic using Flux. The FIRST-CHOICE tool for any bulk or URL-based data loading task — prefer this over ml_eval_javascript or ml_document_put for anything beyond ~5 documents.\n\nCAP ABILITIES: bulk-import, http-fetch, csv, tsv, json, json-lines, parquet, avro, orc, jdbc, s3, zip-extract, gzip-extract, tde-generation, column-mapping, headerless-csv, uri-template, rdf-turtle, rdf-ntriples, rdf-jsonld\n\nUSE THIS TOOL WHEN:\n- Loading data from an HTTP/HTTPS URL (open data portals, Socrata, GDELT, government datasets)\n- Importing CSV, TSV, JSON-Lines, Parquet, Avro, ORC, or MLCP archives (compressed or not)\n- Importing RDF files (Turtle, N-Triples, JSON-LD, RDF/XML) into named graphs — use subcommand='import-rdf-files'\n- Fetching from a JDBC database (PostgreSQL, MySQL, Oracle, SQL Server, etc.)\n- You need one MarkLogic document per source row/record\n- You want automatic TDE view generation (set generate_tde=true)\n- The source file has no header row — use column_names to inject field names\n- Batch size, thread count, or URI templates need configuring\n\nUSE ml_graph_put INSTEAD WHEN: you have a small RDF string (< ~1 MB) to load directly into a named graph without going through Flux.\nUSE ml_document_put INSTEAD WHEN: inserting fewer than ~10 individual documents, or writing a TDE template / SJS module to the Schemas or Modules database.\nUSE ml_eval_javascript INSTEAD WHEN: running server-side logic, calling MarkLogic built-ins, or custom in-database transforms — NOT for bulk insert.\n\nCANONICAL RECIPES:\n\n1. Import CSV from public URL with auto-TDE (most common):\n   subcommand=\"import-delimited-files\", http_url=\"https://example.com/data.csv\", collections=[\"my-data\"], generate_tde=true, tde_schema=\"myschema\", tde_view=\"myview\"\n\n2. Import Socrata open data — two valid options:\n   a) CSV (recommended for large imports): subcommand=\"import-delimited-files\", http_url=\"https://data.wa.gov/resource/abc.csv?$limit=50000\"\n   b) JSON resource API (returns proper objects): subcommand=\"import-files\", http_url=\"https://data.wa.gov/resource/abc.json?$limit=50000\"\n   WARNING: Use /resource/{id}.csv or /resource/{id}.json — NOT /rows.json (the Socrata bulk export). /rows.json returns array-of-arrays, not objects.\n\n3. Import headerless CSV (e.g. GDELT events — no column headers in source file):\n   subcommand=\"import-delimited-files\", http_url=\"https://...\", column_names=[\"Col1\",\"Col2\",...], extra_args=[\"--delimiter\",\"\\t\",\"--ignore-null-fields\"]\n\n4. Import from JDBC database:\n   subcommand=\"import-jdbc\", jdbc_url=\"jdbc:postgresql://host/db\", jdbc_driver=\"org.postgresql.Driver\", query=\"SELECT * FROM mytable\", collections=[\"my-data\"], generate_tde=true\n\n5. Import JSON or XML files from S3:\n   subcommand=\"import-files\", path=\"s3a://my-bucket/data/\", collections=[\"my-data\"]\n\n6. Import a Turtle/RDF file into a named graph:\n   subcommand=\"import-rdf-files\", http_url=\"https://example.org/data.ttl\", extra_args=[\"--graph\",\"http://example.org/mygraph\"]\n\n7. Import a JSON file that contains an array of records OR a JSONL file (one object per line):\n   Both cases use subcommand=\"import-aggregate-json-files\":\n   a) Flat JSON array at the root (e.g. [{...}, {...}]):\n      subcommand=\"import-aggregate-json-files\", http_url=\"https://example.com/records.json\", collections=[\"my-data\"]\n   b) JSONL / JSON Lines (one JSON object per line — the format written by Python scripts fetching API data):\n      subcommand=\"import-aggregate-json-files\", path=\"/tmp/data.jsonl\", extra_args=[\"--json-lines\"], uri_template=\"/data/{id}.json\", collections=[\"my-data\"]\n   NOTE: import-files treats each line as a separate file URI — it does NOT parse JSON inside lines. Always use import-aggregate-json-files for multi-record JSON files.\n   ⚠ NESTED WRAPPER LIMITATION: Many REST APIs return records inside a wrapper object (e.g. {\"results\":[...],\"count\":10000} from Federal Register, openFDA, GitHub). import-aggregate-json-files treats the entire wrapper as one record — uri_template variables (e.g. {document_number}) resolve to null, producing malformed URIs. Workarounds: (1) pre-process to JSONL: python3 -c \"import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)['results']]\" < wrapper.json > records.jsonl, then import with --json-lines via extra_args; (2) use ml_eval_javascript with vars for smaller payloads (< ~500 records); (3) paginate the API with smaller pages that return flat arrays.\n\n8. Import and classify content inline with Semaphore (auto-tag documents at ingest time):\n   Add to any import recipe: classify_with_semaphore=true\n   Or manually via extra_args: [\"--classifier-host\",\"<host>\",\"--classifier-port\",\"5058\",\"--classifier-path\",\"/\",\"--classifier-http\"]\n   First verify Semaphore is reachable with semaphore_status, then list available taxonomies with semaphore_publish_sets.\n   Semaphore categories are stored on each MarkLogic document at ingest time.\n\n9. Import locally-generated data (synthetic loads, test data, script output):\n   Do NOT use docker cp or local_file. Instead, serve the data over HTTP:\n   a) Generate JSONL in a script → write to a temp file\n   b) Start a temporary HTTP server: python3 -m http.server 19999 (in background)\n   c) Call flux_import with http_url=\"http://localhost:19999/data.jsonl\"\n   The runner downloads the file transparently. This pattern works because the runner\n   intercepts --http-url (a runner extension, NOT a Flux CLI flag — it won't appear in\n   flux_help output) and fetches to /tmp before passing --path to Flux.\n\nWARNING: Only the Socrata bulk export endpoint (/rows.json) returns array-of-arrays — avoid that. The resource API (/resource/{id}.csv or /resource/{id}.json?$limit=N) returns proper records and works correctly with flux_import.",
+    "Bulk-load data into MarkLogic via the Flux pipeline. FIRST-CHOICE tool for any bulk or URL-based load — prefer over ml_eval_javascript (~10 KB payload cap) or ml_document_put (one doc at a time) beyond ~10 documents.\n\n" +
+    "CAP ABILITIES: bulk-import, http-fetch, csv, tsv, json, json-lines, parquet, avro, orc, jdbc, s3, zip-extract, gzip-extract, tde-generation, column-mapping, headerless-csv, uri-template, rdf-turtle, rdf-ntriples, rdf-jsonld\n\n" +
+    "SUBCOMMAND SELECTION: delimited/CSV -> import-delimited-files; individual JSON/XML files -> import-files; a JSON array or JSONL -> import-aggregate-json-files (NOT import-files, which treats each line as a file path); Parquet/Avro/ORC -> import-<fmt>-files; relational -> import-jdbc; RDF -> import-rdf-files.\n\n" +
+    "PREREQUISITES: the Flux runner sidecar must be reachable (check flux_status). generate_tde requires collections. classify_with_semaphore requires SEMAPHORE_HOST configured.\n\n" +
+    "USE ml_graph_put INSTEAD for a small RDF string (< ~1 MB). USE ml_document_put INSTEAD for fewer than ~10 documents or for writing a TDE template / SJS module. USE ml_eval_javascript INSTEAD for server-side logic — not bulk insert.\n\n" +
+    "GUIDANCE: the marklogic-bulk-import skill holds the canonical recipes (Socrata, GDELT, JDBC, S3, JSONL), the nested-API-wrapper workaround, path/volume-mount caveats, and URI-template rules. Consult it before composing a non-trivial import.",
     {
       subcommand: z.enum([
         "import-delimited-files",
@@ -153,63 +158,39 @@ export function registerFluxTools(
         "import-jdbc",
         "import-mlcp-archive",
         "import-rdf-files",
-      ]).describe("Flux import subcommand. Use 'import-aggregate-json-files' for: (a) a JSON file containing an array of records (e.g. openFDA results[], Socrata JSON), or (b) JSONL / JSON Lines files (one JSON object per line) — add '--json-lines' via extra_args. Use 'import-files' for individual JSON or XML files where each file becomes one document — it does NOT parse JSONL (each line would be treated as a separate file path, not a JSON record)."),
-      path: z.string().optional().describe("Path to read from — an S3 URI (s3a://bucket/key) or a path on the flux-runner container filesystem. ⚠ VOLUME-MOUNT CAVEAT: Files placed into the runner container via Docker volume mounts (e.g. -v /data:/data) may NOT be visible to Flux, because the runner's HTTP API spawns Flux as a Spark subprocess that does not inherit the same filesystem context. This causes Spark PATH_NOT_FOUND errors even though 'docker exec ls' confirms the file exists. RECOMMENDED: Use http_url instead — serve the file over HTTP and let the runner download it. This is the most reliable approach for local data. Only use path for S3 URIs or files baked into the runner image. For import-jdbc, omit this."),
-      http_url: z.string().url().optional().describe("HTTP/HTTPS URL to download before importing. The file is fetched by the flux-runner, saved to /tmp, then passed as --path. Use this when the data lives at a public URL (e.g. GDELT exports, open data portals). NOTE: The URL must be reachable from the flux runner host, not your local machine. .gz files are passed to Flux as-is and decompressed by Spark natively. ZIP (.zip) files are automatically extracted by the runner — all files inside the ZIP are extracted to a temp directory and that directory is passed as --path. WARNING: Socrata /rows.json endpoints return an array-of-arrays format (not an array of objects) — use /rows.csv with import-delimited-files instead for one-document-per-record imports."),
+      ]).describe("Flux import subcommand. 'import-aggregate-json-files' for a JSON array of records or JSONL (add '--json-lines' via extra_args); 'import-files' for individual JSON/XML files — it does NOT parse JSONL. See the marklogic-bulk-import skill for selection guidance."),
+      path: z.string().optional().describe("Source path — an S3 URI (s3a://bucket/key) or a path on the flux-runner filesystem. Volume-mounted files are often NOT visible to Flux; prefer http_url for local data. Omit for import-jdbc."),
+      http_url: z.string().url().optional().describe("HTTP/HTTPS URL fetched by the runner to /tmp, then passed as --path. Must be reachable from the runner host, not your machine. .gz passes through to Spark; .zip is extracted automatically."),
       collections: z.array(z.string()).optional().describe("MarkLogic collections to assign to imported documents"),
       permissions: z.string().optional().describe("Comma-separated role:capability pairs, e.g. 'rest-reader:read,rest-writer:update'. Valid MarkLogic capabilities: read, insert, update, execute, node-update. Must be lowercase."),
-      uri_template: z.string().optional().describe("URI template for document naming, e.g. '/import/{filename}'. Template variables must exactly match the CSV/JSON field names. WARNING: field names with spaces (e.g. 'State Abbreviation') cannot be used in URI templates — Flux will silently produce malformed URIs. Sanitize column names first (use column_names to rename headers, or import without a uri_template and rely on auto-generated URIs). IMPORTANT — import-files limitation: with import-files, template variables resolve from file-level metadata (e.g. {filename}, {filepath}) — NOT from fields inside the JSON document content. To build URIs from a JSON document field (e.g. an 'id' field), use extra_args: ['--uri-replace', \".*/source-dir/\",\"'/target-prefix/'\",\".json$\",\"''\"] instead of uri_template."),
+      uri_template: z.string().optional().describe("URI template, e.g. '/import/{filename}'. Variables must exactly match source field names; names containing spaces silently produce malformed URIs. With import-files, variables resolve from file metadata ({filename}, {filepath}), NOT document content. See the marklogic-bulk-import skill."),
       database: z.string().optional().describe("Target MarkLogic database (defaults to configured database)"),
       jdbc_url: z.string().optional().describe("JDBC URL for import-jdbc, e.g. 'jdbc:postgresql://host/db'"),
       jdbc_driver: z.string().optional().describe("JDBC driver class, e.g. 'org.postgresql.Driver'"),
       query: z.string().optional().describe("SQL query for import-jdbc"),
       thread_count: z.number().int().positive().optional().describe("Parallel writer threads (default: 4)"),
       batch_size: z.number().int().positive().optional().describe("Documents per batch (default: 100)"),
-      column_names: z.array(z.string()).optional().describe("Column names for headerless delimited files. When set, the runner prepends these as a header row before importing — so each document gets proper field names instead of _c0, _c1, etc. Use with import-delimited-files when the source has no header (e.g. GDELT events, many government open-data exports)."),
-      local_file: z.string().optional().describe("⚠ HOST RESTRICTION: Absolute path to a file that exists on the MCP SERVER HOST — NOT your local development machine and NOT the flux runner container. If you are connecting to a remote MCP server, this path must be on that remote host; files on your laptop will cause 'File not found' errors. SANDBOX ISOLATION: The MCP server runs in its own container/process. Files written by shell commands (e.g. via Bash tool) land on the host filesystem, NOT inside the MCP server container — so local_file will fail with 'File not found' even though the file appears to exist. FALLBACKS: (1) serve the file via HTTP and use http_url instead, or (2) use ml_eval_javascript with the vars parameter to pass data inline for small payloads (<100 KB). Cannot be combined with http_url or path."),
-      extra_args: z.array(z.string()).optional().describe("Additional Flux CLI flags passed verbatim. Common flags for import-delimited-files: ['--delimiter', '|'] for pipe-delimited, ['--encoding', 'ISO-8859-1'] for non-UTF-8 files. To force compression: ['--spark-prop', 'compression=gzip']. Run flux_help with subcommand='import-delimited-files' to see all accepted flags."),
+      column_names: z.array(z.string()).optional().describe("Header names for headerless delimited files — prepended as a header row so fields get real names instead of _c0, _c1. Use with import-delimited-files (e.g. GDELT, many government exports)."),
+      local_file: z.string().optional().describe("⚠ Absolute path on the MCP SERVER HOST — not your machine and not the runner container. Files written by shell commands usually land outside the server container and will fail with 'File not found'. Prefer http_url. Cannot combine with http_url or path."),
+      extra_args: z.array(z.string()).optional().describe("Flux CLI flags passed verbatim, e.g. ['--delimiter','|'], ['--encoding','ISO-8859-1'], ['--json-lines']. Run flux_help with a subcommand to list accepted flags."),
       generate_tde: z.boolean().optional().describe("After a successful import, auto-generate a TDE template by sampling the imported collection and writing it to the Schemas database. Requires collections to be set. The template is written to /tde/<tde_schema>/<tde_view>.json."),
       tde_schema: z.string().optional().describe("Schema name for the auto-generated TDE view (used with generate_tde). Defaults to the first collection name with non-alphanumeric chars replaced by underscores."),
       tde_view: z.string().optional().describe("View name for the auto-generated TDE view (used with generate_tde). Defaults to the last segment of the first collection name."),
       skip_preview: z.boolean().optional().describe("Deprecated — previews no longer run automatically. Kept for backwards compatibility; has no effect."),
       classify_with_semaphore: z.boolean().optional().describe(
-        "When true, automatically injects Semaphore Classification Server flags into the Flux command " +
-        "(--classifier-host, --classifier-port, --classifier-path /) so that every imported document " +
-        "is classified at ingest time. Requires SEMAPHORE_HOST (and optionally SEMAPHORE_SCS_PORT) " +
-        "to be configured in the MCP server .env.\n\n" +
-        "FLUX-FIRST PRINCIPLE: This is the preferred approach for classification — Flux classifies " +
-        "every document inline during import with no separate reprocess step needed. Works with all " +
-        "import subcommands including import-aggregate-json-files --json-lines.\n\n" +
-        "SCOPING TO SPECIFIC TAXONOMIES: Use classifier_publish_sets to restrict results to named " +
-        "publish sets (e.g. ['iptcmediatopics', 'unescothesaurus']). Flux injects " +
-        "--classifier-prop publish_set_name_list=iptcmediatopics|unescothesaurus so the CLS only " +
-        "returns results from those sets. Without this, all active publish sets are combined.\n\n" +
-        "CLASSIFICATION OUTPUT STRUCTURE: Semaphore adds a nested object to each document:\n" +
-        "  classification.STRUCTUREDDOCUMENT.META  — {name, value, id, score} per concept\n" +
-        "  name = taxonomy class (e.g. 'IPTCMediaTopics-http://cv.iptc.org/newscodes/mediatopic/')\n" +
-        "  value = matched concept label, id = concept UUID, score = float 0–1\n\n" +
-        "⚠ META ARRAY vs OBJECT: When a document yields 2+ classification results, META is a JSON\n" +
-        "  array []. When it yields exactly 1 result (or just the Type metadata), META is a plain\n" +
-        "  object {}. Always normalise in code: const meta = Array.isArray(META) ? META : [META];\n" +
-        "  Short records (< ~50 words) often produce only the Type metadata entry with no taxonomy\n" +
-        "  concepts — concatenate all text fields before classifying for best results.\n\n" +
-        "TDE FOR CLASSIFIED DOCUMENTS: To create a view with one row per (document × category):\n" +
-        "  context: 'classification/STRUCTUREDDOCUMENT/META'  (iterates over each tag)\n" +
-        "  To reference the parent document's fields from within a META element, navigate UP:\n" +
-        "    parent field 'id':      '../../../../id'       (4 levels: elem→array→SD-obj→class-obj→root)\n" +
-        "    parent field 'section': '../../../../section'\n" +
-        "  Direct META element fields: 'name', 'value', 'id', 'score' (declare score as float, not string)"
+        "Classify every document at ingest via the Semaphore CLS (injects --classifier-host/-port/-path). " +
+        "Requires SEMAPHORE_HOST in the MCP server .env; verify with semaphore_status. Preferred over a " +
+        "separate flux_reprocess pass. The marklogic-bulk-import skill documents the output structure and " +
+        "the META array-vs-object trap."
       ),
       classifier_publish_sets: z.array(z.string()).optional().describe(
-        "Restrict Flux classification to specific publish sets (e.g. ['iptcmediatopics', 'unescothesaurus']). " +
-        "Only used when classify_with_semaphore=true. Injects --classifier-prop publish_set_name_list=<pipe-separated> " +
-        "so the CLS returns results only from the named sets. " +
-        "Use semaphore_publish_sets to list available names (they are the lowercase model names). " +
-        "When omitted, all active publish sets are used — which produces noisy results as more models are added."
+        "Restrict classification to named publish sets, e.g. ['iptcmediatopics','unescothesaurus']. " +
+        "Only used with classify_with_semaphore=true. List names via semaphore_publish_sets. " +
+        "Omitting this combines all active publish sets, which grows noisy."
       ),
       classifier_path: z.string().optional().describe(
-        "CLS URL path for Flux classification. Only used when classify_with_semaphore=true. " +
-        "Default: '/'. Note: the URL path does not filter results — use classifier_publish_sets for that."
+        "CLS URL path (default '/'), used only with classify_with_semaphore=true. Does not filter " +
+        "results — use classifier_publish_sets for that."
       ),
     },
     async ({ subcommand, path, http_url, local_file, column_names, collections, permissions, uri_template, database, jdbc_url, jdbc_driver, query, thread_count, batch_size, extra_args, generate_tde, tde_schema, tde_view, skip_preview: _skip_preview, classify_with_semaphore, classifier_publish_sets, classifier_path }) => {
@@ -617,84 +598,11 @@ export function registerFluxTools(
   // ── flux_reprocess ───────────────────────────────────────────────────────────
   server.tool(
     "flux_reprocess",
-    "Reprocess existing MarkLogic documents through a custom transformation module using Flux.\n\n" +
-    "PREFERRED over ml_invoke_module / xdmp.invoke for any bulk server-side transform because Flux handles\n" +
-    "batching, parallel execution, and error recovery — a single xdmp.invoke transaction times out on large\n" +
-    "collections (> ~1 000 docs).\n\n" +
-    "TWO-PHASE PATTERN (required for scale) — always split into two modules:\n\n" +
-    "  PHASE 1 — READER (read_module parameter → --read-invoke, OR collections → --read-javascript inline):\n" +
-    "  Collects the URIs/IRIs that Flux will distribute across threads. No declareUpdate().\n" +
-    "  Must return a Sequence or Array of URI strings.\n" +
-    "    'use strict';\n" +
-    "    // No declareUpdate() — this is a read-only collector\n" +
-    "    var GRAPH = 'http://example.org/graph';\n" +
-    "    var rows = sem.sparql('SELECT DISTINCT ?s FROM NAMED <' + GRAPH + '> WHERE { GRAPH <' + GRAPH + '> { ?s a ?type } }');\n" +
-    "    Array.from(rows).map(function(r) { return String(r.s); });\n\n" +
-    "  PHASE 2 — TRANSFORM MODULE (invoke_module parameter → --write-invoke):\n" +
-    "  Receives ONE URI per invocation in external variable 'URI' (Flux flag: --external-variable-name URI).\n" +
-    "  Must start with declareUpdate() and wrap code in an IIFE to allow early returns.\n" +
-    "    'use strict';\n" +
-    "    declareUpdate(); // must be at the TOP of the file\n" +
-    "    var URI; // injected by Flux via --external-variable-name URI\n" +
-    "    (function run() {\n" +
-    "      var doc = cts.doc(URI).toObject();\n" +
-    "      if (!doc) { return; } // bare return only works inside a function — IIFE required\n" +
-    "      // ... build transformed doc ...\n" +
-    "      xdmp.documentInsert(URI, doc, { permissions: xdmp.documentGetPermissions(URI),\n" +
-    "                                      collections: Array.from(xdmp.documentGetCollections(URI)) });\n" +
-    "    })();\n\n" +
-    "MODULE CONSTRAINTS:\n" +
-    "  ⚠ declareUpdate() POSITION: must be the very first statement in the file, BEFORE any function\n" +
-    "    or IIFE. Placing it inside an IIFE compiles without error but the transaction is never marked\n" +
-    "    as an update — xdmp.documentInsert() calls silently do nothing. Always write it at the top:\n" +
-    "      WRONG:  (function run() { declareUpdate(); ... })();\n" +
-    "      CORRECT: declareUpdate(); (function run() { ... })();\n" +
-    "  - Top-level bare 'return' is a SyntaxError in strict-mode SJS — always wrap in an IIFE\n" +
-    "  - 'var URI' must be declared at the top level of the module (not inside the IIFE) — Flux injects\n" +
-    "    the value via --external-variable-name. Do NOT use 'external.URI' (only works in certain\n" +
-    "    invocation contexts; fails with ReferenceError when called from xdmp.invoke() in eval).\n" +
-    "  - batch_size defaults to 1 — each invoke gets exactly one URI in the 'URI' variable\n" +
-    "  - With batch_size > 1 multiple URIs are joined by --external-variable-delimiter (\\n by default);\n" +
-    "    the module must split them. Keep batch_size=1 unless you handle splitting explicitly.\n\n" +
-    "TESTING A MODULE BEFORE BATCH RUN:\n" +
-    "  You cannot test reprocess modules via xdmp.invoke() in ml_eval_javascript — 'var URI' and\n" +
-    "  'external.URI' are not populated in that context. Test by running flux_reprocess on a single\n" +
-    "  URI using a read-javascript that returns one item:\n" +
-    "    read_module: omit, collections: omit\n" +
-    "    extra_args: [\"--read-javascript\", \"Sequence.from(['/path/to/one/doc.json'])\"]\n" +
-    "  Then check the document with ml_document_get before running the full collection.\n\n" +
-    "WHY TWO MODULES MATTER:\n" +
-    "  A monolithic script that queries ALL subjects and iterates them in one transaction will hit\n" +
-    "  MarkLogic's transaction timeout (default 600 s) on any non-trivial dataset and cannot use\n" +
-    "  Flux's parallel threads. The two-phase split lets Flux distribute work across thread_count\n" +
-    "  threads with batch_size URIs per transaction — the only approach that scales.\n\n" +
-    "⚠ WRITE-INVOKE AND OUTBOUND HTTP: If your transform module calls xdmp.httpPost() to an\n" +
-    "external service (e.g. Semaphore CLS), it may silently no-op inside Flux's reprocess context,\n" +
-    "even if the same module works when called from ml_eval_javascript or ml_invoke_module.\n" +
-    "Flux may run write-invoke modules in a restricted transaction mode that prevents outbound HTTP\n" +
-    "or conflicts with writing back to the same URI in the same transaction.\n" +
-    "'Success count: N' does NOT guarantee N documents were actually updated — it only means N\n" +
-    "invocations returned without throwing. A suspiciously fast runtime (e.g. 200 docs in ~6 s\n" +
-    "when each CLS call should take 100–200 ms) is a strong signal of silent no-ops.\n" +
-    "Always spot-check a sample document after the run: ml_document_get on 1–2 URIs to verify\n" +
-    "that the expected fields were actually written.\n" +
-    "WORKAROUND: Use ml_eval_javascript in batches (10–20 URIs per call) with URIs passed via\n" +
-    "vars, running the full classify-and-write logic in the eval context instead.\n\n" +
-    "WORKFLOW:\n" +
-    "1. Write the transform module to Modules DB: ml_document_put (database='Modules').\n" +
-    "2. Optionally write a reader module to Modules DB for custom URI selection logic.\n" +
-    "3. Call flux_reprocess with invoke_module + (collections OR read_module OR read_javascript).\n\n" +
-    "RDF USE CASE — building hybrid entity documents from a named graph:\n" +
-    "  Reader: SPARQL SELECT DISTINCT ?subject → returns subject IRIs as array.\n" +
-    "  Transform: receives one IRI as URI, SPARQL for that subject's predicates, writes one JSON\n" +
-    "  entity document with embedded triples (JSON 'triple' key, unmanaged format) for TDE indexing.\n\n" +
-    "  OPTIONAL PREDICATE RULE — when a SPARQL variable is unbound (predicate absent for this subject),\n" +
-    "  do NOT assign an empty string ''. Either omit the field entirely (preferred) or assign null:\n" +
-    "    WRONG:  broaderUri: row.broader || ''\n" +
-    "    CORRECT: if (row.broader) doc.broaderUri = row.broader;   // omit when absent\n" +
-    "    CORRECT: broaderUri: row.broader ?? null                   // null when absent\n" +
-    "  This applies to every optional predicate (skos:broader, dcterms:description, owl:sameAs, etc.).\n" +
-    "  Empty-string values pollute search indexes, break range queries, and create misleading TDE rows.",
+    "Reprocess existing MarkLogic documents through a server-side transform module using Flux. PREFERRED over ml_invoke_module / xdmp.invoke for bulk transforms — Flux batches and parallelises, whereas a single xdmp.invoke transaction times out past ~1,000 documents.\n\n" +
+    "TWO-PHASE PATTERN (required): a READER (read_module / collections / read_javascript) returns the URI list, and a TRANSFORM (invoke_module) receives ONE URI per invocation in the injected variable URI.\n\n" +
+    "PREREQUISITES: both modules must already exist in the Modules database (write them with ml_document_put, database='Modules'). The Flux runner must be reachable — check flux_status.\n\n" +
+    "WARNING: a reported 'Success count: N' means N invocations returned without throwing, NOT that N documents changed. Always spot-check with ml_document_get afterwards.\n\n" +
+    "GUIDANCE: the marklogic-bulk-import skill (references/reprocess-transforms.md) holds the module templates, the declareUpdate() placement trap that silently discards every write, single-URI testing, and the outbound-HTTP no-op warning. Read it before writing a transform module.",
     {
       invoke_module: z.string().describe("URI of the transform module in the Modules database (Phase 2, --write-invoke). Receives one URI per invocation via the injected 'var URI' variable (Flux flag: --external-variable-name URI). e.g. /transforms/build-entity.sjs"),
       read_module: z.string().optional().describe("URI of the reader/collector module in the Modules database (Phase 1, --read-invoke). Must return a Sequence or Array of URI strings. Use this instead of 'collections' when URIs come from SPARQL or custom logic rather than an existing collection. e.g. /transforms/gather-subject-uris.sjs"),

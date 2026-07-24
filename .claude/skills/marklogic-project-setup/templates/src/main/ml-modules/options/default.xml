@@ -1,0 +1,9 @@
+<options xmlns="http://marklogic.com/appservices/search">
+  <constraint name="category">
+    <range type="xs:string" facet="true">
+      <element ns="" name="category"/>
+    </range>
+  </constraint>
+  <return-results>true</return-results>
+  <return-facets>true</return-facets>
+</options>

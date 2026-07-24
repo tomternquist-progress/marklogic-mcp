@@ -1,0 +1,33 @@
+{
+  "template": {
+    "context": "/item",
+    "collections": [
+      "myapp-items"
+    ],
+    "rows": [
+      {
+        "schemaName": "myapp",
+        "viewName": "items",
+        "columns": [
+          {
+            "name": "id",
+            "scalarType": "string",
+            "val": "id",
+            "nullable": false
+          },
+          {
+            "name": "category",
+            "scalarType": "string",
+            "val": "category"
+          },
+          {
+            "name": "name",
+            "scalarType": "string",
+            "val": "name",
+            "nullable": true
+          }
+        ]
+      }
+    ]
+  }
+}

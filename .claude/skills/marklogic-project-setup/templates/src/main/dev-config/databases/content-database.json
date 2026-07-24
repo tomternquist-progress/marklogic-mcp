@@ -1,0 +1,5 @@
+{
+  "database-name": "%%DATABASE%%",
+  "word-searches": true,
+  "stemmed-searches": "advanced"
+}

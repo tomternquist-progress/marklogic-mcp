@@ -25,7 +25,7 @@ pitfalls → alternatives) before any tool is called.
 ★ STARTING A PROJECT, NOT JUST EXPLORING? Read this first ★
 
    If the user's goal implies anything that should be REPEATABLE, SOURCE-CONTROLLED,
-   or DEPLOYED TO ANOTHER ENVIRONMENT — call the ml_gradle_scaffold TOOL FIRST,
+   or DEPLOYED TO ANOTHER ENVIRONMENT — scaffold an ml-gradle project FIRST,
    not the MCP write tools. Signals to watch for:
      • "build me an app / API / service / backend"
      • "create a new project / repo"
@@ -35,9 +35,9 @@ pitfalls → alternatives) before any tool is called.
      • "I want this in CI/CD" / "version-controlled" / "multi-environment"
      • Any request that names a custom REST extension, transform, or module path
 
-   ml_gradle_scaffold returns a JSON file map (paths + contents) the agent writes to
-   disk. The user then runs \`gradle mlDeploy\` from the project root. The scaffold bakes
-   in the four most common first-deploy gotchas: pre-emptive Basic auth across the four
+   The marklogic-project-setup SKILL carries a complete, deploy-ready template tree the
+   agent copies to disk. The user then runs \`gradle mlDeploy\` from the project root.
+   The template bakes in the four most common first-deploy gotchas: pre-emptive Basic auth across the four
    sub-services (avoids "unsupported auth scheme: [Basic realm=public]"),
    schemas-database.json and triggers-database.json stubs (avoids CMA-INVALIDPROPERTIES
    on first deploy), per-file collections.properties syntax (the global "collections="
@@ -50,8 +50,8 @@ pitfalls → alternatives) before any tool is called.
    re-deploy from CI/CD without the MCP server.
 
    FLOW for a new-project request:
-     1. ml_gradle_scaffold(app_name, rest_port, …) → file map
-     2. Agent writes each file to disk
+     1. Copy the marklogic-project-setup skill's templates/ tree to the project dir
+     2. Rename the app_name / rest_port / host placeholders
      3. project_setup_advisor prompt (only if the user needs deeper guidance:
         DHF vs plain, custom indexes, security)
      4. \`gradle mlDeploy\` → cluster has the app
@@ -921,7 +921,6 @@ Answer (3):    ml_answer_query (auto-routes to collection, value-normalizes,
                                   rows_deduped/rows_plus_rollup with
                                   rows_unique_by= or built-in presets),
                ml_query_recipe,
-               ml_capabilities (runtime parameter manifest — call this when in
                                 doubt about which parameters a tool accepts;
                                 CI-tested against actual schemas via
                                 capabilities-parity.test.ts)
@@ -960,9 +959,8 @@ Semaphore (27): semaphore_status, semaphore_studio_status,
                 semaphore_publish, semaphore_publish_config_fix_plain_skos,
                 semaphore_publish_diagnose, semaphore_concept_search,
                 semaphore_concept_get, semaphore_concept_labels_update,
-                semaphore_taxonomy_validate, semaphore_taxonomy_scaffold,
+                semaphore_taxonomy_validate,
                 semaphore_kid_template_get, semaphore_kid_template_set,
-                semaphore_kid_template_diagnose,
                 semaphore_task_list, semaphore_task_create, semaphore_task_commit
 
 DHF (3–5, DHF-install-dependent):
@@ -975,7 +973,28 @@ Performance (3–5, eval-dependent):
                (ml_search_query_plan now emits a zero-result rescue section
                 with suggested fields, closest indexed values, and reformulations)
 
-Planning (1):  ml_suggest_approach
+Planning:      see the marklogic skill (problem -> capability router)
+
+AGENT SKILLS (.claude/skills/ — Agent Skills spec, https://agentskills.io)
+──────────────────────────────────────────────────────────────────────────────
+Detailed how-to guidance lives in skills rather than in tool descriptions, so it
+loads only when relevant. Clients implementing the Agent Skills spec (Claude Code,
+GitHub Copilot CLI, and others) discover these automatically from .claude/skills/.
+If your client does not support skills, read the SKILL.md files directly — they are
+plain Markdown in the repository.
+
+  marklogic                        problem -> capability router; discovery order;
+                                   overlapping-tool selection; safety-flag effects
+  marklogic-bulk-import            Flux import recipes (Socrata, GDELT, JDBC, S3,
+                                   JSONL), nested-API-wrapper workaround, path
+                                   caveats, reprocess transform modules
+  marklogic-query-authoring        query-tool selection, structured-query cookbook,
+                                   SPARQL/triple layouts, empty-result triage
+  marklogic-project-setup          deploy-ready ml-gradle template tree,
+                                   multi-environment overlays, deploy failures
+  semaphore-taxonomy               SKOS authoring, SKOS-XL reification, publish order
+  semaphore-classification-tuning  classification quality: labels -> threshold ->
+                                   .kid template; eight symptom playbooks
 
 Prompts:       uri_designer, xquery_function_generator, sjs_module_generator,
                performance_advisor,

@@ -6,63 +6,11 @@ import { toToolError } from "../utils/errors.js";
 export function registerGraphTools(server: McpServer, clients: MarkLogicClients, readonly = false): void {
   server.tool(
     "ml_sparql_query",
-    "Execute a SPARQL 1.1 SELECT, CONSTRUCT, ASK, or DESCRIBE query against the MarkLogic triple store.\n\n" +
-    "TRIPLE STORAGE PATTERNS — MarkLogic supports three layouts, all queryable by this tool:\n" +
-    "  Embedded / unmanaged: triples live inside the source document as <sem:triple> elements (XML,\n" +
-    "  namespace http://marklogic.com/semantics) or as a JSON 'triples' array (plural key) where each\n" +
-    "  element is wrapped in a 'triple' key: {\"triples\":[{\"triple\":{\"subject\":\"...\",\"predicate\":\"...\",\n" +
-    "  \"object\":\"...\"}}]}. Object encoding rules for JSON embedded triples:\n" +
-    "    - IRI/URI object: plain string, e.g. \"http://example.org/thing\"\n" +
-    "    - String literal: {\"datatype\":\"http://www.w3.org/2001/XMLSchema#string\",\"value\":\"hello\"}\n" +
-    "      CAUTION: a bare string object (not wrapped in datatype/value) is treated as an IRI, not a literal.\n" +
-    "    - Language-tagged literal: {\"datatype\":\"http://www.w3.org/1999/02/22-rdf-syntax-ns#langString\",\n" +
-    "      \"value\":\"hello@en\"} — MarkLogic encodes the lang tag by appending @lang to the value field.\n" +
-    "    - Typed literal (int, date, etc.): {\"datatype\":\"http://www.w3.org/2001/XMLSchema#integer\",\"value\":\"42\"}\n" +
-    "  CAUTION: 'sem:triples' (plural) as the JSON root key creates MANAGED triples, not embedded ones.\n" +
-    "  SPARQL finds embedded triples automatically — no separate load step.\n" +
-    "  Named graphs: standalone RDF documents loaded via flux_import (subcommand: import-rdf-files)\n" +
-    "  or ml_document_put. Query with FROM NAMED <graph-uri>. Use for ontologies and taxonomies.\n" +
-    "  Hybrid: document holds entity properties + named graph holds cross-entity relationships,\n" +
-    "  linked via subject URI = document URI. Most powerful pattern for knowledge graphs.\n\n" +
-    "RETURN FORMAT:\n" +
-    "  SELECT and ASK return SPARQL results JSON: { head: { vars }, results: { bindings } }.\n" +
-    "  CONSTRUCT and DESCRIBE return raw Turtle text (the RDF graph as a Turtle string).\n\n" +
-    "DISCOVERY: Use ml_graphs_list to find named graph URIs before writing your query.\n\n" +
-    "OUTPUT SIZE — ALWAYS add LIMIT to SELECT queries:\n" +
-    "  Omitting LIMIT on queries with FILTER or broad patterns can return thousands of rows.\n" +
-    "  Cross-graph joins (querying 2+ GRAPH <uri> clauses) are especially prone to cartesian\n" +
-    "  explosions when predicate patterns overlap. Add LIMIT 100 to all exploratory queries.\n" +
-    "  Example: SELECT ... WHERE { GRAPH <g1> { ... } GRAPH <g2> { ... } } LIMIT 100\n\n" +
-    "TDE TRIPLE EXTRACTION — DEBUGGING EMPTY SPARQL RESULTS:\n" +
-    "  TDE templates can extract triples from documents. If SPARQL returns empty after installing a TDE\n" +
-    "  template that includes a 'triples' section, check all three of the following before concluding the query is wrong:\n" +
-    "  1. TRIPLE INDEX: verify it is ON for the database. Run ml_eval_javascript:\n" +
-    "       xdmp.databaseTripleIndex(xdmp.database())\n" +
-    "     Returns true/false. If false, enable it in Admin UI: Databases → <db> → triple-index=true → OK.\n" +
-    "  2. REINDEX IN PROGRESS: TDE triple extraction requires a full reindex after the template is installed.\n" +
-    "     Check ml_reindex_status — if a reindex is running, wait for it to finish before querying.\n" +
-    "  3. TRIPLE SYNTAX IN TDE: triple subject/predicate/object must use {\"val\": \"<XPath-expr>\"} — using\n" +
-    "     {\"column\": \"<name>\"} in a triple section installs silently but extracts no triples.\n" +
-    "  4. ANY TRIPLES AT ALL: run a broad query to see if any triples exist:\n" +
-    "       SELECT * WHERE { ?s ?p ?o } LIMIT 10\n" +
-    "     Empty result confirms no triples have been materialized yet (index or reindex issue).\n\n" +
-    "COMBINING WITH DOCUMENTS (multi-model): Join op.fromSPARQL() with op.fromView() in ml_eval_javascript.\n" +
-    "Use p.on(leftCol, rightCol) for equi-joins — both args must be direct column refs, not expressions.\n" +
-    "Key column-naming rules after a fromView+fromSPARQL join:\n" +
-    "  • fromView columns are qualified as 'schema.view.column' (e.g. 'nara.file_formats.riskLevel').\n" +
-    "  • fromSPARQL BIND columns are unqualified (e.g. 'riskId').\n" +
-    "  • In p.on(), use p.schemaCol('schema','view','col') for the view side to avoid SQL-NOCOLUMN errors.\n" +
-    "  • In select/as, use p.schemaCol() for view cols and p.col() for SPARQL cols.\n" +
-    "  • Do NOT alias a column to the same name as the underlying view column — e.g. p.as('identifier',...)\n" +
-    "    when the view already has 'identifier' causes SQL-AMBCOLUMN. Use a distinct alias like 'fmt_id'.\n" +
-    "  • For chained joins (fromView + riskVocab + catVocab), the second p.on() must also use p.schemaCol().\n" +
-    "  • IRI TYPE MISMATCH (silent zero rows): op.fromSPARQL returns IRI-typed variables as sem.iri, NOT\n" +
-    "    xsd:string. Joining a SPARQL IRI column directly against a TDE string column produces 0 rows with\n" +
-    "    no error. Fix: add BIND(STR(?iriVar) AS ?strVar) in the SPARQL and join on ?strVar instead.\n" +
-    "  • BIND PLACEMENT: BIND(STR(?iriVar) AS ?strVar) must be placed OUTSIDE the GRAPH {} block, not\n" +
-    "    inside it. Variables bound inside a GRAPH pattern are scoped to that pattern and do NOT appear\n" +
-    "    as top-level SELECT columns — op.fromSPARQL will throw SQL-NOCOLUMN on the join. Correct form:\n" +
-    "    GRAPH <g> { ?s ?p ?o } BIND(STR(?s) AS ?sStr)   ← BIND after the closing brace of GRAPH.",
+    "Execute a SPARQL 1.1 SELECT, CONSTRUCT, ASK, or DESCRIBE query against the MarkLogic triple store. Queries embedded (unmanaged) triples, named graphs, and hybrid layouts alike.\n\n" +
+    "RETURNS: SELECT/ASK give SPARQL results JSON { head, results.bindings }; CONSTRUCT/DESCRIBE give raw Turtle text.\n\n" +
+    "PREREQUISITES: the triple index must be enabled on the database. Use ml_graphs_list to discover named-graph URIs before writing FROM NAMED.\n\n" +
+    "ALWAYS add LIMIT to exploratory SELECTs — cross-graph joins can explode combinatorially.\n\n" +
+    "GUIDANCE: the marklogic-query-authoring skill (references/sparql-and-triples.md) covers the three triple layouts, the JSON object-encoding rules that silently turn literals into IRIs, and the checklist for empty results after a TDE install.",
     {
       sparql: z.string().describe("SPARQL query string (SELECT, CONSTRUCT, ASK, or DESCRIBE)"),
       default_graph: z.string().optional().describe("Default named graph URI"),

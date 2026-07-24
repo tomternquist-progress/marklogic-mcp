@@ -1,5 +1,10 @@
 # Tooling → Skills Evaluation
 
+> **Status: partially implemented.** Steps 1–3 of §11 have landed — see
+> [§12 Implementation results](#12-implementation-results) for measured outcomes.
+> Steps 4 (prompt conversion) and 5 (generating `INSTRUCTIONS_TEXT` from skill sources)
+> are still outstanding.
+
 An assessment of which parts of the MarkLogic MCP server belong as MCP tools, which
 should become skills, and which should stay as tools but be *complemented* by a skill.
 
@@ -321,6 +326,91 @@ the client layer, the transports, or the 60 tools in Bucket C.
 
 The tools are not the problem — the documentation stuffed inside them is. Keep every
 tool that touches MarkLogic; move every tool that only explains MarkLogic.
+
+---
+
+## 12. Implementation results
+
+Steps 1–3 of §11 are done. All figures below are measured the same way as §1 — a live
+`tools/list` against the built server over an in-memory MCP transport.
+
+### Token cost
+
+| | Before | After | Change |
+|---|---:|---:|---:|
+| Tools registered | 90 | 84 | −6 |
+| Always-on tool tokens | 50,730 | 37,832 | **−25%** |
+| Largest single tool | 4,184 (`flux_import`) | 1,730 (`flux_import`) | −59% |
+| Top-15 share of total | 49% | 34% | flatter |
+
+The distribution matters as much as the total. No tool now exceeds 1,730 tokens, and
+the profile is ~84 tools averaging ~450 rather than a handful of outliers carrying half
+the budget.
+
+Per-description reductions:
+
+| Tool | Description chars | After |
+|---|---:|---:|
+| `semaphore_kid_template_set` | 6,451 | 1,222 |
+| `ml_sparql_query` | 5,634 | 815 |
+| `ml_search_surface` | 5,012 | 689 |
+| `semaphore_concept_labels_update` | 4,571 | 963 |
+| `ml_parse_query` | 4,279 | 980 |
+| `ml_search` | 4,036 | 1,105 |
+| `flux_import` | ~5,750 + 9,473 schema | ~1,300 + 3,900 schema |
+
+### Tools removed (Bucket A)
+
+`ml_suggest_approach`, `ml_gradle_scaffold`, `semaphore_taxonomy_scaffold`,
+`semaphore_kid_template_diagnose`, `ml_capabilities` — all verified zero-I/O.
+`ml_query_recipe` was **kept**: its execute path does real work, so only its catalogue
+prose was trimmed.
+
+Also deleted: `src/utils/capabilities.ts` and `tests/utils/capabilities-parity.test.ts`.
+The manifest existed solely to feed `ml_capabilities`, and the parity test existed
+solely to keep the manifest in sync with the Zod schemas. With the tool gone, the Zod
+schema is the single source of truth — which is what §3 argued for.
+
+### Skills created
+
+Six, all spec-valid, all with descriptions well inside the 1,024-char cap:
+
+| Skill | desc | body | refs |
+|---|---:|---:|---:|
+| `marklogic` (router) | 575 | 5,454 | 0 |
+| `marklogic-bulk-import` | 571 | 5,735 | 4 |
+| `marklogic-query-authoring` | 526 | 5,302 | 2 |
+| `marklogic-project-setup` | 563 | 4,470 | 23 templates |
+| `semaphore-taxonomy` | 543 | 4,895 | 1 template |
+| `semaphore-classification-tuning` | 572 | 5,486 | 1 |
+
+The `marklogic-project-setup` templates and the `semaphore-taxonomy` Turtle skeleton
+were produced by **invoking the tools before deleting them**, so the generated content
+is preserved byte-for-byte rather than paraphrased.
+
+### Guardrails added
+
+- `npm run validate:skills` (`scripts/validate-skills.mjs`) — enforces the spec's
+  `name`/`description` constraints, the name↔directory match, and that every
+  `references/` and `templates/` path named in a SKILL.md exists.
+- `CLAUDE.md` rewritten: "Where Guidance Lives — Skills First", including the rule
+  **never register a tool that performs no I/O**.
+- `INSTRUCTIONS_TEXT` gained an `AGENT SKILLS` index section so non-skill-aware MCP
+  clients are told the guidance exists and where to read it.
+
+### Verification
+
+`npm run build`, `npm run lint`, and `npm run validate:skills` all clean;
+**731 tests pass across 40 files**, including `guidance-sync.test.ts`, which enforces
+the CLAUDE.md sync mandate and would fail on any stale tool reference left behind.
+
+### Not yet done
+
+- **Step 4** — converting the ~20 advisor and generator prompts to skills. They still
+  work as prompts; this is a behaviour improvement (auto-discovery), not a token one.
+- **Step 5** — generating `INSTRUCTIONS_TEXT` from the skill sources. Today it holds an
+  index of the skills rather than a copy of them, which removes the drift risk but
+  still leaves two authored artifacts.
 
 ---
 

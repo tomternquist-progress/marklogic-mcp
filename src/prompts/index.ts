@@ -804,7 +804,6 @@ Available tools (use only these):
                                 per-stage confidence + next_actions runnables;
                                 translation_only=true returns CTS without executing),
               ml_query_recipe (named templates for common analytics),
-              ml_capabilities (runtime parameter manifest — inspect supported params per tool)
   Schema:     ml_schema_discover, ml_schema_get_tde, ml_tde_validate, ml_tde_install,
               ml_indexes_list, ml_collections_list, ml_namespaces_list, ml_search_surface
   Eval:       ml_eval_javascript, ml_eval_xquery, ml_sparql, ml_invoke_module
@@ -828,16 +827,15 @@ Available tools (use only these):
               semaphore_concept_get, semaphore_concept_labels_update,
               semaphore_task_list, semaphore_task_create, semaphore_task_commit,
               semaphore_kid_template_get, semaphore_kid_template_set,
-              semaphore_kid_template_diagnose,
-              semaphore_taxonomy_validate, semaphore_taxonomy_scaffold
+              semaphore_taxonomy_validate
   DHF:        dhf_status, dhf_flows_list, dhf_job_status,
               dhf_flow_run (allowEval + write-enabled; async — returns job ID),
               dhf_flow_run_jar (write-enabled + ML_DHF_CLIENT_JAR; for large datasets)
-  Scaffolding: ml_gradle_scaffold (generate an ml-gradle project layout)
+  Scaffolding: the marklogic-project-setup skill (ml-gradle project template tree)
   Security:   ml_users_list, ml_roles_list, ml_document_permissions
   Performance: ml_explain_optic, ml_search_query_plan, ml_forest_metrics,
               ml_force_merge (eval-gated), ml_profile_query (eval-gated)
-  Planning:   ml_suggest_approach
+  Planning:   see the marklogic skill (problem -> capability router)
   Prompts:    uri_designer, xquery_function_generator, sjs_module_generator,
               tde_schema_generator, rest_extension_generator,
               nl_to_search_query, structured_query_builder,
@@ -1642,7 +1640,7 @@ Files in \`src/main/dev-config/\` deep-merge on top of the base config. Switch w
 gradle -PenvironmentName=dev mlDeploy
 \`\`\`
 
-> **Tip:** Instead of producing this layout by hand, call the \`ml_gradle_scaffold\` tool
+> **Tip:** Instead of producing this layout by hand, use the marklogic-project-setup skill
 > with \`include_environments: true\`. It returns a complete file map with every
 > gotcha above already addressed.
 
@@ -3050,7 +3048,7 @@ Expected output: model URI = model:${model_name}
 The ConceptScheme URI MUST follow the convention: {namespace}{ModelId}Taxonomy
 Required URI: **${expectedSchemeUri}**
 
-Use semaphore_taxonomy_scaffold to generate correctly-structured Turtle, OR ensure your
+Use the semaphore-taxonomy skill's Turtle template for correct structure, OR ensure your
 hand-crafted SKOS includes:
 \`\`\`turtle
 @prefix ns: <${ns}> .

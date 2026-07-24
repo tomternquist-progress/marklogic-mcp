@@ -17,6 +17,7 @@
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
+    "validate:skills": "node scripts/validate-skills.mjs",
     "inspector": "npx @modelcontextprotocol/inspector tsx src/index.ts",
     "flux": "node scripts/flux.mjs"
   },
