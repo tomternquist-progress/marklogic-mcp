@@ -38,6 +38,29 @@ export function sessionTokenMatches(entry: Pick<SessionEntry, "tokenHash">, req:
   return incomingHash === entry.tokenHash;
 }
 
+/**
+ * Install a session-cleanup callback on a transport WITHOUT clobbering the
+ * handler the MCP SDK installed during server.connect().
+ *
+ * The SDK's Protocol.connect() sets transport.onclose to its own _onclose —
+ * which aborts in-flight request handlers and clears the response/progress
+ * handler maps. A plain `transport.onclose = cleanup` replaces it, so that
+ * teardown silently stops running and long tool calls (Flux jobs, large Optic
+ * queries) keep going after their session is gone.
+ *
+ * Exported for unit testing; not part of the transport's public API.
+ */
+export function chainOnClose(
+  transport: Pick<StreamableHTTPServerTransport, "onclose">,
+  cleanup: () => void
+): void {
+  const existing = transport.onclose;
+  transport.onclose = () => {
+    existing?.();
+    cleanup();
+  };
+}
+
 export async function startHttpTransport(
   serverFactory: (oauthToken?: string) => McpServer,
   config: HttpConfig,
@@ -198,11 +221,11 @@ export async function startHttpTransport(
       entry = { transport, lastSeen: Date.now(), tokenHash };
       sessions.set(sessionId, entry);
 
-      // Clean up on close
-      transport.onclose = () => {
+      // Clean up on close — chained, never assigned over. See chainOnClose().
+      chainOnClose(transport, () => {
         sessions.delete(sessionId);
         logger.debug("MCP session closed", { sessionId });
-      };
+      });
     }
 
     entry.lastSeen = Date.now();

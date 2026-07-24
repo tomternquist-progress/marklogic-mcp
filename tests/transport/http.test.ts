@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Server } from "http";
 import { createHash } from "crypto";
-import { startHttpTransport, sessionTokenMatches } from "../../src/transport/http.js";
+import { startHttpTransport, sessionTokenMatches, chainOnClose } from "../../src/transport/http.js";
 
 // The HTTP transport logs on listen and on session events; mock the logger so
 // tests don't require initLogger() to be called first.
@@ -170,6 +170,49 @@ describe("sessionTokenMatches", () => {
     const entry = { tokenHash: undefined };
     expect(sessionTokenMatches(entry, reqWith(undefined))).toBe(true);
     expect(sessionTokenMatches(entry, reqWith("anything"))).toBe(true);
+  });
+});
+
+// ─── Session teardown must not clobber the SDK's own onclose ────────────────
+
+describe("chainOnClose", () => {
+  /** Mimics what Protocol.connect() does: install its own onclose handler. */
+  function transportWithSdkHandler(onSdkClose: () => void) {
+    const transport: { onclose?: () => void } = {};
+    transport.onclose = onSdkClose;
+    return transport as never;
+  }
+
+  it("still runs the SDK's handler after our cleanup is attached", () => {
+    const order: string[] = [];
+    const transport = transportWithSdkHandler(() => order.push("sdk"));
+
+    chainOnClose(transport, () => order.push("cleanup"));
+    (transport as { onclose: () => void }).onclose();
+
+    // The SDK teardown (aborting in-flight request handlers) must not be lost.
+    expect(order).toEqual(["sdk", "cleanup"]);
+  });
+
+  it("works when no SDK handler was installed", () => {
+    const transport = { onclose: undefined } as never;
+    const cleanup = vi.fn();
+
+    chainOnClose(transport, cleanup);
+    (transport as { onclose: () => void }).onclose();
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it("chains repeatedly without dropping earlier handlers", () => {
+    const order: string[] = [];
+    const transport = transportWithSdkHandler(() => order.push("sdk"));
+
+    chainOnClose(transport, () => order.push("first"));
+    chainOnClose(transport, () => order.push("second"));
+    (transport as { onclose: () => void }).onclose();
+
+    expect(order).toEqual(["sdk", "first", "second"]);
   });
 });
 

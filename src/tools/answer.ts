@@ -318,6 +318,10 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
 
         const useResidual = includeResidual || (valueSubQueries.length === 0 && cleanedResidual.length > 0);
         const effectiveQ = useResidual ? cleanedResidual || undefined : undefined;
+        // What the FINAL accepted search actually used — diverges from effectiveQ
+        // when the free-text rescue layer wins. next_actions is built from this so
+        // "run this query as-is" reproduces the rows the caller was just shown.
+        let appliedQ = effectiveQ;
         trace.residualApplied = useResidual ? effectiveQ : null;
 
         const candidateFields = pickProjectionFields(
@@ -361,7 +365,7 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
         const buildActions = (): RunnableAction[] =>
           buildNextActions({
             cts: structuredQuery,
-            q: effectiveQ,
+            q: appliedQ,
             collection: resolvedCollection,
             normalizedFilters,
             projectionFields: candidateFields,
@@ -511,15 +515,27 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
 
         // Layer 3: residual as free-text (universal index).
         if (search.total === 0 && !useResidual && cleanedResidual.length) {
+          // Deliberately DROP structuredQuery here. The REST API ANDs `q` with a
+          // structured query, so re-sending the filter that just matched zero
+          // documents would guarantee zero again — this layer would never fire.
+          // A universal-index fallback means free text alone, scoped only by
+          // collection/database (both passed by runSearch).
           const retry = await runSearch(
             "rescue:free-text",
-            `Falling back to universal-index q="${cleanedResidual}"`,
-            { q: cleanedResidual, structuredQuery }
+            `Falling back to universal-index q="${cleanedResidual}" (structured filter dropped)`,
+            { q: cleanedResidual }
           );
           if (retry.total > 0) {
             search = retry;
+            structuredQuery = undefined;
+            appliedQ = cleanedResidual;
+            trace.cts = null;
+            trace.ctsKind = "free-text";
             trace.residualApplied = cleanedResidual;
-            assumptions.push(`Rescued with free-text q="${cleanedResidual}".`);
+            assumptions.push(
+              `Rescued with free-text q="${cleanedResidual}"; the structured filter was dropped, ` +
+              `so these rows are NOT field-scoped.`
+            );
           }
         }
 

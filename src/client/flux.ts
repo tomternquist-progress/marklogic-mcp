@@ -6,6 +6,13 @@ import { URL } from "node:url";
 import axios, { type AxiosInstance } from "axios";
 import type { ConnectionConfig } from "../config/schema.js";
 
+/**
+ * Wall-clock budget for a single Flux run. Applied to BOTH transports: the
+ * Axios instance (legacy /run, /upload) and the raw http.request used by
+ * /run-stream, which would otherwise have no timeout at all.
+ */
+const FLUX_RUN_TIMEOUT_MS = 35 * 60 * 1000;
+
 export interface FluxRunResult {
   exitCode: number;
   output: string;
@@ -37,7 +44,7 @@ export class FluxClient {
     this.http = axios.create({
       baseURL: this.runnerUrl,
       // Flux jobs can be long — use a generous timeout; the runner also enforces its own
-      timeout: 35 * 60 * 1000,
+      timeout: FLUX_RUN_TIMEOUT_MS,
     });
   }
 
@@ -179,6 +186,18 @@ export class FluxClient {
         res.on("error", reject);
       });
 
+      // runStream uses raw node http.request, which does NOT inherit the Axios
+      // instance timeout — without this an unresponsive runner leaves the
+      // request (and the MCP tool call behind it) hanging forever. Match the
+      // Axios budget so both code paths give up at the same point.
+      req.setTimeout(FLUX_RUN_TIMEOUT_MS, () => {
+        req.destroy(
+          new Error(
+            `Flux runner did not respond within ${Math.round(FLUX_RUN_TIMEOUT_MS / 60000)} minutes ` +
+            `on /run-stream. The job may still be running inside the runner — check flux_status.`
+          )
+        );
+      });
       req.on("error", reject);
       req.write(body);
       req.end();

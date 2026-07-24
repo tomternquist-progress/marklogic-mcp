@@ -40,7 +40,7 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerOpticTools(server, clients);
   registerFluxTools(server, clients, config.connection.authType, readonly);
   registerFastTrackTools(server, clients, readonly);
-  registerSemaphoreTools(server, clients);
+  registerSemaphoreTools(server, clients, readonly);
   registerExtensionTools(server, clients, readonly);
   registerSecurityTools(server, clients);
   registerPerformanceTools(server, clients, effectiveAllowEval);

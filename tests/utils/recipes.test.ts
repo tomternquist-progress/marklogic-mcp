@@ -7,7 +7,12 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { findRecipe, QUERY_RECIPES, listRecipeSummaries } from "../../src/utils/recipes.js";
+import {
+  findRecipe,
+  QUERY_RECIPES,
+  listRecipeSummaries,
+  MAX_SEARCH_PAGE_LENGTH,
+} from "../../src/utils/recipes.js";
 
 describe("time_bounded_events recipe", () => {
   const args = {
@@ -86,5 +91,62 @@ describe("recipe registry", () => {
 
   it("summaries cover every recipe", () => {
     expect(listRecipeSummaries().map((r) => r.name)).toEqual(QUERY_RECIPES.map((r) => r.name));
+  });
+});
+
+/**
+ * A recipe's whole contract is "a fully-formed invocation you can run
+ * verbatim". ml_search declares page_length as
+ * z.number().int().positive().max(200), so any page_length above that ceiling
+ * makes the returned invocation un-runnable — top_n_by_field shipped a default
+ * of 500, which Zod rejected the moment an agent copied it into ml_search.
+ */
+describe("recipe page_length stays runnable against ml_search", () => {
+  const sampleArgs: Record<string, unknown> = {
+    collection: "c",
+    type_field: "type",
+    type_value: "x",
+    field: "f",
+    date_field: "d",
+    start_date: "2024-01-01",
+    end_date: "2024-12-31",
+    q: "term",
+  };
+
+  it("no recipe's default page_length exceeds ml_search's max", () => {
+    for (const def of QUERY_RECIPES) {
+      const pageLength = def.build(sampleArgs).params.page_length as number | undefined;
+      if (pageLength === undefined) continue;
+      expect(pageLength, def.name).toBeLessThanOrEqual(MAX_SEARCH_PAGE_LENGTH);
+      expect(Number.isInteger(pageLength), def.name).toBe(true);
+      expect(pageLength, def.name).toBeGreaterThan(0);
+    }
+  });
+
+  it("clamps an oversized caller-supplied sample size instead of passing it through", () => {
+    const invocation = findRecipe("top_n_by_field")!.build({ ...sampleArgs, sample_size: 5000 });
+    expect(invocation.params.page_length).toBe(MAX_SEARCH_PAGE_LENGTH);
+    // The explanation must not promise a sample the invocation cannot take.
+    expect(invocation.explanation).toContain(String(MAX_SEARCH_PAGE_LENGTH));
+    expect(invocation.explanation).not.toContain("5000");
+  });
+
+  it("clamps oversized limits on every recipe that accepts one", () => {
+    for (const def of QUERY_RECIPES) {
+      const pageLength = def.build({ ...sampleArgs, limit: 9999, sample_size: 9999 })
+        .params.page_length as number | undefined;
+      if (pageLength === undefined) continue;
+      expect(pageLength, def.name).toBe(MAX_SEARCH_PAGE_LENGTH);
+    }
+  });
+
+  it("keeps a caller-supplied value that is already within range", () => {
+    const invocation = findRecipe("top_n_by_field")!.build({ ...sampleArgs, sample_size: 25 });
+    expect(invocation.params.page_length).toBe(25);
+  });
+
+  it("falls back to the default for a nonsensical value", () => {
+    const invocation = findRecipe("entities_mentioning_term")!.build({ ...sampleArgs, limit: -1 });
+    expect(invocation.params.page_length).toBe(25);
   });
 });

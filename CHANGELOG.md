@@ -7,6 +7,67 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **Semaphore write tools now respect `ML_READONLY`** (`src/tools/semaphore.ts`,
+  `src/tools/index.ts`)
+  `registerSemaphoreTools()` never received the readonly flag, so all 10 Semaphore
+  write tools stayed callable under `ML_READONLY=true` — including
+  `semaphore_kmm_model_delete` (irreversible model deletion) and
+  `semaphore_kmm_sparql_update` (arbitrary `INSERT`/`DELETE`/`CLEAR` on a model graph),
+  plus `semaphore_publish`, `semaphore_kmm_model_create`, `semaphore_kmm_skos_load`,
+  `semaphore_task_create`, `semaphore_task_commit`, `semaphore_concept_labels_update`,
+  `semaphore_kid_template_set`, and `semaphore_publish_config_fix_plain_skos`.
+  Every other write-capable tool group was already gated, and the startup security
+  posture reported "tool-layer writes are blocked" while these were live.
+  Each write handler now refuses with the structured `UNSUPPORTED_IN_BUILD` /
+  `runtime_capability` envelope (`refuseSemaphoreWrite()`), matching the `flux.ts`
+  pattern. Read-only Semaphore tools are unaffected. Covered by
+  `tests/tools/security-gating.test.ts`.
+
+### Fixed
+
+- **`ml_answer_query` free-text rescue could never fire** (`src/tools/answer.ts`)
+  Rescue Layer 3 re-sent the structured filter alongside the free-text `q`. The REST
+  API ANDs the two, so re-sending a filter that had just matched zero documents
+  guaranteed zero again — the layer was unreachable by construction, not merely
+  rarely hit. It now drops the filter, clears `trace.cts`, sets
+  `ctsKind: "free-text"`, and records an assumption that the returned rows are no
+  longer field-scoped. `next_actions` is built from the query that actually ran, so
+  "Run this query as-is" reproduces the rows shown. Covered by
+  `tests/tools/answer-rescue.test.ts`.
+
+- **HTTP transport disabled the MCP SDK's session teardown**
+  (`src/transport/http.ts`)
+  Assigning `transport.onclose` after `server.connect()` overwrote the handler the
+  SDK installs there, so `Protocol._onclose` — which aborts in-flight request
+  handlers and clears the pending-response maps — never ran. TTL eviction or a
+  client `DELETE` mid-request left long tool calls (Flux jobs, large Optic queries)
+  running with no cancellation path. New exported `chainOnClose()` preserves and
+  chains the SDK handler. Covered by `tests/transport/http.test.ts`.
+
+- **`top_n_by_field` recipe emitted an invocation `ml_search` rejects**
+  (`src/utils/recipes.ts`)
+  It defaulted `page_length` to 500 against `ml_search`'s
+  `.max(200)` schema, so the "fully-formed invocation" the recipe hands back failed
+  validation as soon as an agent ran it. Executing in-process masked this because
+  `executeRecipe` calls the client directly. All five recipes now clamp via
+  `clampPageLength()` / exported `MAX_SEARCH_PAGE_LENGTH`, including
+  caller-supplied `limit` / `sample_size`, with explanations rendered from the
+  clamped value. Covered by `tests/utils/recipes.test.ts`.
+
+- **Flux SSE requests had no timeout** (`src/client/flux.ts`)
+  `runStream()` uses raw `http.request`, which does not inherit the Axios instance's
+  35-minute timeout — that applied only to the legacy `/run` fallback and `/upload`.
+  An unresponsive runner hung the request and the MCP tool call behind it
+  indefinitely. Both transports now share `FLUX_RUN_TIMEOUT_MS`, with an actionable
+  timeout message pointing at `flux_status`.
+
+- **Capability manifest contradicted the code** (`src/utils/capabilities.ts`)
+  `ml_answer_query.rows_unique_by` was documented as falling back to "a preset by
+  collection". No such preset exists — omitting it returns `MISSING_PARAMETER`. The
+  entry now matches the tool's actual contract.
+
 ### Added
 
 - **`semaphore_publish_diagnose` tool** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)

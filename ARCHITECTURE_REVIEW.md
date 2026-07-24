@@ -5,6 +5,190 @@
 
 ---
 
+## Addendum — 2026-07-24 Review Pass
+
+Full architecture and code review (~22,900 lines across `src/`, plus tests, config,
+Docker, and the flux-runner sidecar). Baseline at review time: **build clean, lint
+clean, 804 tests passing across 43 unit-test files**. After this pass: **830 tests
+across 44 files**, build and lint still clean.
+
+Overall assessment unchanged and still positive: the layering holds, per-session
+server instances keep HTTP state isolated, and an automated re-sweep of every
+registered tool found **zero declared-but-unreferenced Zod parameters** — the bug
+class from the 2026-03 passes remains extinct. The guidance-sync test added in June
+is doing its job: 109 registered tools, no drift against `INSTRUCTIONS_TEXT` or
+`problem_advisor`.
+
+What this pass turned up is a different class of problem: **gaps between what a
+safety belt or a fallback path claims to do and what it actually does**. Five such
+gaps, four of them confirmed bugs, all fixed on this branch with discriminating
+regression tests (each new test was verified to FAIL against the pre-fix code).
+
+### Confirmed bugs — fixed
+
+1. **All 10 Semaphore write tools bypassed `ML_READONLY` entirely.**
+   `src/tools/semaphore.ts` never received the `readonly` flag —
+   `registerSemaphoreTools(server, clients)` took two arguments, and the file
+   contained zero references to `readonly`. Every other write-capable group
+   (`documents`, `graphs`, `extensions`, `admin`, `fasttrack`, `flux`, `dhf`) is
+   gated. So under `ML_READONLY=true` an agent could still call
+   `semaphore_kmm_model_delete` ("⚠️ THIS ACTION IS IRREVERSIBLE") and
+   `semaphore_kmm_sparql_update` (arbitrary `INSERT`/`DELETE`/`CLEAR` against a
+   model graph), plus `semaphore_publish`, `semaphore_kmm_model_create`,
+   `semaphore_kmm_skos_load`, `semaphore_task_create`, `semaphore_task_commit`,
+   `semaphore_concept_labels_update`, `semaphore_kid_template_set`, and
+   `semaphore_publish_config_fix_plain_skos`.
+   Worth noting: `src/utils/security-posture.ts` reports "Tool-layer writes are
+   blocked" whenever readonly is on — an inaccurate assurance while these were live.
+   The "it only touches Semaphore, not MarkLogic" defence does not hold: `flux_*`
+   is readonly-gated despite also writing through an external runner, and
+   `semaphore_publish` compiles rule sets that MarkLogic ingestion depends on.
+   **Severity: high** — the single largest hole in the safety surface.
+   **FIXED**: `registerSemaphoreTools` now takes `readonly` (defaulting to `false`
+   so existing callers are unaffected), and each of the 10 write handlers refuses
+   with the structured `UNSUPPORTED_IN_BUILD` / `runtime_capability` envelope via a
+   new `refuseSemaphoreWrite()`. This follows the **flux.ts** precedent (register,
+   then refuse in-handler) rather than the documents.ts precedent (skip
+   registration), because the Semaphore descriptions carry substantial discovery
+   value and a vanished tool is less actionable than an explicit refusal — the
+   choice CLAUDE.md explicitly permits. Read-only Semaphore tools
+   (`semaphore_classify`, `semaphore_classify_batch`, `semaphore_concept_search`,
+   `semaphore_taxonomy_scaffold`, …) are unaffected; `semaphore_classify_batch` was
+   checked and only reads from MarkLogic. Locked by 14 new cases in
+   `tests/tools/security-gating.test.ts`, including a table-driven check that the
+   readonly guard fires *before* any config or parameter validation.
+
+2. **`ml_answer_query`'s free-text rescue layer was unreachable by construction.**
+   `src/tools/answer.ts` Layer 3 re-sent `structuredQuery` alongside the free-text
+   `q`. The REST API ANDs a string query with a structured query, so re-sending the
+   filter that had *just matched zero documents* guaranteed zero again. The layer
+   could never succeed — and it is not merely usually-dead but provably always so:
+   its guard is `search.total === 0 && !useResidual && cleanedResidual.length`, and
+   `useResidual` is false with a non-empty residual only when
+   `valueSubQueries.length > 0`, which is exactly the condition under which
+   `structuredQuery` is defined. Layers 1 and 2 only reassign it on success (when
+   the guard no longer holds), so it was never `undefined` at Layer 3. The step's
+   own `decisionReason` — "Falling back to universal-index" — described behaviour
+   the code did not implement.
+   **Severity: medium-high** (a user-facing rescue path that silently never fires).
+   **FIXED**: Layer 3 now drops the structured filter. On success it also clears
+   `trace.cts`, sets `ctsKind: "free-text"`, and pushes an assumption stating the
+   rows are no longer field-scoped — a broadened rescue that silently presents
+   itself as a filtered answer would be worse than no rescue. `next_actions` now
+   builds from what was actually applied (new `appliedQ`), so "Run this query
+   as-is" reproduces the rows the caller was shown instead of an empty filter.
+   Locked by `tests/tools/answer-rescue.test.ts`, whose fake encodes the real AND
+   semantics (all 5 cases fail against the old code).
+
+3. **The HTTP transport clobbered the MCP SDK's own `transport.onclose`.**
+   `src/transport/http.ts` assigned `transport.onclose = …` *after*
+   `server.connect(transport)`. The SDK's `Protocol.connect()` installs its own
+   handler there (`_onclose`: aborts every in-flight request handler's
+   `AbortController`, clears the response/progress handler maps, rejects pending
+   promises). A plain assignment replaced it, so none of that teardown ran. Effect:
+   when a session was TTL-evicted or a client sent `DELETE /mcp` mid-request,
+   long-running tool handlers (a 35-minute Flux job, a large Optic query) kept
+   running with no cancellation path, and pending request promises never settled.
+   **Severity: medium**.
+   **FIXED**: extracted `chainOnClose()` (exported for unit testing, mirroring the
+   existing `sessionTokenMatches` convention) which preserves and chains the
+   existing handler. Locked by 3 new cases in `tests/transport/http.test.ts`.
+
+4. **`top_n_by_field` emitted an ml_search invocation ml_search rejects.**
+   `src/utils/recipes.ts` defaulted `page_length` to 500, but `ml_search` declares
+   `page_length: z.number().int().positive().max(200)`. A recipe's entire contract
+   is "a fully-formed invocation you can run verbatim", and `ml_query_recipe`
+   returns that invocation to the agent — which then failed Zod validation the
+   moment it was copied into `ml_search`. Executing the recipe in-process masked
+   the bug, because `executeRecipe` calls the client directly and never crosses the
+   tool's schema. The same overflow was reachable on all five recipes via a
+   caller-supplied `limit`/`sample_size`.
+   **Severity: medium** (same class as the June `time_bounded_events` finding — a
+   recipe that cannot be run as advertised).
+   **FIXED**: added an exported `MAX_SEARCH_PAGE_LENGTH = 200` and a
+   `clampPageLength()` helper applied to every recipe, with explanations rendered
+   from the clamped value so the prose cannot promise a sample the invocation
+   cannot take. Locked by 5 new cases in `tests/utils/recipes.test.ts`.
+
+5. **The Flux SSE path had no timeout at all.** `FluxClient.runStream()`
+   (`src/client/flux.ts`) uses raw `http.request`, which does not inherit the Axios
+   instance's 35-minute timeout — that budget applied only to the legacy `/run`
+   fallback and `/upload`. An unresponsive runner left the request, and the MCP tool
+   call behind it, hanging indefinitely.
+   **Severity: medium** (robustness).
+   **FIXED**: hoisted the budget to a shared `FLUX_RUN_TIMEOUT_MS` constant now used
+   by both transports, with `req.setTimeout()` destroying the socket and surfacing
+   an actionable message pointing at `flux_status`.
+
+### Documentation drift — fixed
+
+6. **The capability manifest contradicted the code it exists to describe.**
+   `src/utils/capabilities.ts` documented `ml_answer_query.rows_unique_by` as
+   "falls back to a preset by collection". There is no such preset:
+   `resolveDedupeKeys()` returns `undefined` and the handler returns a
+   `MISSING_PARAMETER` error, which the tool's own description states correctly.
+   This is the artifact whose stated purpose is "if a parameter is not listed here,
+   this build does not accept it" — drift inside it is worse than drift elsewhere.
+   **FIXED**: the entry now states the parameter is required and that omitting it
+   errors rather than inferring a key.
+
+### Still open — carried forward, not fixed here
+
+7. **The flux-runner sidecar remains unauthenticated** (2026-06-10 item 3). Verified
+   still true: `flux-runner/FluxServer.java` contains no auth/token/secret handling
+   of any kind. Anything that can reach the runner port can execute arbitrary Flux
+   jobs against arbitrary connection strings and write files into the container.
+   Acceptable on an isolated compose network; needs a shared-secret header before
+   the runner is exposed on any shared network. Credentials still reach it as a
+   `user:password@host:port/db` string over plain HTTP and become a `ProcessBuilder`
+   argv element (no shell-injection vector, but visible to `ps` in the container).
+   A password containing `@`, `:`, or `/` still garbles the connection string —
+   no escaping or validation.
+   *Not fixed here because it spans the Java sidecar and its deployment topology —
+   a deliberate change to make with the operator, not a drive-by edit.*
+8. **The MCP Dockerfile still runs as root with no HEALTHCHECK** (2026-06-10 item 4).
+   Verified unchanged. The flux-runner image has a healthcheck; the MCP image has
+   neither that nor a non-root `USER`.
+9. **`src/client/semaphore.ts` interpolation hardening** (2026-06-10 item 5):
+   `postXmlOp()` still interpolates without escaping (all call sites pass hardcoded
+   values, so not exploitable today), and the multipart boundary still derives from
+   `Date.now()` (line ~330) rather than a crypto-random source.
+10. **Size hotspots persist**: `src/tools/semaphore.ts` (3,273 → 3,303 lines),
+    `src/prompts/index.ts` (3,134), `src/client/semaphore.ts` (2,022). The
+    long-standing recommendation to split the Semaphore client into CLS / KMM /
+    publishing modules remains open and remains the right call — this pass had to
+    touch 10 handlers scattered across 2,400 lines of a single file, which is
+    exactly the cost that split would remove.
+
+### Minor observations (not fixed — judged not worth the churn)
+
+- `ml_answer_query` `answer_mode: "count"` returns `has_more: search.total > 0`
+  alongside `returned: 0`. Defensible (there are more rows to fetch) but reads oddly.
+- `answer_mode: "titles"` phrases its answer as "N distinct X values matched"
+  without the "across N matched documents" sampling disclosure the `group`/`distinct`
+  modes carry, though `sampled` and `total` are both present in the payload.
+- `src/index.ts` has no `SIGTERM`/`SIGINT` handling and does not attach an `error`
+  listener to the HTTP server, so `EADDRINUSE` surfaces as an unhandled event
+  rather than a clear startup message.
+- `FluxClient.runStream()`'s SSE parser takes only the first `data:` line per event
+  (`/^data: (.*)$/m`), so a multi-line event would be truncated. The runner emits
+  one line per event today.
+- Config validation gaps carried over from June: Semaphore username/password are
+  accepted without a host; the DHF staging/jobs port relationship is unvalidated.
+
+### Verified non-issues this pass
+
+- No declared-but-unreferenced Zod parameters across all 109 registered tools
+  (automated sweep over `src/tools/*.ts`).
+- `guidance-sync` and `capabilities-parity` tests still green — no tool-name drift
+  between registrations, `INSTRUCTIONS_TEXT`, and `problem_advisor`.
+- `effectiveAllowEval = allowEval && !readonly` in `src/tools/index.ts` is intact,
+  and eval tools still skip registration entirely when disabled.
+- HTTP session token binding (SHA-256) still enforced on POST, GET/SSE, and DELETE.
+- `semaphore_classify_batch` reads from MarkLogic only — correctly left ungated.
+
+---
+
 ## Addendum — 2026-06-10 Review Pass
 
 Full architecture and code review (~22,850 lines across `src/`, plus tests, config,

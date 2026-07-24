@@ -19,7 +19,32 @@ import { z } from "zod";
 import type { MarkLogicClients } from "../client/index.js";
 import { toToolError } from "../utils/errors.js";
 
-export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClients): void {
+/**
+ * Refusal payload returned when a Semaphore write tool is invoked under
+ * ML_READONLY=true. Mirrors refuseFluxWrite() in flux.ts so agents can detect
+ * the refusal structurally rather than by parsing prose.
+ */
+function refuseSemaphoreWrite(toolName: string): { content: Array<{ type: "text"; text: string }>; isError: true } {
+  const body = {
+    error: {
+      code: "UNSUPPORTED_IN_BUILD",
+      class: "runtime_capability",
+      message: `${toolName} is disabled because ML_READONLY=true.`,
+      hint:
+        `${toolName} mutates Semaphore KMM/CLS state (taxonomy models, tasks, labels, publisher config, ` +
+        `or published rule sets). To enable, restart the MCP server with ML_READONLY=false. For true ` +
+        `read-only protection also use a Semaphore account without edit rights — the readonly flag is a ` +
+        `tool-layer safety belt, not a credential-level restriction.`,
+    },
+  };
+  return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }], isError: true };
+}
+
+export function registerSemaphoreTools(
+  server: McpServer,
+  clients: MarkLogicClients,
+  readonly: boolean = false
+): void {
   const { semaphore } = clients;
 
   // ── semaphore_status ──────────────────────────────────────────────────────────
@@ -413,6 +438,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
     },
     async ({ model_uri, label, description }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_task_create");
+      }
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -485,6 +513,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
     },
     async ({ model_uri, task_name }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_task_commit");
+      }
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -580,6 +611,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       description: z.string().optional().describe("Human-readable description of this taxonomy model."),
     },
     async ({ name, default_namespace, description }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_kmm_model_create");
+      }
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -707,6 +741,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
     },
     async ({ model_uri, skos_url, skos_content, format, overwrite }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_kmm_skos_load");
+      }
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -984,6 +1021,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
     },
     async ({ model_uri, sparql }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_kmm_sparql_update");
+      }
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -1091,6 +1131,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
     },
     async ({ model_uri, config, environment, language, task_name, async: useAsync, wait_for_completion }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_publish");
+      }
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -1242,6 +1285,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
     },
     async ({ model_uri }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_publish_config_fix_plain_skos");
+      }
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -1799,6 +1845,9 @@ export function registerSemaphoreTools(server: McpServer, clients: MarkLogicClie
       ),
     },
     async ({ model_uri, confirm }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_kmm_model_delete");
+      }
       if (!semaphore.kmmBaseUrl) {
         return {
           content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }],
@@ -2146,6 +2195,9 @@ LIMIT 500`;
       ),
     },
     async ({ model_uri, concept_uri, action, label_type, label_value, lang = "en" }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_concept_labels_update");
+      }
       if (!semaphore.kmmBaseUrl) {
         return { content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }], isError: true };
       }
@@ -2813,6 +2865,9 @@ LIMIT 500`;
       associative_weight,
       associative_cap,
     }) => {
+      if (readonly) {
+        return refuseSemaphoreWrite("semaphore_kid_template_set");
+      }
       if (!semaphore.kmmBaseUrl) {
         return { content: [{ type: "text", text: "KMM is not configured. Set SEMAPHORE_HOST in the MCP server .env." }], isError: true };
       }

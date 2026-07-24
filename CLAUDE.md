@@ -82,7 +82,20 @@ If a config flag disables a tool, either skip registration entirely (see `eval.t
 or return an explicit error with instructions for enabling it. Never silently return
 empty results when the real cause is a missing permission or disabled feature.
 
-**Readonly gating** — write tools check `readonly` at registration time (`documents.ts` pattern).
+**Readonly gating** — every tool that mutates state must be gated on `readonly`, and the
+gate belongs in `registerXxxTools()`'s signature so `src/tools/index.ts` passes it in.
+Two accepted patterns:
+
+- **Skip registration** (`documents.ts`, `admin.ts`, `extensions.ts`): wrap the write
+  registrations in `if (!readonly) { … }`. Prefer this when the tool has no standalone
+  discovery value.
+- **Register, then refuse** (`flux.ts`, `semaphore.ts`): keep the registration and return
+  the structured `UNSUPPORTED_IN_BUILD` / `runtime_capability` envelope from the top of
+  the handler, before any config or parameter validation. Prefer this when the tool's
+  description carries guidance an agent benefits from reading even when it can't call it.
+
+This applies to tools that write through an **external service** too — Flux and Semaphore
+are both gated. "It doesn't write to MarkLogic directly" is not an exemption.
 
 **Eval gating** — eval tools check `allowEval` at registration time (`eval.ts` pattern).
 

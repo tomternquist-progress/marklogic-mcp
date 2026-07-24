@@ -52,7 +52,7 @@ export const TOOL_CAPABILITIES: ToolCapability[] = [
         description: "Query strategy — strict (value-query only), balanced (value-query OR word-query on title; default), broad (balanced + universal-index residual).",
       },
       { name: "group_by", type: "string?", description: "Field to group/distinct by (overrides auto-pick)" },
-      { name: "rows_unique_by", type: "string[]?", description: "Dedupe keys for rows_deduped / rows_plus_rollup; falls back to a preset by collection" },
+      { name: "rows_unique_by", type: "string[]?", description: "Dedupe keys — REQUIRED for rows_deduped / rows_plus_rollup. There is no per-collection preset: omitting it returns a MISSING_PARAMETER error, not an inferred key." },
       { name: "database", type: "string?", description: "Target database" },
       { name: "max_results", type: "number?", description: "Cap rows sampled (default 50 / 250 for group/distinct/titles)" },
       { name: "include_residual", type: "boolean?", description: "Pass leftover filler as q (default false)" },
