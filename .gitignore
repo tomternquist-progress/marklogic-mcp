@@ -6,4 +6,4 @@ dist/
 coverage/
 .DS_Store
 flux-data/
-ml-input/
+.npmrc
