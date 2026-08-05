@@ -13,6 +13,21 @@ server, nothing to configure — the agent reads them off disk.
 > MarkLogic. Skills tell the agent *which* tool to reach for and how not to misuse it.
 > You can run the server with no skills at all; you'll just get worse first attempts.
 
+## The short version
+
+```bash
+# from a clone of this repo
+npm run skills:install -- --user       # → ~/.claude/skills, available in every project
+```
+
+Then restart your agent session. That's the whole installation — skills are files on the
+*agent's* disk, so they are independent of how the MCP server is deployed (stdio or HTTP) and of
+where MarkLogic runs.
+
+Working inside this repo? Nothing to install; `/skills` in Claude Code already lists them.
+Client without skill support? The `marklogic://instructions` resource carries the same routing
+table. Details for both cases are [below](#getting-the-skills-in-front-of-your-agent).
+
 ---
 
 ## Why they exist

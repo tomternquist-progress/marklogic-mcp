@@ -534,8 +534,8 @@ modules, so app code can `require` libraries from the bundle.
 
 ## Worked examples in this repo's sandbox
 
-Two end-to-end test projects under `/home/tom/marklogic-sandbox/ml-gradle-tests/` were
-deployed against the live cluster during development of this guide.
+Two end-to-end test projects were built and deployed against a live cluster while writing this
+guide. Both layouts are reproducible from the `marklogic-project-setup` skill's `templates/` tree.
 
 ### minimal-app
 
