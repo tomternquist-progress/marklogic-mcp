@@ -116,7 +116,70 @@ instead.
 Restart Claude Desktop, then check the tools icon in the chat input — MarkLogic tools should be
 listed.
 
-### GitHub Copilot CLI / VS Code (stdio, recommended)
+### GitHub Copilot CLI
+
+Copilot CLI stores MCP servers in `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`).
+Add this one without leaving the terminal:
+
+```bash
+copilot mcp add marklogic \
+  --env ML_HOST=localhost --env ML_PORT=8000 --env ML_MANAGEMENT_PORT=8002 \
+  --env ML_USERNAME=admin --env ML_PASSWORD=your-password \
+  --env ML_AUTH_TYPE=digest --env ML_READONLY=true \
+  -- node /absolute/path/to/marklogic-mcp/dist/index.js
+```
+
+The `--` separates Copilot's own flags from the command it should launch. Then start `copilot`
+and check:
+
+```
+/mcp show                 # marklogic should be listed, with its tool count
+/mcp show marklogic       # details for one server
+```
+
+Other useful commands: `/mcp add` (guided form instead of the CLI flags), `/mcp edit marklogic`,
+`/mcp disable marklogic`, `/mcp delete marklogic`.
+
+Written by hand, the same entry looks like this:
+
+```json
+{
+  "mcpServers": {
+    "marklogic": {
+      "type": "local",
+      "command": "node",
+      "args": ["/absolute/path/to/marklogic-mcp/dist/index.js"],
+      "env": {
+        "ML_HOST": "localhost",
+        "ML_PORT": "8000",
+        "ML_MANAGEMENT_PORT": "8002",
+        "ML_USERNAME": "admin",
+        "ML_PASSWORD": "${ML_PASSWORD}",
+        "ML_AUTH_TYPE": "digest",
+        "ML_READONLY": "true"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+Three things worth knowing:
+
+- **`"type": "local"` and `"type": "stdio"` both work.** Prefer `stdio` if you want the same
+  block to be portable to other MCP clients.
+- **`env` values expand `${VAR}` from your shell**, as with `ML_PASSWORD` above — that keeps the
+  password out of the config file.
+- **`tools` filters the surface.** `["*"]` exposes all 103; narrow it (or pass `--tools`) if you
+  want Copilot to see only some.
+
+Skills work slightly differently here — see [Step 4](#step-4--install-the-agent-skills).
+
+> `.vscode/mcp.json` is **not** the Copilot CLI's config. The CLI used to make a best-effort
+> attempt to read it, that support was removed, and it now uses the file above. VS Code itself
+> still uses `.vscode/mcp.json` — see the next section.
+
+### GitHub Copilot in VS Code
 
 Open **Settings (JSON)** (`Ctrl+Shift+P` → "Preferences: Open User Settings (JSON)") and add:
 
@@ -202,17 +265,31 @@ The server gives the agent 103 tools. The **skills** tell it which one to reach 
 exist first, and how each one fails — the difference between an agent that loops
 `ml_document_put` 40,000 times and one that reaches for `flux_import`.
 
-If you are working **inside this repo**, they are already in place; `/skills` in Claude Code
-lists them. If your agent runs in **your own project**, copy them in:
+If you are working **inside this repo**, they are already in place — both Claude Code and Copilot
+CLI discover `.claude/skills` from the project root (`/skills` and `/skills list`). If your agent
+runs in **your own project**, copy them in:
 
 ```bash
 # from your clone of this repo
-npm run skills:install -- --list              # see what's available
-npm run skills:install -- --user              # → ~/.claude/skills (every project)
-npm run skills:install -- --project ~/my-app  # → ~/my-app/.claude/skills (check in for the team)
+npm run skills:install -- --list                     # see what's available
+npm run skills:install -- --user                     # → ~/.claude/skills (Claude, every project)
+npm run skills:install -- --project ~/my-app         # → ~/my-app/.claude/skills (check in for the team)
+npm run skills:install -- --dest ~/.copilot/skills   # Copilot CLI personal skills
 ```
 
-Restart the agent session afterwards — skills are read at session start.
+Where each agent looks:
+
+| Agent | Project skills | Personal skills |
+|---|---|---|
+| Claude Code | `<project>/.claude/skills` | `~/.claude/skills` |
+| Copilot CLI | `<repo>/.claude/skills`, `.github/skills`, `.agents/skills` | `~/.copilot/skills`, `~/.agents/skills` |
+
+The trap: Copilot CLI reads the **project** `.claude/skills` directory happily, but it does *not*
+read `~/.claude/skills` — so `--user` is a no-op for it. Use `--dest ~/.copilot/skills` for
+personal installs, or `--project` and let both agents share one directory.
+
+Restart the agent session afterwards — skills are read at session start. In Copilot CLI you can
+also run `/skills reload` without restarting.
 
 Full guide, including what each skill covers and what to do when one doesn't fire:
 [SKILLS.md](SKILLS.md).

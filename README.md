@@ -8,7 +8,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for Mar
 - **13 Agent Skills** carrying the MarkLogic know-how — import recipes, index prerequisites, TDE traps, SKOS publishing order — loaded only when the task calls for them ([guide](docs/SKILLS.md))
 - **6 MCP resources** including a machine-readable problem→solution decision guide
 - **3 MCP prompts** for one-shot import and BI-integration flows
-- **Two transports**: **stdio by default** — the agent launches the server as a local subprocess (Claude Code, Claude Desktop, Copilot, any local agent) — plus HTTP for shared or remote deployments (QuickSight, hosted agents, per-user OAuth)
+- **Two transports**: **stdio by default** — the agent launches the server as a local subprocess (Claude Code, Claude Desktop, Copilot CLI, Copilot in VS Code, any local agent) — plus HTTP for shared or remote deployments (QuickSight, hosted agents, per-user OAuth)
 - **Read-only by default** — writes gated behind `ML_READONLY=false`, eval gated behind `ML_ALLOW_EVAL=true`
 - **Digest, Basic, and OAuth2** authentication against the MarkLogic REST API
 
@@ -95,7 +95,69 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) o
 </details>
 
 <details>
-<summary><b>GitHub Copilot / VS Code</b></summary>
+<summary><b>GitHub Copilot CLI</b></summary>
+
+Copilot CLI keeps its MCP servers in `~/.copilot/mcp-config.json`. Add this one from the
+terminal — no interactive session needed:
+
+```bash
+copilot mcp add marklogic \
+  --env ML_HOST=localhost --env ML_PORT=8000 --env ML_MANAGEMENT_PORT=8002 \
+  --env ML_USERNAME=admin --env ML_PASSWORD=your-password \
+  --env ML_AUTH_TYPE=digest --env ML_READONLY=true \
+  -- node /absolute/path/to/marklogic-mcp/dist/index.js
+```
+
+Then start `copilot` and run `/mcp show` — `marklogic` should be listed with its tools. Use
+`/mcp add` instead if you prefer a guided form, and `/mcp edit marklogic` to change settings
+later.
+
+The equivalent hand-written entry in `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "marklogic": {
+      "type": "local",
+      "command": "node",
+      "args": ["/absolute/path/to/marklogic-mcp/dist/index.js"],
+      "env": {
+        "ML_HOST": "localhost",
+        "ML_PORT": "8000",
+        "ML_MANAGEMENT_PORT": "8002",
+        "ML_USERNAME": "admin",
+        "ML_PASSWORD": "your-password",
+        "ML_AUTH_TYPE": "digest",
+        "ML_READONLY": "true"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+`"type": "stdio"` is also accepted and is the portable spelling if you share the file with other
+MCP clients. `env` values support `${VAR}` expansion, so
+`"ML_PASSWORD": "${ML_PASSWORD}"` keeps the password in your shell environment instead of the
+config file. `tools` filters what Copilot may call — `["*"]` is everything; narrow it to a
+comma-separated list (or via `--tools`) if you want a smaller surface.
+
+**Skills: `.claude/skills` works, `~/.claude/skills` doesn't.** Copilot CLI reads *project*
+skills from `.claude/skills`, `.github/skills`, or `.agents/skills` in the repository — so the
+Claude Code layout is picked up as-is. *Personal* skills are the exception: those come from
+`~/.copilot/skills` or `~/.agents/skills`, and `~/.claude/skills` is not scanned.
+
+```bash
+npm run skills:install -- --project ~/my-app         # → ~/my-app/.claude/skills — read as-is
+npm run skills:install -- --dest ~/.copilot/skills   # personal, available in every project
+```
+
+Verify with `/skills list`, inspect one with `/skills info`, and `/skills reload` after adding
+more mid-session.
+</details>
+
+<details>
+<summary><b>GitHub Copilot in VS Code</b></summary>
 
 Add to your user settings JSON (`Ctrl+Shift+P` → "Preferences: Open User Settings (JSON)"),
 then use Copilot Chat in **Agent mode**:
@@ -124,7 +186,8 @@ then use Copilot Chat in **Agent mode**:
 
 For a per-project config that keeps the password out of source control, use `.vscode/mcp.json`
 with an `inputs` prompt — see
-[docs/getting-started.md](docs/getting-started.md#github-copilot-cli--vs-code-stdio-recommended).
+[docs/getting-started.md](docs/getting-started.md#github-copilot-in-vs-code). Note that
+`.vscode/mcp.json` is VS Code only; Copilot CLI stopped reading it and uses the config above.
 </details>
 
 > **Put the connection settings in the client config, not in `.env`.** The `.env` file is read
@@ -140,11 +203,14 @@ Tools are the hands; **skills are the know-how**. They are Markdown files the ag
 *its own* filesystem, so they do not travel over the MCP connection — you install them once:
 
 ```bash
-npm run skills:install -- --user      # → ~/.claude/skills, available in every project
+npm run skills:install -- --user                     # Claude Code / Claude Desktop → ~/.claude/skills
+npm run skills:install -- --dest ~/.copilot/skills   # Copilot CLI personal skills
+npm run skills:install -- --project ~/my-app         # your project's .claude/skills — both agents read it
 ```
 
-Working inside this repo, they are already there (`/skills` in Claude Code lists them). Skip
-this step and the server still works — the agent just makes worse first guesses, like looping
+Working inside this repo, they are already there: Claude Code and Copilot CLI both discover
+`.claude/skills` from the project root (`/skills` and `/skills list` respectively). Skip this
+step and the server still works — the agent just makes worse first guesses, like looping
 `ml_document_put` instead of reaching for `flux_import`. See [Agent Skills](#agent-skills).
 
 ### 4. Check it works
@@ -366,15 +432,20 @@ Only each skill's ~500-character description stays in context; the body loads wh
 | **`semaphore-taxonomy`** | Authoring, loading, validating, and publishing SKOS taxonomies in KMM |
 | **`semaphore-classification-tuning`** | Classification results are wrong — labels → threshold → `.kid` weights |
 
-**Working in this repo?** Claude Code picks them up automatically; check with `/skills`.
+**Working in this repo?** Claude Code and Copilot CLI both pick them up automatically from
+`.claude/skills`; check with `/skills` or `/skills list`.
 
 **Using the MCP server from your own project?** Skills don't travel over the MCP connection — copy them across:
 
 ```bash
-npm run skills:install -- --list             # see what's available
-npm run skills:install -- --user             # → ~/.claude/skills (all projects)
-npm run skills:install -- --project ~/my-app # → ~/my-app/.claude/skills (check in for your team)
+npm run skills:install -- --list                   # see what's available
+npm run skills:install -- --user                   # → ~/.claude/skills (Claude, all projects)
+npm run skills:install -- --project ~/my-app       # → ~/my-app/.claude/skills (check in for your team)
+npm run skills:install -- --dest ~/.copilot/skills # Copilot CLI personal skills
 ```
+
+Project-level `.claude/skills` is read by both agents. Personal directories differ: Claude Code
+uses `~/.claude/skills`, Copilot CLI uses `~/.copilot/skills` or `~/.agents/skills`.
 
 **Client without skill support?** Read `marklogic://instructions` — it carries the same routing table plus an index of every skill.
 

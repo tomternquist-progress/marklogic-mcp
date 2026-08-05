@@ -83,7 +83,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing environment URI and JSON-Patch-assigns it to the new model automatically.
   One-time global prerequisite: at least one model must have been published via Studio once.
 
+### Added
+
+- **`--dest <dir>` flag on the skills installer** (`scripts/install-skills.mjs`)
+  Copies the skills straight into a directory with no `.claude/skills` suffix, for agents that
+  look elsewhere. `npm run skills:install -- --dest ~/.copilot/skills` is the Copilot CLI case;
+  `--user` writes `~/.claude/skills`, which Copilot CLI does not read. `~` is expanded for
+  `--dest` and `--project`.
+
 ### Changed
+
+- **GitHub Copilot CLI documented as a first-class stdio client** (`README.md`,
+  `docs/getting-started.md`, `docs/SKILLS.md`)
+  The docs previously had one "GitHub Copilot CLI / VS Code" section that only covered VS Code
+  settings and `.vscode/mcp.json` — which the CLI no longer reads. Copilot CLI now has its own
+  section: `copilot mcp add marklogic --env … -- node …/dist/index.js`, the equivalent
+  `~/.copilot/mcp-config.json` entry with its `type`/`command`/`args`/`env`/`tools` keys, `${VAR}`
+  expansion for secrets, and the `/mcp show|add|edit|delete` and `/skills list|info|reload`
+  commands. Also documents where each agent looks for skills: project `.claude/skills` is read by
+  both Claude Code and Copilot CLI, but personal skills split between `~/.claude/skills` and
+  `~/.copilot/skills`.
 
 - **Onboarding docs restructured around stdio as the default transport**
   (`README.md`, `docs/getting-started.md`, `docs/SKILLS.md`, `docs/claude-code-remote-mcp.md`)

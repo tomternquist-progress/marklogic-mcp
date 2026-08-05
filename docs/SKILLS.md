@@ -17,7 +17,8 @@ server, nothing to configure — the agent reads them off disk.
 
 ```bash
 # from a clone of this repo
-npm run skills:install -- --user       # → ~/.claude/skills, available in every project
+npm run skills:install -- --user                     # Claude Code → ~/.claude/skills
+npm run skills:install -- --dest ~/.copilot/skills   # Copilot CLI → ~/.copilot/skills
 ```
 
 Then restart your agent session. That's the whole installation — skills are files on the
@@ -62,8 +63,8 @@ server is deployed.
 
 ### 1. You're working inside this repository
 
-Nothing to do. Claude Code discovers `.claude/skills/` in the project root
-automatically. Confirm with `/skills`.
+Nothing to do. Claude Code discovers `.claude/skills/` in the project root automatically, and so
+does GitHub Copilot CLI. Confirm with `/skills` (Claude Code) or `/skills list` (Copilot CLI).
 
 ### 2. You use the MCP server from your own project
 
@@ -80,10 +81,23 @@ npm run skills:install -- --project ~/my-app   # → ~/my-app/.claude/skills (ch
 npm run skills:install -- --list
 ```
 
+**Where your agent looks matters.** Project-level `.claude/skills` is read by both Claude Code
+and Copilot CLI, so `--project` serves a mixed team from one checked-in directory. Home-level
+paths differ:
+
+| Agent | Project skills | Personal skills |
+|---|---|---|
+| Claude Code | `<project>/.claude/skills` | `~/.claude/skills` |
+| Copilot CLI | `<repo>/.claude/skills`, `.github/skills`, `.agents/skills` | `~/.copilot/skills`, `~/.agents/skills` |
+
+Copilot CLI does **not** read `~/.claude/skills`, so `--user` does nothing for it — use
+`--dest ~/.copilot/skills` instead.
+
 | Flag | Effect |
 |---|---|
 | `--user` | Install to `~/.claude/skills`, available in every project |
 | `--project [dir]` | Install to `<dir>/.claude/skills` (defaults to the current directory) |
+| `--dest <dir>` | Install straight into `<dir>` with no `.claude/skills` suffix — for agents that look elsewhere, e.g. `--dest ~/.copilot/skills` |
 | `--only a,b` | Install a subset — e.g. skip the Semaphore skills if you don't use Semaphore |
 | `--force` | Overwrite skills that are already there |
 | `--dry-run` | Print what would be copied, change nothing |
@@ -93,9 +107,10 @@ Existing skill directories are **skipped, not overwritten**, unless you pass `--
 so re-running after a `git pull` will not discard local edits.
 
 Choose `--project` when your team should all get the same guidance (check
-`.claude/skills/` into your app's repo); choose `--user` for your own machine.
+`.claude/skills/` into your app's repo); choose `--user` (or `--dest`) for your own machine.
 
-Restart the agent session afterwards — skills are read at session start.
+Restart the agent session afterwards — skills are read at session start. Copilot CLI can pick up
+new ones mid-session with `/skills reload`.
 
 ### 3. Your client doesn't support skills
 
@@ -267,6 +282,11 @@ PR. Descriptions are the trigger surface, and they're meant to be tuned.
 Skills are read at session start. Restart the session. If you installed with
 `--project`, confirm you started the agent from that directory — Claude Code looks for
 `.claude/skills/` relative to the project root, not the MCP server's location.
+
+**Copilot CLI's `/skills list` is empty after `--user`.**
+Expected: `~/.claude/skills` is Claude-specific. Copilot CLI takes personal skills from
+`~/.copilot/skills` or `~/.agents/skills` — re-run with `--dest ~/.copilot/skills`, then
+`/skills reload`. Project-level `.claude/skills` *is* read by both.
 
 **The guidance contradicts what the server does.**
 The skills describe this server's tool surface. If you're pointed at a different or
