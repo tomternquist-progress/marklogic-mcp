@@ -83,7 +83,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   existing environment URI and JSON-Patch-assigns it to the new model automatically.
   One-time global prerequisite: at least one model must have been published via Studio once.
 
+### Added
+
+- **`--dest <dir>` flag on the skills installer** (`scripts/install-skills.mjs`)
+  Copies the skills straight into a directory with no `.claude/skills` suffix, for agents that
+  look elsewhere. `npm run skills:install -- --dest ~/.copilot/skills` is the Copilot CLI case;
+  `--user` writes `~/.claude/skills`, which Copilot CLI does not read. `~` is expanded for
+  `--dest` and `--project`.
+
 ### Changed
+
+- **GitHub Copilot CLI documented as a first-class stdio client** (`README.md`,
+  `docs/getting-started.md`, `docs/SKILLS.md`)
+  The docs previously had one "GitHub Copilot CLI / VS Code" section that only covered VS Code
+  settings and `.vscode/mcp.json` — which the CLI no longer reads. Copilot CLI now has its own
+  section: `copilot mcp add marklogic --env … -- node …/dist/index.js`, the equivalent
+  `~/.copilot/mcp-config.json` entry with its `type`/`command`/`args`/`env`/`tools` keys, `${VAR}`
+  expansion for secrets, and the `/mcp show|add|edit|delete` and `/skills list|info|reload`
+  commands. Also documents where each agent looks for skills: project `.claude/skills` is read by
+  both Claude Code and Copilot CLI, but personal skills split between `~/.claude/skills` and
+  `~/.copilot/skills`.
+
+- **Onboarding docs restructured around stdio as the default transport**
+  (`README.md`, `docs/getting-started.md`, `docs/SKILLS.md`, `docs/claude-code-remote-mcp.md`)
+  The README now opens with a table of contents, a stdio Quick Start (build → register client →
+  install skills → verify), and a "stdio or HTTP?" section that states the four cases where the
+  Docker/HTTP deployment is the right call. The old Quick Start — which led with a
+  Claude-Desktop-only stdio snippet and then four Docker paths — is gone, and Claude Code now
+  has a stdio `claude mcp add` recipe it never had. `docs/getting-started.md` was rewritten in
+  the same order and gained a troubleshooting section covering the common failures (missing
+  credentials, wrong `ML_AUTH_TYPE`, unreachable host, tools absent by design, Flux runner not
+  running). Also documented that `.env` is only read when the process starts in the repo
+  directory — in stdio mode settings belong in the client's `env` block — that the Flux runner
+  is a separate container in stdio mode too, and that skills are installed on the agent's
+  filesystem rather than delivered over the MCP connection.
+
+  Corrections along the way: `ML_USERNAME`/`ML_PASSWORD` are required, not `admin`/`admin`
+  (`src/config/schema.ts` has no default); the `MCP_TRANSPORT` default is `stdio`, not `http`;
+  `claude mcp add --scope project` writes `.mcp.json`, not `.claude/mcp.json`; the duplicate
+  `ML_OAUTH_TOKEN` row was removed and the configuration table split into "the ones you almost
+  always set", transport, connection, Flux, and optional integrations.
+
+- **`docker compose up` no longer depends on a developer-specific host path**
+  (`docker-compose.yml`) The MarkLogic service bind-mounted a hardcoded
+  `/home/tom/marklogic-sandbox/data`. It is now `${ML_INPUT_DIR:-./ml-input}:${ML_INPUT_MOUNT:-/data-in}`;
+  set both variables to the same absolute path to restore same-path-on-host behaviour for DHF
+  step configs that reference it.
 
 - **README, getting-started, and ml-gradle guide brought in line with the skills migration**
   Documented all 103 registered tools (the reference tables were missing 15, and two whole

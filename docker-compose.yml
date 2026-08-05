@@ -18,8 +18,11 @@ services:
       - MARKLOGIC_ADMIN_PASSWORD=admin
     volumes:
       - ml-data:/var/opt/MarkLogic
-      # Mount sandbox data dir at same path so DHF ingestion steps can read input files
-      - /home/tom/marklogic-sandbox/data:/home/tom/marklogic-sandbox/data:ro
+      # Host directory with input files for DHF ingestion steps, mounted read-only.
+      # Defaults to ./ml-input at /data-in. To have MarkLogic see the files at the same
+      # absolute path as your host (what DHF step configs usually reference), set both:
+      #   ML_INPUT_DIR=/path/on/host  ML_INPUT_MOUNT=/path/on/host
+      - ${ML_INPUT_DIR:-./ml-input}:${ML_INPUT_MOUNT:-/data-in}:ro
     healthcheck:
       test: ["CMD", "curl", "-f", "-u", "admin:admin", "http://localhost:8002/manage/v2"]
       interval: 15s

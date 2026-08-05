@@ -8,9 +8,343 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for Mar
 - **13 Agent Skills** carrying the MarkLogic know-how — import recipes, index prerequisites, TDE traps, SKOS publishing order — loaded only when the task calls for them ([guide](docs/SKILLS.md))
 - **6 MCP resources** including a machine-readable problem→solution decision guide
 - **3 MCP prompts** for one-shot import and BI-integration flows
-- **Two transports**: stdio (Claude Desktop, GitHub Copilot, local agents) and HTTP+SSE (Claude Code, GitHub Copilot, remote agents, QuickSight)
+- **Two transports**: **stdio by default** — the agent launches the server as a local subprocess (Claude Code, Claude Desktop, Copilot CLI, Copilot in VS Code, any local agent) — plus HTTP for shared or remote deployments (QuickSight, hosted agents, per-user OAuth)
 - **Read-only by default** — writes gated behind `ML_READONLY=false`, eval gated behind `ML_ALLOW_EVAL=true`
-- **Basic and Digest auth** for MarkLogic REST API
+- **Digest, Basic, and OAuth2** authentication against the MarkLogic REST API
+
+---
+
+## Contents
+
+- [**Quick Start**](#quick-start) — build, connect a client over stdio, install the skills (~5 min)
+- [**stdio or HTTP?**](#stdio-or-http) — when to switch to the Docker/HTTP deployment
+- [How Agents Should Use This Server](#how-agents-should-use-this-server) — discovery order, picking the right query engine
+- [Agent Skills](#agent-skills) — the MarkLogic know-how, and how to install it into *your* project
+- [Configuration](#configuration) — every environment variable
+- [Tools](#tools-reference) · [Resources](#resources-reference) · [Prompts](#prompts-reference) — the full surface
+- [Security Notes](#security-notes) — what `ML_READONLY` does and does not protect
+
+Longer walkthrough: [docs/getting-started.md](docs/getting-started.md). Skills guide: [docs/SKILLS.md](docs/SKILLS.md).
+
+---
+
+## Quick Start
+
+**Use stdio.** Your agent launches the server as a local subprocess — no port to open, no API
+key to manage, no container to keep alive. It is the right choice for one developer working
+against one MarkLogic instance, which is most people. Switch to
+[HTTP](#stdio-or-http) only when something has to reach the server over the network.
+
+You need **Node.js 20+** and a reachable **MarkLogic 12** instance.
+
+### 1. Build the server
+
+```bash
+git clone https://github.com/tternquist/marklogic-mcp.git
+cd marklogic-mcp
+npm install && npm run build     # produces dist/index.js — the file your agent launches
+```
+
+### 2. Register it with your agent
+
+Pick your client. MarkLogic connection settings go in the client's `env` block — see the note
+after the examples.
+
+<details open>
+<summary><b>Claude Code</b></summary>
+
+```bash
+claude mcp add marklogic \
+  -e ML_HOST=localhost -e ML_PORT=8000 -e ML_MANAGEMENT_PORT=8002 \
+  -e ML_USERNAME=admin -e ML_PASSWORD=your-password \
+  -e ML_AUTH_TYPE=digest -e ML_READONLY=true \
+  -- node "$PWD/dist/index.js"
+
+claude mcp list      # marklogic: ... - ✓ Connected
+```
+
+Add `--scope project` to write the entry into `.mcp.json` in the current directory and share it
+with your team instead of keeping it in your user config.
+</details>
+
+<details>
+<summary><b>Claude Desktop</b></summary>
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
+`%APPDATA%\Claude\claude_desktop_config.json` (Windows), then restart the app:
+
+```json
+{
+  "mcpServers": {
+    "marklogic": {
+      "command": "node",
+      "args": ["/absolute/path/to/marklogic-mcp/dist/index.js"],
+      "env": {
+        "ML_HOST": "localhost",
+        "ML_PORT": "8000",
+        "ML_MANAGEMENT_PORT": "8002",
+        "ML_USERNAME": "admin",
+        "ML_PASSWORD": "your-password",
+        "ML_AUTH_TYPE": "digest",
+        "ML_READONLY": "true"
+      }
+    }
+  }
+}
+```
+</details>
+
+<details>
+<summary><b>GitHub Copilot CLI</b></summary>
+
+Copilot CLI keeps its MCP servers in `~/.copilot/mcp-config.json`. Add this one from the
+terminal — no interactive session needed:
+
+```bash
+copilot mcp add marklogic \
+  --env ML_HOST=localhost --env ML_PORT=8000 --env ML_MANAGEMENT_PORT=8002 \
+  --env ML_USERNAME=admin --env ML_PASSWORD=your-password \
+  --env ML_AUTH_TYPE=digest --env ML_READONLY=true \
+  -- node /absolute/path/to/marklogic-mcp/dist/index.js
+```
+
+Then start `copilot` and run `/mcp show` — `marklogic` should be listed with its tools. Use
+`/mcp add` instead if you prefer a guided form, and `/mcp edit marklogic` to change settings
+later.
+
+The equivalent hand-written entry in `~/.copilot/mcp-config.json`:
+
+```json
+{
+  "mcpServers": {
+    "marklogic": {
+      "type": "local",
+      "command": "node",
+      "args": ["/absolute/path/to/marklogic-mcp/dist/index.js"],
+      "env": {
+        "ML_HOST": "localhost",
+        "ML_PORT": "8000",
+        "ML_MANAGEMENT_PORT": "8002",
+        "ML_USERNAME": "admin",
+        "ML_PASSWORD": "your-password",
+        "ML_AUTH_TYPE": "digest",
+        "ML_READONLY": "true"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+`"type": "stdio"` is also accepted and is the portable spelling if you share the file with other
+MCP clients. `env` values support `${VAR}` expansion, so
+`"ML_PASSWORD": "${ML_PASSWORD}"` keeps the password in your shell environment instead of the
+config file. `tools` filters what Copilot may call — `["*"]` is everything; narrow it to a
+comma-separated list (or via `--tools`) if you want a smaller surface.
+
+**Skills: `.claude/skills` works, `~/.claude/skills` doesn't.** Copilot CLI reads *project*
+skills from `.claude/skills`, `.github/skills`, or `.agents/skills` in the repository — so the
+Claude Code layout is picked up as-is. *Personal* skills are the exception: those come from
+`~/.copilot/skills` or `~/.agents/skills`, and `~/.claude/skills` is not scanned.
+
+```bash
+npm run skills:install -- --project ~/my-app         # → ~/my-app/.claude/skills — read as-is
+npm run skills:install -- --dest ~/.copilot/skills   # personal, available in every project
+```
+
+Verify with `/skills list`, inspect one with `/skills info`, and `/skills reload` after adding
+more mid-session.
+</details>
+
+<details>
+<summary><b>GitHub Copilot in VS Code</b></summary>
+
+Add to your user settings JSON (`Ctrl+Shift+P` → "Preferences: Open User Settings (JSON)"),
+then use Copilot Chat in **Agent mode**:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "marklogic": {
+        "type": "stdio",
+        "command": "node",
+        "args": ["/absolute/path/to/marklogic-mcp/dist/index.js"],
+        "env": {
+          "ML_HOST": "localhost",
+          "ML_PORT": "8000",
+          "ML_USERNAME": "admin",
+          "ML_PASSWORD": "your-password",
+          "ML_AUTH_TYPE": "digest",
+          "ML_READONLY": "true"
+        }
+      }
+    }
+  }
+}
+```
+
+For a per-project config that keeps the password out of source control, use `.vscode/mcp.json`
+with an `inputs` prompt — see
+[docs/getting-started.md](docs/getting-started.md#github-copilot-in-vs-code). Note that
+`.vscode/mcp.json` is VS Code only; Copilot CLI stopped reading it and uses the config above.
+</details>
+
+> **Put the connection settings in the client config, not in `.env`.** The `.env` file is read
+> from the *working directory of the server process*, and MCP clients start it from their own
+> directory — usually not this repo. `.env` is for `npm start`, `npm run dev`, and Docker.
+
+`ML_USERNAME` and `ML_PASSWORD` are required (except in `oauth` mode). Everything else has a
+default — see [Configuration](#configuration).
+
+### 3. Install the Agent Skills
+
+Tools are the hands; **skills are the know-how**. They are Markdown files the agent reads from
+*its own* filesystem, so they do not travel over the MCP connection — you install them once:
+
+```bash
+npm run skills:install -- --user                     # Claude Code / Claude Desktop → ~/.claude/skills
+npm run skills:install -- --dest ~/.copilot/skills   # Copilot CLI personal skills
+npm run skills:install -- --project ~/my-app         # your project's .claude/skills — both agents read it
+```
+
+Working inside this repo, they are already there: Claude Code and Copilot CLI both discover
+`.claude/skills` from the project root (`/skills` and `/skills list` respectively). Skip this
+step and the server still works — the agent just makes worse first guesses, like looping
+`ml_document_put` instead of reaching for `flux_import`. See [Agent Skills](#agent-skills).
+
+### 4. Check it works
+
+Ask your agent:
+
+- *"What MarkLogic databases exist, and what collections are in Documents?"* → `ml_databases_list`, `ml_collections_list`
+- *"Sample a document from the <your> collection and describe its schema."* → `ml_document_sample`, `ml_schema_discover`
+
+The server starts **read-only** (`ML_READONLY=true`) with server-side eval off
+(`ML_ALLOW_EVAL=false`) — those tools are not registered at all, so the agent cannot call them
+by accident. Set `ML_READONLY=false` when you want writes. Read
+[Security Notes](#security-notes) before you do.
+
+Not connecting? [docs/getting-started.md#troubleshooting](docs/getting-started.md#troubleshooting)
+covers the usual causes — missing credentials, wrong auth type, unreachable host, tools that are
+absent by design.
+
+### Bulk import needs one extra piece
+
+The `flux_*` tools drive a **Flux runner**, which ships as a container in stdio mode too:
+
+```bash
+docker run -d --name flux-runner -p 8080:8080 \
+  -e FLUX_PORT=8080 -v "$PWD/flux-data:/data" \
+  ghcr.io/tternquist/marklogic-mcp/flux-runner:master
+```
+
+Then add `-e FLUX_RUNNER_URL=http://localhost:8080` to the server's environment. Paths you pass
+to `flux_import` are resolved **inside the runner** (`/data/...`), not on your laptop. Run
+`flux_status` to confirm the connection. Without a runner, the other 96 tools work fine and
+`flux_*` returns an actionable error.
+
+---
+
+## stdio or HTTP?
+
+|  | **stdio** (default) | **HTTP** (Docker) |
+|---|---|---|
+| How it runs | agent spawns `node dist/index.js` per session | long-lived server listening on a port |
+| Setup cost | build once, one client config entry | container, port, `MCP_API_KEY`, network reachability |
+| Who can connect | the agent on that machine | anyone who can reach the URL |
+| MarkLogic identity | one user, fixed in the client config | one shared user, **or** per-user OAuth passthrough |
+| Node on the client machine | required | not required |
+
+**Reach for HTTP when one of these is true:**
+
+- **Several people or agents share one deployment.** One container, many clients, one place to
+  rotate credentials — instead of every teammate cloning and building.
+- **The agent isn't on your machine.** AWS QuickSight, a hosted agent, a CI job, or anything in
+  another network can't spawn a local subprocess.
+- **You need per-user MarkLogic RBAC.** `ML_AUTH_TYPE=oauth` forwards each client's own bearer
+  token to MarkLogic, which then enforces that user's roles. stdio can only carry one static
+  token (`ML_OAUTH_TOKEN`).
+- **You don't have MarkLogic (or Node) locally.** `docker compose up` brings up MarkLogic, the
+  Flux runner, and the MCP server together — the fastest way to a working sandbox.
+
+Otherwise stay on stdio. The rest of this section covers the HTTP path.
+
+### Start the server over HTTP
+
+```bash
+# A. MCP server only — points at MarkLogic you already run
+ML_HOST=<host> ML_PASSWORD=<pass> MCP_API_KEY=<secret> \
+  docker compose -f docker-compose.mcp-only.yml up -d
+#    add --profile flux to also start the Flux runner
+
+# B. Full sandbox — MarkLogic 12 + Flux runner + MCP server
+docker compose up -d
+#    MarkLogic Admin UI http://localhost:8001 (admin/admin), MCP at http://localhost:3000
+
+# C. MarkLogic/Semaphore already running in other Docker projects
+docker network create shared                            # one-time
+docker network connect shared <marklogic-container>
+ML_HOST=marklogic ML_PASSWORD=admin \
+  docker compose -f docker-compose.external.yml up -d
+
+curl http://localhost:3000/health                       # {"status":"ok","sessions":0}
+```
+
+Case C is explained in [docs/docker-networking.md](docs/docker-networking.md), including the
+host-network and host-IP alternatives.
+
+Without Docker, any host with the build can serve HTTP directly:
+
+```bash
+MCP_TRANSPORT=http MCP_HTTP_PORT=3000 ML_HOST=your-host ML_USERNAME=admin ML_PASSWORD=pass \
+  node dist/index.js
+```
+
+### Connect a client over HTTP
+
+```bash
+# Claude Code
+claude mcp add --transport http marklogic http://localhost:3000/mcp \
+  --header "Authorization: Bearer <secret>"     # omit --header if MCP_API_KEY is unset
+```
+
+```json
+// VS Code settings or .vscode/mcp.json
+{ "servers": { "marklogic": {
+    "type": "http",
+    "url": "http://localhost:3000/mcp",
+    "headers": { "Authorization": "Bearer <secret>" }
+} } }
+```
+
+Set `MCP_API_KEY` for **any** deployment that isn't localhost — it is the only thing standing
+between the open internet and your MarkLogic credentials. Full guide:
+[docs/claude-code-remote-mcp.md](docs/claude-code-remote-mcp.md).
+
+### OAuth2 bearer token passthrough (HTTP only)
+
+When MarkLogic is configured as an OAuth2 resource server, the MCP server forwards each
+client's bearer token straight through — the server never sees a password, and MarkLogic
+enforces per-user RBAC.
+
+```bash
+MCP_TRANSPORT=http MCP_HTTP_PORT=3000 ML_HOST=your-host ML_AUTH_TYPE=oauth \
+  node dist/index.js
+# ML_USERNAME / ML_PASSWORD are unused in oauth mode
+# Clients send: Authorization: Bearer <user-jwt>
+```
+
+The `marklogic-oauth-setup` skill walks through configuring MarkLogic itself. Points verified on
+ML 12:
+
+- Create the external security via `sec:create-external-security()` (not raw XQuery) to preserve required element ordering
+- Set `authorization: oauth` and map JWT claim values to roles via `sec:role-set-external-names()` — the claim value matches the role's **external-name**, not its role-name
+- Apply `authentication: oauth` to **all** server groups (apps, enode, etc.)
+
+Two constraints in oauth mode: Flux tools are disabled (they need username:password
+credentials), and `MCP_API_KEY` gateway auth moves to the `X-MCP-Api-Key` header so it doesn't
+collide with the user's `Authorization` header.
 
 ---
 
@@ -76,6 +410,10 @@ Always use `flux_import` for more than ~10 documents. It handles HTTP URL fetch,
 
 The MarkLogic know-how — Flux import recipes, index prerequisites, TDE syntax traps, SKOS publishing order, OAuth claim mapping — ships as **13 Agent Skills** in `.claude/skills/`, following the open [Agent Skills spec](https://agentskills.io/specification).
 
+**A skill is just a Markdown file** — a one-line description plus a body of recipes, failure
+modes, and worked examples. Nothing is registered with the server and nothing is configured; the
+agent reads it off its own disk when a task matches the description.
+
 Only each skill's ~500-character description stays in context; the body loads when the model matches a task to it, and bundled `references/` and `templates/` load only when the body points at them. That keeps the guidance out of the per-request tool-description budget — it previously cost ~50,700 tokens on every request.
 
 | Skill | Reach for it when |
@@ -94,15 +432,20 @@ Only each skill's ~500-character description stays in context; the body loads wh
 | **`semaphore-taxonomy`** | Authoring, loading, validating, and publishing SKOS taxonomies in KMM |
 | **`semaphore-classification-tuning`** | Classification results are wrong — labels → threshold → `.kid` weights |
 
-**Working in this repo?** Claude Code picks them up automatically; check with `/skills`.
+**Working in this repo?** Claude Code and Copilot CLI both pick them up automatically from
+`.claude/skills`; check with `/skills` or `/skills list`.
 
 **Using the MCP server from your own project?** Skills don't travel over the MCP connection — copy them across:
 
 ```bash
-npm run skills:install -- --list             # see what's available
-npm run skills:install -- --user             # → ~/.claude/skills (all projects)
-npm run skills:install -- --project ~/my-app # → ~/my-app/.claude/skills (check in for your team)
+npm run skills:install -- --list                   # see what's available
+npm run skills:install -- --user                   # → ~/.claude/skills (Claude, all projects)
+npm run skills:install -- --project ~/my-app       # → ~/my-app/.claude/skills (check in for your team)
+npm run skills:install -- --dest ~/.copilot/skills # Copilot CLI personal skills
 ```
+
+Project-level `.claude/skills` is read by both agents. Personal directories differ: Claude Code
+uses `~/.claude/skills`, Copilot CLI uses `~/.copilot/skills` or `~/.agents/skills`.
 
 **Client without skill support?** Read `marklogic://instructions` — it carries the same routing table plus an index of every skill.
 
@@ -110,177 +453,66 @@ See **[docs/SKILLS.md](docs/SKILLS.md)** for the full guide: the catalog with bu
 
 ---
 
-## Quick Start
-
-> **New to marklogic-mcp?** See the [Getting Started Guide](docs/getting-started.md) for a complete walkthrough.
-
-### Claude Desktop (stdio)
-
-1. Install and build:
-   ```bash
-   npm install && npm run build
-   ```
-
-2. Configure `.env`:
-   ```bash
-   cp .env.example .env
-   # Edit with your MarkLogic connection details
-   ```
-
-3. Add to Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
-   ```json
-   {
-     "mcpServers": {
-       "marklogic": {
-         "command": "node",
-         "args": ["/path/to/marklogic-mcp/dist/index.js"],
-         "env": {
-           "ML_HOST": "your-marklogic-host",
-           "ML_PORT": "8000",
-           "ML_MANAGEMENT_PORT": "8002",
-           "ML_USERNAME": "admin",
-           "ML_PASSWORD": "your-password",
-           "ML_AUTH_TYPE": "basic",
-           "ML_READONLY": "true"
-         }
-       }
-     }
-   }
-   ```
-
-### Claude Code (remote HTTP transport)
-
-```bash
-# Start server (Docker)
-ML_HOST=<host> ML_PASSWORD=<pass> MCP_API_KEY=<secret> \
-  docker compose -f docker-compose.mcp-only.yml up -d
-
-# Register with Claude Code
-claude mcp add --transport http marklogic http://localhost:3000/mcp \
-  --header "Authorization: Bearer <secret>"
-```
-
-See [docs/claude-code-remote-mcp.md](docs/claude-code-remote-mcp.md) for the full guide.
-
-### GitHub Copilot in VS Code
-
-Add to VS Code user settings or `.vscode/mcp.json`:
-
-```json
-{
-  "mcp": {
-    "servers": {
-      "marklogic": {
-        "type": "stdio",
-        "command": "node",
-        "args": ["/path/to/marklogic-mcp/dist/index.js"],
-        "env": {
-          "ML_HOST": "localhost",
-          "ML_PORT": "8000",
-          "ML_USERNAME": "admin",
-          "ML_PASSWORD": "your-password",
-          "ML_AUTH_TYPE": "digest",
-          "ML_READONLY": "true"
-        }
-      }
-    }
-  }
-}
-```
-
-Or connect to a running HTTP server: set `"type": "http"` and `"url": "http://localhost:3000/mcp"`.
-See [docs/getting-started.md](docs/getting-started.md#github-copilot-cli--vs-code-stdio-or-http) for the full guide including per-project config with input variables for secrets.
-
-### HTTP/SSE Transport (AWS QuickSight / remote agents)
-
-```bash
-MCP_TRANSPORT=http MCP_HTTP_PORT=3000 ML_HOST=your-host ML_USERNAME=admin ML_PASSWORD=pass \
-  node dist/index.js
-```
-
-### OAuth2 Bearer Token Passthrough
-
-When MarkLogic is configured as an OAuth2 resource server, the MCP server can forward each client's Bearer token directly to MarkLogic — MarkLogic validates the JWT and enforces its own per-user RBAC.
-
-```bash
-MCP_TRANSPORT=http MCP_HTTP_PORT=3000 ML_HOST=your-host ML_AUTH_TYPE=oauth \
-  node dist/index.js
-# ML_USERNAME / ML_PASSWORD are not used in oauth mode
-# Clients pass: Authorization: Bearer <user-jwt>
-```
-
-To configure MarkLogic as an OAuth2 resource server, use the `marklogic-oauth-setup` skill — it walks through the required Management API calls and XQuery for your OIDC provider. Key points verified on ML 12:
-
-- Create the external security via `sec:create-external-security()` (not raw XQuery) to preserve required element ordering
-- Set `authorization: oauth` and map JWT claim values to MarkLogic roles via `sec:role-set-external-names()` — the claim value matches the role's **external-name**, not its role-name
-- Apply `authentication: oauth` to **all** server groups (apps, enode, etc.)
-
-Flux tools are disabled in oauth mode (they require username:password credentials).
-
-Health check: `GET http://localhost:3000/health`
-
-### Docker Compose — full stack (MarkLogic + MCP server)
-
-```bash
-docker compose up
-# MarkLogic at http://localhost:8001 (Admin UI)
-# MCP server at http://localhost:3000
-```
-
-### Docker Compose — connect to existing MarkLogic / Semaphore containers
-
-If MarkLogic and/or Semaphore are already running in Docker on the same host, use
-the external-network compose file:
-
-```bash
-docker network create shared                      # one-time
-docker network connect shared <marklogic-container>  # attach existing containers
-docker network connect shared <semaphore-container>
-
-ML_HOST=marklogic SEMAPHORE_HOST=semaphore ML_PASSWORD=admin \
-  docker compose -f docker-compose.external.yml up -d
-```
-
-See [docs/docker-networking.md](docs/docker-networking.md) for the full guide and
-alternative approaches (host network mode, host IP).
-
----
-
 ## Configuration
+
+Set these in your MCP client's `env` block (stdio) or the container environment (HTTP). A `.env`
+file is read only when the server process starts in this directory — `npm start`, `npm run dev`,
+or Docker. Copy `.env.example` to get started there.
+
+### The ones you almost always set
 
 | Variable | Default | Description |
 |---|---|---|
-| `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
-| `MCP_HTTP_PORT` | `3000` | HTTP transport port |
-| `MCP_API_KEY` | _(none)_ | Bearer token for HTTP transport auth |
 | `ML_HOST` | `localhost` | MarkLogic hostname or IP |
 | `ML_PORT` | `8000` | REST API port |
-| `ML_MANAGEMENT_PORT` | `8002` | Management API port |
-| `ML_USERNAME` | `admin` | MarkLogic username |
-| `ML_PASSWORD` | `admin` | MarkLogic password |
-| `ML_DATABASE` | `Documents` | Default database |
+| `ML_MANAGEMENT_PORT` | `8002` | Management API port (admin, forests, indexes) |
+| `ML_USERNAME` | _(required)_ | MarkLogic username — required unless `ML_AUTH_TYPE=oauth` |
+| `ML_PASSWORD` | _(required)_ | MarkLogic password — required unless `ML_AUTH_TYPE=oauth` |
+| `ML_DATABASE` | `Documents` | Default database for tools that don't name one |
 | `ML_AUTH_TYPE` | `digest` | `digest`, `basic`, or `oauth` (Bearer token passthrough to MarkLogic) |
+| `ML_READONLY` | `true` | Write tools are not registered at all when `true` |
+| `ML_ALLOW_EVAL` | `false` | Eval tools (`/v1/eval` XQuery/SJS) are not registered unless `true` |
+
+### Transport
+
+| Variable | Default | Description |
+|---|---|---|
+| `MCP_TRANSPORT` | `stdio` | `stdio` (agent launches the process) or `http` (listens on a port) |
+| `MCP_HTTP_PORT` | `3000` | HTTP transport port |
+| `MCP_HTTP_HOST` | `0.0.0.0` | Bind address for HTTP transport |
+| `MCP_API_KEY` | _(none)_ | Bearer token clients must present — set this on any non-localhost HTTP deployment |
+| `MCP_CORS_ORIGIN` | _(all)_ | Restrict CORS to a single origin |
+| `MCP_TRUST_PROXY` | _(disabled)_ | Express `trust proxy` setting — set when behind a reverse proxy (nginx, ALB, ingress). Use `1` for a single proxy, a number of hops, an IP/subnet list (e.g. `10.0.0.0/8`), or `loopback`. Avoid `true` (spoofable). Required to silence `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR` from `express-rate-limit`. |
+
+### Connection details
+
+| Variable | Default | Description |
+|---|---|---|
+| `ML_SSL` | `false` | Connect to MarkLogic over HTTPS |
+| `ML_SSL_REJECT_UNAUTHORIZED` | `true` | Reject self-signed certificates (`false` for dev environments) |
+| `ML_TIMEOUT_MS` | `30000` | HTTP request timeout for MarkLogic calls (milliseconds) |
 | `ML_OAUTH_TOKEN` | _(none)_ | Static Bearer token; required in `stdio` mode when `ML_AUTH_TYPE=oauth` |
-| `ML_SSL` | `false` | Enable HTTPS |
-| `ML_READONLY` | `true` | Block all write operations |
-| `ML_ALLOW_EVAL` | `false` | Enable `/v1/eval` (XQuery/SJS execution) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `LOG_FORMAT` | `json` | `json` or `pretty` |
-| `SEMAPHORE_HOST` | _(none)_ | Semaphore hostname (enables CLS + KMM connectivity) |
+
+### Flux — required for the `flux_*` bulk tools
+
+| Variable | Default | Description |
+|---|---|---|
+| `FLUX_RUNNER_URL` | _(none)_ | Flux runner HTTP URL (e.g. `http://localhost:8080`). Unset means the `flux_*` tools return a setup error. |
+| `FLUX_DATA_DIR` | `./flux-data` | Local directory mounted as `/data` in the Flux container |
+| `FLUX_TIMEOUT_MINUTES` | `30` | Flux operation timeout in minutes |
+
+### Optional integrations
+
+| Variable | Default | Description |
+|---|---|---|
+| `SEMAPHORE_HOST` | _(none)_ | Semaphore hostname — setting it enables the CLS + KMM tools |
 | `SEMAPHORE_SCS_PORT` | `5058` | Classification Server port |
 | `SEMAPHORE_KMM_PORT` | `5080` | Studio / KMM port |
 | `SEMAPHORE_USERNAME` | _(none)_ | KMM username |
 | `SEMAPHORE_PASSWORD` | _(none)_ | KMM password |
 | `SEMAPHORE_URL` | _(none)_ | Explicit CLS URL override (takes precedence over host:port) |
-| `FLUX_RUNNER_URL` | _(none)_ | Flux runner HTTP URL (e.g. `http://localhost:8082`) |
-| `FLUX_DATA_DIR` | `./flux-data` | Local directory mounted as `/data` in the Flux Docker container |
-| `FLUX_TIMEOUT_MINUTES` | `30` | Flux operation timeout in minutes |
-| `ML_TIMEOUT_MS` | `30000` | HTTP request timeout for MarkLogic calls (milliseconds) |
-| `ML_SSL_REJECT_UNAUTHORIZED` | `true` | Reject self-signed SSL certificates (`false` for dev environments) |
-| `MCP_HTTP_HOST` | `0.0.0.0` | Bind address for HTTP transport |
-| `MCP_CORS_ORIGIN` | _(all)_ | Restrict CORS to a single origin (default: allow all) |
-| `MCP_TRUST_PROXY` | _(disabled)_ | Express `trust proxy` setting — set when behind a reverse proxy (nginx, ALB, ingress). Use `1` for a single proxy, a number of hops, an IP/subnet list (e.g. `10.0.0.0/8`), or `loopback`. Avoid `true` (spoofable). Required to silence `ERR_ERL_UNEXPECTED_X_FORWARDED_FOR` from `express-rate-limit`. |
-| `ML_OAUTH_TOKEN` | _(none)_ | Static Bearer token; required in `stdio` mode when `ML_AUTH_TYPE=oauth` |
 | `ML_DHF_CLIENT_JAR` | _(none)_ | Absolute path to `marklogic-data-hub-<version>-client.jar` |
 | `ML_DHF_PORT` | _(ML_PORT)_ | DHF staging app server port |
 | `ML_DHF_JOBS_PORT` | _(ML_DHF_PORT+2)_ | DHF jobs app server port |
@@ -299,22 +531,19 @@ This MCP server does **not** use AI provider API keys itself — it is a tool se
 | **Amazon Bedrock agents** | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | AWS credentials chain |
 | **Google Vertex AI agents** | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account JSON path |
 
-**Example: Claude Code with this MCP server**
+**Example: Claude Code with this MCP server (stdio)**
 
 ```bash
-# 1. Set your Anthropic API key (client-side — not in the MCP server)
+# 1. Your Anthropic key is client-side — the MCP server never sees it
 export ANTHROPIC_API_KEY=sk-ant-...
 
-# 2. Start the MCP server (server-side — no AI keys needed)
-ML_HOST=my-marklogic MCP_API_KEY=my-secret \
-  docker compose -f docker-compose.mcp-only.yml up -d
-
-# 3. Register the MCP server with Claude Code
-claude mcp add --transport http marklogic http://localhost:3000/mcp \
-  --header "Authorization: Bearer my-secret"
+# 2. Register the server; Claude Code launches it per session, no AI keys needed
+claude mcp add marklogic \
+  -e ML_HOST=my-marklogic -e ML_USERNAME=admin -e ML_PASSWORD=my-password \
+  -- node "$PWD/dist/index.js"
 ```
 
-> **Tip:** `MCP_API_KEY` secures the MCP server's HTTP endpoint — it is unrelated to any AI provider key. Think of it as a password for the MCP server itself.
+> **Tip:** `MCP_API_KEY` (HTTP mode only) secures the MCP server's own endpoint — it is unrelated to any AI provider key. Think of it as a password for the MCP server itself.
 
 ---
 

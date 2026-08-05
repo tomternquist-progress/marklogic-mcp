@@ -26,6 +26,16 @@ const skillDirs = readdirSync(SKILLS_DIR)
 const readme = readFileSync(README, "utf8");
 const skillsDoc = readFileSync(SKILLS_DOC, "utf8");
 
+/** The slice of a Markdown doc under `heading`, up to the next same-or-higher-level
+ *  heading. Keeps the guard working when sections are reordered. */
+function section(doc: string, heading: string): string {
+  const start = doc.indexOf(heading);
+  expect(start, `document has no '${heading}' section`).toBeGreaterThan(-1);
+  const rest = doc.slice(start + heading.length);
+  const end = rest.search(/^## /m);
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
 /** Skill names from a Markdown catalog table: rows starting `| **\`name\`** |`. */
 function catalogNames(text: string): string[] {
   return [...text.matchAll(/^\|\s*\*\*`([a-z0-9-]+)`\*\*\s*\|/gm)].map((m) => m[1]).sort();
@@ -48,15 +58,11 @@ describe("skills catalog sync", () => {
   });
 
   it("the README Agent Skills table lists exactly the skills on disk", () => {
-    const section = readme.slice(readme.indexOf("## Agent Skills"), readme.indexOf("## Quick Start"));
-    expect(section.length, "README has no '## Agent Skills' section").toBeGreaterThan(0);
-    expect(catalogNames(section)).toEqual(skillDirs);
+    expect(catalogNames(section(readme, "## Agent Skills"))).toEqual(skillDirs);
   });
 
   it("the docs/SKILLS.md catalog lists exactly the skills on disk", () => {
-    const section = skillsDoc.slice(skillsDoc.indexOf("## The catalog"), skillsDoc.indexOf("## Using them"));
-    expect(section.length, "docs/SKILLS.md has no '## The catalog' section").toBeGreaterThan(0);
-    expect(catalogNames(section)).toEqual(skillDirs);
+    expect(catalogNames(section(skillsDoc, "## The catalog"))).toEqual(skillDirs);
   });
 
   it("the AGENT SKILLS section of INSTRUCTIONS_TEXT lists exactly the skills on disk", () => {
