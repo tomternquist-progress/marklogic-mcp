@@ -1,0 +1,8 @@
+{
+  "role-name": "myapp-writer",
+  "description": "Read/write access to myapp content",
+  "role": [
+    "rest-writer",
+    "myapp-reader"
+  ]
+}

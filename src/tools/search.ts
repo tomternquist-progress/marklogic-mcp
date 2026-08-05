@@ -11,56 +11,11 @@ import {
 export function registerSearchTools(server: McpServer, clients: MarkLogicClients): void {
   server.tool(
     "ml_search",
-    "Full-text and structured search across MarkLogic documents. Supports string queries (`q`) and JSON\n" +
-    "structured queries (`structured_query`).\n\n" +
-    "STRING vs STRUCTURED — pick correctly:\n" +
-    "  • q='hurricane'                                   → universal-index word match anywhere in the doc.\n" +
-    "  • structured_query (value-query) on a property    → exact match scoped to that field, NO range index.\n" +
-    "  • structured_query (word-query) on a property     → tokenised free-text scoped to that field.\n" +
-    "  • structured_query (range-query)                  → REQUIRES a range index on the field.\n" +
-    "  bareword `q='Hurricane'` is convenient but over-matches: it pulls docs that mention the word in\n" +
-    "  ANY field. For field-scoped exact matching, always prefer a structured value-query.\n\n" +
-    "STRUCTURED-QUERY COOKBOOK (REST search:query JSON; pass under top-level 'query' key):\n" +
-    "  Exact value on a JSON property (NO range index needed):\n" +
-    "    { query: { value-query: { json-property: 'incidentType', text: ['Hurricane'] } } }\n" +
-    "  Exact value on an XML element:\n" +
-    "    { query: { value-query: { element: { ns: '', name: 'state' }, text: ['TX'] } } }\n" +
-    "  Exact value on a field (server-defined field):\n" +
-    "    { query: { value-query: { field: { name: 'titleField' }, text: ['Helene'] } } }\n" +
-    "  Tokenised free-text in a JSON property:\n" +
-    "    { query: { word-query: { json-property: 'description', text: ['hurricane'] } } }\n" +
-    "  Multi-value OR (matches any of the listed values):\n" +
-    "    { query: { value-query: { json-property: 'incidentType', text: ['Hurricane','Tornado','Flood'] } } }\n" +
-    "  Range comparison (REQUIRES a range index on the bound field):\n" +
-    "    { query: { range-query: { json-property: 'fyDeclared', value: ['2024'], range-operator: 'GE',\n" +
-    "                               range-option: ['cached'] } } }\n" +
-    "  Collection or directory scoping:\n" +
-    "    { query: { collection-query: { uri: ['fema-disasters'] } } }\n" +
-    "    { query: { directory-query: { uri: ['/insurance/fema-disasters/'], infinite: true } } }\n" +
-    "  Combine clauses:\n" +
-    "    { query: { and-query: { queries: [\n" +
-    "        { value-query: { json-property: 'incidentType', text: ['Hurricane'] } },\n" +
-    "        { value-query: { json-property: 'state',        text: ['FL'] } }\n" +
-    "      ] } } }\n" +
-    "  Negation:\n" +
-    "    { query: { not-query: { value-query: { json-property: 'state', text: ['PR'] } } } }\n\n" +
-    "RESULT FORMAT: By default returns URIs, relevance scores, confidence, and fitness for each match.\n" +
-    "Pass `select_fields` to project document fields directly into each row — no follow-up\n" +
-    "ml_document_get calls needed. Pass `group_by`/`distinct`/`count` for inline aggregation.\n" +
-    "Pass `response_mode='inline_summary'` (default) to keep typical chat-scale answers inline.\n\n" +
-    "SELECT FIELDS:\n" +
-    "  select_fields=['declarationTitle','incidentType','state'] → each result has those fields.\n" +
-    "  Paths support dot navigation ('envelope.instance.id') and a leading '*' for recursive search\n" +
-    "  ('*.declarationTitle' finds the field at any depth).\n\n" +
-    "AGGREGATION:\n" +
-    "  distinct='declarationTitle' → one row per distinct value with its document count.\n" +
-    "  group_by='incidentType' + count=true → frequency table over the matched documents.\n" +
-    "  normalize_whitespace=true collapses runs of whitespace before grouping/projection.\n\n" +
-    "SNIPPET PATTERN (server-side extracts via search options) is still supported via the\n" +
-    "`options` parameter, but `select_fields` is preferred for ad-hoc questions because it does\n" +
-    "not require pre-deploying a search-options node.\n\n" +
-    "DISCOVERY: call ml_search_surface first — it returns valueQueryableFields with example values you can\n" +
-    "drop straight into a structured value-query.",
+    "Full-text and structured search across MarkLogic documents. Accepts a string query (q, universal index) or a JSON structured query (structured_query, field-scoped).\n\n" +
+    "PICKING THE FORM: q= matches a word anywhere in the document and over-matches for field-scoped questions. A value-query on a json-property gives exact field-scoped matching and needs NO range index. A word-query gives tokenised text in one field. Only range-query (GE/LE comparisons) requires a range index.\n\n" +
+    "PROJECTION: select_fields=[...] returns field values inline, so no follow-up ml_document_get is needed. distinct= and group_by=+count=true do single-call aggregation.\n\n" +
+    "DISCOVER FIRST: ml_search_surface (fields + indexes + options in one call) or ml_schema_discover — guessing field names is the most common cause of empty results.\n\n" +
+    "GUIDANCE: the marklogic-query-authoring skill (references/structured-query-cookbook.md) has the full structured-query recipe set — value/word/range, multi-value OR, collection and directory scoping, and-query, not-query — plus empty-result triage.",
     {
       q: z.string().optional().describe("Full-text query string (Google-style syntax supported)"),
       structured_query: z.record(z.unknown()).optional().describe("MarkLogic structured query JSON object"),
@@ -344,53 +299,11 @@ export function registerSearchTools(server: McpServer, clients: MarkLogicClients
 
   server.tool(
     "ml_parse_query",
-    "Parse a MarkLogic string-grammar query into a structured cts.query JSON object WITHOUT executing it.\n\n" +
-    "PRIMARY USE: chat → MarkLogic translation pipeline. Given a natural-language question, an LLM " +
-    "writes a string-grammar query (e.g. 'diabetes AND state:TX AND age GE 65'); ml_parse_query " +
-    "validates and returns the equivalent structured-query JSON; ml_search executes it.\n\n" +
-    "RETURN VALUE: the parsed cts.query is serialized in the SAME JSON shape that ml_search accepts via " +
-    "the structured_query parameter — you can pipe it straight through, store it, or modify it before executing.\n\n" +
-    "WHEN TO USE:\n" +
-    "  • Preview how a user's free-text query is interpreted (operators, phrases, tag bindings)\n" +
-    "  • Detect grammar parse errors before running an expensive search\n" +
-    "  • Convert a string query into a structured query for storage or programmatic manipulation\n" +
-    "  • Round-trip an LLM-written query through MarkLogic's parser to canonicalise it\n\n" +
-    "WHEN NOT TO USE ml_parse_query — STRUCTURED QUERIES ARE OFTEN A BETTER FIT.\n" +
-    "  cts.parse SJS REQUIRES a range index on every tagged binding (tags become cts.<kind>Reference\n" +
-    "  objects). For tags on non-indexed fields the parse fails with XDMP-ELEMRIDXNOTFOUND. BUT — this\n" +
-    "  is a limitation of cts.parse, NOT of MarkLogic. For EXACT-VALUE filtering on a non-indexed JSON\n" +
-    "  property/element/field, skip cts.parse entirely and pass a structured query directly to\n" +
-    "  ml_search — the JSON property value index is on by default, no range index needed:\n" +
-    "      ml_search structured_query='{\"query\":{\"value-query\":{\"json-property\":\"incidentType\",\"text\":[\"Hurricane\"]}}}'\n" +
-    "  For tokenised free-text in a specific field, use { word-query: { json-property: 'desc',\n" +
-    "  text: ['hurricane'] } }. For free-text across the whole doc, use ml_search q='hurricane'\n" +
-    "  (universal index). Reach for ml_parse_query only when you specifically need string-grammar\n" +
-    "  parsing (e.g. an LLM-written 'X AND Y NOT Z' expression with range comparisons on indexed\n" +
-    "  fields) OR when you want to round-trip a string query through MarkLogic's parser.\n\n" +
-    "BINDINGS map tag names that appear in qtext to range-indexed fields. Without bindings, only " +
-    "boolean operators (AND, OR, NOT, NEAR/k), quoted phrases, parens, and bare words are recognised — " +
-    "a tag like 'state:TX' becomes a literal word query for the token 'state:TX'.\n\n" +
-    "  Example:\n" +
-    "    qtext='diabetes AND importedAt GE 2024-01-01'\n" +
-    "    bindings={\n" +
-    "      importedAt: { type: 'element-range', name: 'importedAt', scalar_type: 'dateTime' }\n" +
-    "    }\n\n" +
-    "  GRAMMAR (cts.parse SJS only — NOT search-options grammar):\n" +
-    "    tag:value             — equality on the tag's range reference          e.g. importedAt:2026-01-01\n" +
-    "    tag <op> value        — range comparison, op is one of < <= = != > >=   e.g. age >= 65\n" +
-    "    tag <NAMED> value     — range comparison, NAMED is LT|LE|EQ|NE|GE|GT    e.g. age GE 65\n" +
-    "    SPACES are required around <op>/<NAMED>. Forms like 'age:>=65' or 'age:GE:65' are\n" +
-    "    REJECTED with XDMP-UNEXPECTED — the only colon allowed is the equality delimiter.\n" +
-    "    AND / OR / NOT combine clauses; parens group; \"phrase\" matches a phrase.\n\n" +
-    "  Binding types (every one requires a range index; the -range alias is documentation-only):\n" +
-    "    json-property / json-property-range  — JSON property range index\n" +
-    "    element / element-range              — XML element range index (use 'namespace' for non-default)\n" +
-    "    path / path-range                    — path range index ('name' is the XPath expression)\n" +
-    "    field / field-range                  — field range index\n\n" +
-    "DISCOVERY: run ml_search_surface (or ml_indexes_list + ml_schema_discover) first to learn which " +
-    "fields are range-indexed and what scalar types they hold; mis-typed bindings cause XDMP-CTSDIRQUERY " +
-    "at parse time.\n\n" +
-    "NO ML_ALLOW_EVAL REQUIRED — the parser script is fixed; only qtext and bindings flow in as data.",
+    "Parse a MarkLogic string-grammar query into a structured cts.query JSON object WITHOUT executing it. The result is in the same shape ml_search accepts via structured_query, so it can be piped straight through, stored, or edited first.\n\n" +
+    "USE FOR: previewing how free text is interpreted, catching grammar errors before an expensive search, or canonicalising an LLM-written query.\n\n" +
+    "⚠ PREREQUISITE: cts.parse requires a RANGE INDEX on every tagged binding; without one it fails with XDMP-ELEMRIDXNOTFOUND. For exact-value filtering on a non-indexed JSON property, skip this tool and pass a value-query structured_query directly to ml_search — the value index is on by default.\n\n" +
+    "BINDINGS map tag names in qtext to range-indexed fields. Without them only AND/OR/NOT/NEAR, quoted phrases, parens, and bare words are recognised.\n\n" +
+    "GUIDANCE: see the marklogic-query-authoring skill for the NL-to-query pipeline and index-requirement table.",
     {
       qtext: z.string().describe("String-grammar query text to parse, e.g. 'diabetes AND state:TX'"),
       bindings: z.record(z.object({

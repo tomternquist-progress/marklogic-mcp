@@ -1,0 +1,43 @@
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix exampledomain: <http://example.com/taxonomy/example/> .
+
+exampledomain:ExampleDomainTaxonomy a skos:ConceptScheme ;
+    skos:prefLabel "Example Domain Taxonomy"@en ;
+    skos:definition "Hierarchical taxonomy of Example Domain Taxonomy"@en ;
+    skos:hasTopConcept exampledomain:Compute, exampledomain:Storage .
+
+# ── TOP CONCEPT: COMPUTE ───────────────────────────────────────────
+
+exampledomain:Compute a skos:Concept ;
+    skos:inScheme exampledomain:ExampleDomainTaxonomy ;
+    skos:topConceptOf exampledomain:ExampleDomainTaxonomy ;
+    skos:prefLabel "Compute"@en ;
+    skos:definition "Services that provide processing capacity."@en ;
+    skos:narrower exampledomain:VirtualMachines, exampledomain:Serverless .
+
+exampledomain:VirtualMachines a skos:Concept ;
+    skos:inScheme exampledomain:ExampleDomainTaxonomy ;
+    skos:broader exampledomain:Compute ;
+    skos:prefLabel "Virtual Machines"@en ;
+    skos:altLabel "VM"@en, "Virtual Machine"@en .
+
+exampledomain:Serverless a skos:Concept ;
+    skos:inScheme exampledomain:ExampleDomainTaxonomy ;
+    skos:broader exampledomain:Compute ;
+    skos:prefLabel "Serverless Functions"@en ;
+    skos:altLabel "FaaS"@en .
+
+# ── TOP CONCEPT: STORAGE ───────────────────────────────────────────
+
+exampledomain:Storage a skos:Concept ;
+    skos:inScheme exampledomain:ExampleDomainTaxonomy ;
+    skos:topConceptOf exampledomain:ExampleDomainTaxonomy ;
+    skos:prefLabel "Storage"@en ;
+    skos:definition "Services that persist data."@en ;
+    skos:narrower exampledomain:ObjectStorage .
+
+exampledomain:ObjectStorage a skos:Concept ;
+    skos:inScheme exampledomain:ExampleDomainTaxonomy ;
+    skos:broader exampledomain:Storage ;
+    skos:prefLabel "Object Storage"@en ;
+    skos:altLabel "Blob Storage"@en .

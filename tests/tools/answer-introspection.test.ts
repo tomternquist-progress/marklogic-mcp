@@ -28,36 +28,6 @@ function setup() {
   return { tools, clients };
 }
 
-describe("ml_capabilities", () => {
-  it("returns the manifest for a known tool", async () => {
-    const { tools } = setup();
-    const result = await tools.get("ml_capabilities")!({ tool: "ml_search" });
-    expect(result.isError).toBeUndefined();
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.name).toBe("ml_search");
-    expect(Array.isArray(parsed.params)).toBe(true);
-  });
-
-  it("suggests the closest match for an unknown tool name", async () => {
-    const { tools } = setup();
-    const result = await tools.get("ml_capabilities")!({ tool: "ml_caplabilities" });
-    expect(result.isError).toBe(true);
-    const parsed = JSON.parse(result.content[0].text);
-    expect(parsed.error.code).toBe("UNKNOWN_NAME");
-    expect(parsed.error.details.closest).toBe("ml_capabilities");
-    expect(parsed.error.exampleValid).toEqual({ tool: "ml_capabilities" });
-  });
-
-  it("lists everything when no name is given", async () => {
-    const { tools } = setup();
-    const result = await tools.get("ml_capabilities")!({});
-    expect(result.isError).toBeUndefined();
-    const parsed = JSON.parse(result.content[0].text);
-    expect(Array.isArray(parsed.tools)).toBe(true);
-    expect(parsed.tools.length).toBeGreaterThan(0);
-  });
-});
-
 describe("ml_query_recipe", () => {
   it("lists recipes for 'list'", async () => {
     const { tools } = setup();

@@ -1,0 +1,6 @@
+<metadata>
+  <title>Identity Transform</title>
+  <description>
+    <p>Pass-through transform that returns the input unchanged.</p>
+  </description>
+</metadata>

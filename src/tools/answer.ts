@@ -22,7 +22,6 @@ import {
   titleCase,
   valueCandidates,
 } from "../utils/value-normalize.js";
-import { getCapability, TOOL_CAPABILITIES } from "../utils/capabilities.js";
 import { routeToCollection } from "../utils/collection-routing.js";
 import { closestMatch, makeToolError, newCorrelationId } from "../utils/tool-error.js";
 
@@ -735,44 +734,6 @@ export function registerAnswerTools(server: McpServer, clients: MarkLogicClients
           correlationId,
         });
       }
-    }
-  );
-
-  server.tool(
-    "ml_capabilities",
-    "RUNTIME CAPABILITY INTROSPECTION. Returns, per tool, the parameters this build actually supports. " +
-    "Use this to avoid trial-and-error when documentation and runtime drift apart: if a parameter is not " +
-    "listed here, this build does not accept it.\n\n" +
-    "Call with no arguments to enumerate every introspected tool, or pass tool='<name>' to inspect one. " +
-    "Currently covers the high-frequency NL/search/answer tools where contract drift has caused friction.",
-    {
-      tool: z.string().optional().describe("Tool name to inspect. Omit to list every introspected tool."),
-    },
-    async ({ tool }) => {
-      if (tool) {
-        const cap = getCapability(tool);
-        if (!cap) {
-          const allNames = TOOL_CAPABILITIES.map((c) => c.name);
-          const closest = closestMatch(tool, allNames);
-          return makeToolError({
-            code: "UNKNOWN_NAME",
-            class: "user_input",
-            message: `No capability manifest for "${tool}".`,
-            hint: closest
-              ? `Did you mean "${closest}"? Otherwise: ${allNames.join(", ")}.`
-              : `Available tools: ${allNames.join(", ")}.`,
-            details: { available: allNames, closest },
-            exampleValid: closest ? { tool: closest } : { tool: allNames[0] },
-          });
-        }
-        return { content: [{ type: "text", text: JSON.stringify(cap, null, 2) }] };
-      }
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify({ tools: TOOL_CAPABILITIES }, null, 2),
-        }],
-      };
     }
   );
 

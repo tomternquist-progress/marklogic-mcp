@@ -10,14 +10,12 @@ import { registerGraphTools } from "./graphs.js";
 import { registerQuickSightTools } from "./quicksight.js";
 import { registerOpticTools } from "./optic.js";
 import { registerFluxTools } from "./flux.js";
-import { registerSuggestApproachTool } from "./suggest-approach.js";
 import { registerFastTrackTools } from "./fasttrack.js";
 import { registerSemaphoreTools } from "./semaphore.js";
 import { registerExtensionTools } from "./extensions.js";
 import { registerSecurityTools } from "./security.js";
 import { registerPerformanceTools } from "./performance.js";
 import { registerDhfTools } from "./dhf.js";
-import { registerMlGradleTools } from "./ml-gradle.js";
 import { registerAnswerTools } from "./answer.js";
 
 export function registerAllTools(server: McpServer, clients: MarkLogicClients, config: AppConfig): void {
@@ -29,7 +27,6 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   // can set ML_READONLY=false and rely on MarkLogic role-based ACL instead.
   const effectiveAllowEval = allowEval && !readonly;
 
-  registerSuggestApproachTool(server);
   registerAdminTools(server, clients, readonly);
   registerDocumentTools(server, clients, readonly);
   registerSearchTools(server, clients);
@@ -45,6 +42,5 @@ export function registerAllTools(server: McpServer, clients: MarkLogicClients, c
   registerSecurityTools(server, clients);
   registerPerformanceTools(server, clients, effectiveAllowEval);
   registerDhfTools(server, clients, effectiveAllowEval, readonly, config.dhf, config.connection);
-  registerMlGradleTools(server);
   registerAnswerTools(server, clients);
 }
