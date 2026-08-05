@@ -4,9 +4,10 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for Mar
 
 ## Features
 
-- **80+ MCP tools** across 15 domains: admin (incl. logs), documents, security, search, search options, schema, eval, SPARQL/graphs, Optic (incl. vector search), performance, QuickSight, Flux, REST extensions, Semaphore (taxonomy + classification), and approach advisory
-- **5 MCP resources** including a machine-readable problem→solution decision guide
-- **13 MCP prompts** for query planning, code generation, import design, and BI integration
+- **103 MCP tools** across 15 domains: admin (incl. logs), documents, security, search, search options, schema, eval, SPARQL/graphs, Optic (incl. vector search), performance, QuickSight, Flux, REST extensions, Semaphore (taxonomy + classification), and DHF
+- **13 Agent Skills** carrying the MarkLogic know-how — import recipes, index prerequisites, TDE traps, SKOS publishing order — loaded only when the task calls for them ([guide](docs/SKILLS.md))
+- **6 MCP resources** including a machine-readable problem→solution decision guide
+- **3 MCP prompts** for one-shot import and BI-integration flows
 - **Two transports**: stdio (Claude Desktop, GitHub Copilot, local agents) and HTTP+SSE (Claude Code, GitHub Copilot, remote agents, QuickSight)
 - **Read-only by default** — writes gated behind `ML_READONLY=false`, eval gated behind `ML_ALLOW_EVAL=true`
 - **Basic and Digest auth** for MarkLogic REST API
@@ -19,16 +20,11 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server for Mar
 
 Before calling any query or import tool, an agent should read the `marklogic://instructions` resource. It contains a problem→tool decision table and a set of nine principles (e.g. "discover before you query", "native before eval", "Flux before REST for bulk loads"). This prevents common mistakes like using `ml_eval_javascript` for bulk import or `ml_document_put` in a loop.
 
-### Use the advisory tools when unsure
+### Let the skills do the routing
 
-Two tools exist specifically to guide tool selection:
+The deeper how-to guidance lives in [Agent Skills](docs/SKILLS.md), not in tool descriptions. Start from the **`marklogic`** router skill: it maps a goal to the MarkLogic-native capability, names the tools that implement it, and hands off to a deeper skill (`marklogic-bulk-import`, `marklogic-query-authoring`, `marklogic-performance`, …).
 
-| Advisory tool / resource | When to use |
-|---|---|
-| `marklogic://instructions` resource | Read at session start — machine-readable decision guide |
-| `ml_suggest_approach` | Call with a natural-language task to get ranked tool recommendations with ready-to-use recipe parameters |
-| `problem_advisor` prompt | Call with a goal to get a 6-section structured analysis (classification → native approach → discovery → tool sequence → pitfalls → alternatives) |
-| `query_approach_advisor` prompt | Call when the goal is a query and you need to choose between cts.search, Optic, or a hybrid |
+Skills are model-invoked — describe the goal and the agent loads what matches. If your client doesn't support skills, `marklogic://instructions` carries the same routing table.
 
 ### Discover before you query
 
@@ -51,11 +47,11 @@ Run these before writing any query or import plan.
 | Full-text filter THEN aggregate (hybrid) | `ml_optic_query` (fromSearch) | TDE view + cts query |
 | Count distinct values / faceted nav | `ml_values_query`, `ml_facets_query` | Range or element word index |
 
-Use the `query_approach_advisor` prompt to get a concrete, filled-in query plan for any of these goals.
+The `marklogic-query-authoring` skill covers this in depth — index prerequisites, a structured-query cookbook, and what to do when a query returns nothing or everything.
 
 ### Multi-model data: Documents + Triples + Vectors
 
-MarkLogic stores all three model types natively. Use `data_modeling_advisor` for guided design.
+MarkLogic stores all three model types natively. The `marklogic-data-modeling` skill covers guided design — model selection, the six URI design rules, and the envelope pattern.
 
 **Entity-oriented triple pattern (preferred)**
 
@@ -73,6 +69,44 @@ Store embeddings as a JSON array field. Define a TDE column with `scalar: "vec:v
 ### Bulk loading
 
 Always use `flux_import` for more than ~10 documents. It handles HTTP URL fetch, ZIP/gzip decompression, parallel batching, and automatic TDE view generation in a single call — 10–100× faster than looping `ml_document_put`.
+
+---
+
+## Agent Skills
+
+The MarkLogic know-how — Flux import recipes, index prerequisites, TDE syntax traps, SKOS publishing order, OAuth claim mapping — ships as **13 Agent Skills** in `.claude/skills/`, following the open [Agent Skills spec](https://agentskills.io/specification).
+
+Only each skill's ~500-character description stays in context; the body loads when the model matches a task to it, and bundled `references/` and `templates/` load only when the body points at them. That keeps the guidance out of the per-request tool-description budget — it previously cost ~50,700 tokens on every request.
+
+| Skill | Reach for it when |
+|---|---|
+| **`marklogic`** | Start here. Problem→capability router, discovery sequence, overlapping-tool selection, safety-flag effects, complete tool index |
+| **`marklogic-bulk-import`** | Bulk loading via Flux — URLs, S3, JDBC, RDF, open-data portals, TDE-at-ingest, bulk reprocessing |
+| **`marklogic-query-authoring`** | Composing any query, or triaging one returning nothing / everything |
+| **`marklogic-data-modeling`** | Documents vs triples vs vectors, URI schemes, TDE views, the envelope pattern |
+| **`marklogic-project-setup`** | The work should be repeatable or deployable — ml-gradle project, dev/prod config, CI/CD |
+| **`marklogic-server-side-code`** | SJS/XQuery modules, REST extensions, CTF and Flux transforms, TDE templates |
+| **`marklogic-rag`** | RAG and semantic search on ML 12 — Lexical, Vector, and Graph paradigms |
+| **`marklogic-performance`** | A query is slow or timing out; reading plans, caches, forest health |
+| **`marklogic-fasttrack`** | Faceted search UI — search options set plus the React scaffold |
+| **`marklogic-oauth-setup`** | OAuth2/OIDC bearer auth, or "token authenticates but has no roles" |
+| **`semaphore-integration`** | Wiring Semaphore to MarkLogic — pattern choice, CLS/KMM config, enrichment module |
+| **`semaphore-taxonomy`** | Authoring, loading, validating, and publishing SKOS taxonomies in KMM |
+| **`semaphore-classification-tuning`** | Classification results are wrong — labels → threshold → `.kid` weights |
+
+**Working in this repo?** Claude Code picks them up automatically; check with `/skills`.
+
+**Using the MCP server from your own project?** Skills don't travel over the MCP connection — copy them across:
+
+```bash
+npm run skills:install -- --list             # see what's available
+npm run skills:install -- --user             # → ~/.claude/skills (all projects)
+npm run skills:install -- --project ~/my-app # → ~/my-app/.claude/skills (check in for your team)
+```
+
+**Client without skill support?** Read `marklogic://instructions` — it carries the same routing table plus an index of every skill.
+
+See **[docs/SKILLS.md](docs/SKILLS.md)** for the full guide: the catalog with bundled files, how skills differ from tools and prompts, where the removed advisory tools and prompts went, authoring rules, and troubleshooting.
 
 ---
 
@@ -175,7 +209,7 @@ MCP_TRANSPORT=http MCP_HTTP_PORT=3000 ML_HOST=your-host ML_AUTH_TYPE=oauth \
 # Clients pass: Authorization: Bearer <user-jwt>
 ```
 
-To configure MarkLogic as an OAuth2 resource server, use the `oauth_setup_advisor` prompt in the MCP server — it generates the required Management API calls and XQuery for your OIDC provider. Key points verified on ML 12:
+To configure MarkLogic as an OAuth2 resource server, use the `marklogic-oauth-setup` skill — it walks through the required Management API calls and XQuery for your OIDC provider. Key points verified on ML 12:
 
 - Create the external security via `sec:create-external-security()` (not raw XQuery) to preserve required element ordering
 - Set `authorization: oauth` and map JWT claim values to MarkLogic roles via `sec:role-set-external-names()` — the claim value matches the role's **external-name**, not its role-name
@@ -286,11 +320,14 @@ claude mcp add --transport http marklogic http://localhost:3000/mcp \
 
 ## Tools Reference
 
-### Approach Advisory
+103 tools. Approach advisory is no longer a tool — see [Agent Skills](#agent-skills). The `marklogic` skill carries the same list in a form the agent reads directly.
+
+### Answer & Recipes (2 tools)
 
 | Tool | Description |
 |---|---|
-| `ml_suggest_approach` | Analyse a natural-language task and return ranked tool recommendations with ready-to-use recipe parameters. Call this before starting any non-trivial task. |
+| `ml_answer_query` | One-shot natural-language question answering over a collection — returns a concise answer plus rows and an audit trace of how it was resolved |
+| `ml_query_recipe` | Execute a pre-validated query template by name with minimal parameters, instead of hand-building a structured query |
 
 ### Admin (11 tools)
 
@@ -308,7 +345,7 @@ claude mcp add --transport http marklogic http://localhost:3000/mcp \
 | `ml_logs_list` | List available MarkLogic log files (ErrorLog.txt, AccessLog.txt, port-specific logs). Use before `ml_logs_read`. |
 | `ml_logs_read` | Read a MarkLogic server log file with optional time-range and regex filtering. Key files: `ErrorLog.txt`, `8002_AccessLog.txt`, `8000_AccessLog.txt`. |
 
-### Documents (6 tools)
+### Documents (7 tools)
 
 | Tool | Description |
 |---|---|
@@ -318,6 +355,7 @@ claude mcp add --transport http marklogic http://localhost:3000/mcp \
 | `ml_document_put` *(write)* | Create/replace document |
 | `ml_document_delete` *(write)* | Delete document |
 | `ml_document_patch` *(write)* | Partial update |
+| `ml_document_patch_batch` *(write)* | Apply the same patch operation across many documents in one call |
 
 ### Security (3 tools)
 
@@ -327,7 +365,7 @@ claude mcp add --transport http marklogic http://localhost:3000/mcp \
 | `ml_roles_list` | List all roles, or retrieve full properties for a named role |
 | `ml_document_permissions` | Return the read/update/insert/execute permissions on a document URI |
 
-### Search (5 tools)
+### Search (6 tools)
 
 Uses MarkLogic's universal index — no TDE or range index required for word queries.
 
@@ -338,6 +376,7 @@ Uses MarkLogic's universal index — no TDE or range index required for word que
 | `ml_values_query` | Lexicon/range index value counts and aggregates |
 | `ml_geospatial_search` | Find documents within a geospatial region — circle, bounding box, or polygon. Requires a geospatial element pair index; confirm with `ml_indexes_list` first. |
 | `ml_suggest` | Search autocomplete from a partial query string |
+| `ml_parse_query` | Parse a string-grammar query into a structured `cts.query` JSON object without executing it |
 
 > Range queries within `ml_search` require a pre-existing range index. Verify with `ml_indexes_list` first.
 
@@ -352,7 +391,7 @@ Manage named search-options configurations stored in the FastTrack endpoint (`/v
 | `ml_search_options_put` *(write)* | Create or replace a search-options configuration |
 | `ml_search_options_delete` *(write)* | Delete a search-options configuration |
 
-### Schema Discovery (7 tools)
+### Schema Discovery (8 tools)
 
 | Tool | Description |
 |---|---|
@@ -363,6 +402,7 @@ Manage named search-options configurations stored in the FastTrack endpoint (`/v
 | `ml_indexes_list` | All configured range, element, and field indexes |
 | `ml_collections_list` | Collections with document counts |
 | `ml_namespaces_list` | XML namespace registry |
+| `ml_search_surface` | One-shot discovery for query building — queryable fields, range indexes, and stored options sets for a collection or database |
 
 ### Optic (3 tools)
 
@@ -407,7 +447,7 @@ Queries MarkLogic's triple store. Supports three storage patterns: embedded trip
 | `ml_export_tabular` | Export collection as CSV or JSON rows |
 | `ml_facets_query` | Facet breakdowns for filter controls |
 
-### Performance (3 tools + 1 eval-gated)
+### Performance (3 tools + 2 eval-gated)
 
 | Tool | Description |
 |---|---|
@@ -415,6 +455,7 @@ Queries MarkLogic's triple store. Supports three storage patterns: embedded trip
 | `ml_search_query_plan` | Run a search in debug mode to see the resolved CTS query structure and candidate estimate |
 | `ml_forest_metrics` | Per-forest fragment counts, stand counts, deleted-fragment ratio, and merge status |
 | `ml_profile_query` *(requires `ML_ALLOW_EVAL=true`)* | Profile XQuery, SJS, or SPARQL execution time and cache/filter metrics |
+| `ml_force_merge` *(requires `ML_ALLOW_EVAL=true`)* | Force a merge on a database's forests to reclaim deleted fragments |
 
 ### REST Extensions (5 tools)
 
@@ -443,7 +484,19 @@ Flux is the preferred path for all bulk data operations. It runs as a subprocess
 > `flux_import` supports `generate_tde: true` to auto-create an Optic view from the imported collection in one call.
 > `flux_import` also supports inline Semaphore classification at ingest via `classify_with_semaphore: true` — attaches taxonomy categories to every imported document.
 
-### Semaphore (20 tools)
+### Data Hub Framework (5 tools)
+
+Requires `ML_ALLOW_EVAL=true`; `dhf_flow_run` additionally requires `ML_READONLY=false`, and `dhf_flow_run_jar` requires `DHF_CLIENT_JAR_PATH`.
+
+| Tool | Description |
+|---|---|
+| `dhf_status` | Check whether DHF 5.x is installed and report its version |
+| `dhf_flows_list` | List deployed flows in the staging database with each flow's steps |
+| `dhf_flow_run` *(write)* | Run a flow via the server-side DHF API |
+| `dhf_flow_run_jar` | Run a flow through the DHF client JAR |
+| `dhf_job_status` | Status and results of a flow run |
+
+### Semaphore (25 tools)
 
 Semaphore is the Progress Data Platform taxonomy and classification engine. These tools manage the full lifecycle: load a SKOS vocabulary into KMM, configure the publisher, publish rules to the Classification Server (CLS), and classify content.
 
@@ -480,7 +533,12 @@ Semaphore is the Progress Data Platform taxonomy and classification engine. Thes
 | `semaphore_concept_get` | Retrieve full concept profile: all labels, broader/narrower hierarchy, related links, scopeNote |
 | `semaphore_concept_labels_update` | Add or remove a single label on a concept — primary tool for classification quality tuning |
 | `semaphore_taxonomy_validate` | Run SPARQL-based structural quality checks on a KMM model (hierarchy health, orphan detection, anti-patterns) |
-| `semaphore_taxonomy_scaffold` | Generate a properly structured SKOS Turtle skeleton for a new taxonomy — output is ready to pass to `semaphore_kmm_skos_load` |
+| `semaphore_classify_batch` | Classify multiple MarkLogic documents against a taxonomy in one call |
+| `semaphore_kid_template_get` | Retrieve a model's publisher rule template (`.kid` file) from its workspace |
+| `semaphore_kid_template_set` | Upload a custom `.kid` Velocity rule template — controls how each concept becomes CLS rules at publish time |
+| `semaphore_task_list` | List open working copies (tasks) in KMM |
+| `semaphore_task_create` | Create a working copy of a taxonomy model |
+| `semaphore_task_commit` | Merge a task's changes into the master graph |
 
 > **Plain-SKOS vocabularies** (UNESCO, EuroVoc, AGROVOC, IPTC): run `semaphore_publish_config_fix_plain_skos` before `semaphore_publish`. Without it, the publisher generates only 1 CLS rule (for the ConceptScheme root) instead of one per concept. The root cause is that the publisher's SPARQL endpoint is a global store — each model's data lives in the named graph `urn:x-evn-master:{ModelName}` and is invisible without an explicit `GRAPH` clause. This tool adds the clause automatically.
 >
@@ -494,7 +552,8 @@ Semaphore is the Progress Data Platform taxonomy and classification engine. Thes
 
 | Resource URI | Description |
 |---|---|
-| `marklogic://instructions` | Problem-first decision guide — maps goals to native MarkLogic capabilities and tools. Read this at session start. |
+| `marklogic://instructions` | Problem-first decision guide — maps goals to native MarkLogic capabilities and tools, and indexes the Agent Skills. Read this at session start. |
+| `marklogic://security` | Live security posture (readonly, allowEval, auth) plus warnings about misconfigurations |
 | `marklogic://databases` | Live list of all databases in the cluster |
 | `marklogic://cluster/status` | Cluster health and version |
 | `marklogic://forests` | Forest list with status |
@@ -504,44 +563,15 @@ Semaphore is the Progress Data Platform taxonomy and classification engine. Thes
 
 ## Prompts Reference
 
-### Query Planning
+Three prompts remain. They are narrow, one-shot flows where invoking by name fits — everything advisory or reference-shaped is now an [Agent Skill](#agent-skills), so the agent can reach for it without being asked.
 
 | Prompt | Purpose |
 |---|---|
-| `query_approach_advisor` | Choose between cts.search, Optic, or a hybrid approach for a query goal. Returns 6-section plan: classification, approach, prerequisites, query construction, performance notes, pitfalls. |
-| `problem_advisor` | Map any natural-language goal to MarkLogic-native tools. Returns 6-section analysis: classification, native approach, discovery sequence, tool sequence, pitfalls, alternatives. |
-| `structured_query_builder` | Natural language → MarkLogic structured query JSON |
-| `optic_query_builder` | Requirements + schema/view → Optic API plan (SJS style) |
-| `sparql_query_builder` | Natural language → SPARQL |
-
-### Code Generation
-
-| Prompt | Purpose |
-|---|---|
-| `xquery_function_generator` | Generate XQuery with MarkLogic 12 idioms and namespace handling |
-| `sjs_module_generator` | Generate SJS transforms, REST extensions, or library modules |
-| `tde_schema_generator` | Generate a TDE JSON template from a collection and sample fields |
-| `rest_extension_generator` | Scaffold a MarkLogic REST API extension with HTTP method handlers |
-
-### Import Design
-
-| Prompt | Purpose |
-|---|---|
-| `data_import_advisor` | Choose the right import tool and strategy (always considers Flux first) |
 | `gdelt_import` | Ready-to-run `flux_import` call for a GDELT 1.0 event export date |
-
-### Multi-Model Design
-
-| Prompt | Purpose |
-|---|---|
-| `data_modeling_advisor` | Design a MarkLogic multi-model schema combining Documents, Triples, and Vectors. Returns 8-section plan: model selection, document design, triple design (entity-oriented pattern + managed-triples reprocess path), vector/embedding design, TDE schema, import sequence, query plan, pitfalls. |
-
-### QuickSight
-
-| Prompt | Purpose |
-|---|---|
 | `quicksight_dataset_designer` | Design a QuickSight dataset sourced from MarkLogic — discovery, field mapping, aggregation strategy |
 | `quicksight_dashboard_planner` | Plan a QuickSight dashboard from a business question |
+
+The 22 advisor and generator prompts that used to live here became skills; [docs/SKILLS.md](docs/SKILLS.md#what-moved-here) maps each old name to its replacement.
 
 ---
 
@@ -552,14 +582,19 @@ src/
   server.ts          — factory: createMcpServer() wires tools + resources + prompts
   index.ts           — CLI entry; selects stdio or HTTP transport
   tools/             — one file per domain; registerXxxTools() functions
-    semaphore.ts     — 12 Semaphore tools (CLS + KMM taxonomy management)
+    semaphore.ts     — Semaphore tools (CLS + KMM taxonomy management)
   resources/         — static + dynamic resources; INSTRUCTIONS_TEXT decision guide
-  prompts/           — all prompts; query_approach_advisor and problem_advisor first
+  prompts/           — the three remaining one-shot prompts
   client/            — typed HTTP clients for each MarkLogic API surface
     semaphore.ts     — CLS XML API + KMM REST API + publisher workspace ZIP client
   config/            — dotenv loading and Zod validation
   transport/         — stdio and Express/HTTP transport wrappers
   utils/             — error formatting, digest auth, multipart builder
+
+.claude/skills/      — Agent Skills: the how-to guidance, loaded on demand
+scripts/
+  validate-skills.mjs — Agent Skills spec compliance check
+  install-skills.mjs  — copy the skills into another project or ~/.claude/skills
 ```
 
 All write tools check `readonly` at registration time and are not registered when `ML_READONLY=true`. Eval tools check `allowEval` and are not registered when `ML_ALLOW_EVAL=false`. This means tools are absent from the MCP tool list entirely — they are never silently no-ops.
@@ -573,6 +608,8 @@ npm run dev          # tsx watch — auto-reload on save
 npm run build        # TypeScript → dist/
 npm run typecheck    # Type check without emitting
 npm test             # Vitest (skips gracefully if ML_HOST not set)
+npm run validate:skills   # Agent Skills spec compliance for .claude/skills/
+npm run skills:install    # Copy skills into another project (-- --user | --project <dir>)
 npm run inspector    # Launch MCP Inspector UI
 ```
 

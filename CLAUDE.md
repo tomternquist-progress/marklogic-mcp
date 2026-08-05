@@ -57,6 +57,18 @@ Run `npm run validate:skills` after any change — it enforces both limits, the
 name/directory match, and that every `references/` or `templates/` path mentioned in a
 SKILL.md actually exists.
 
+**Adding or removing a skill also means updating three catalogs**, or the build fails
+(`tests/skills/skills-catalog.test.ts`):
+
+1. the Agent Skills table in `README.md`
+2. the catalog table in `docs/SKILLS.md`
+3. the `AGENT SKILLS` section of `INSTRUCTIONS_TEXT` (`src/resources/index.ts`)
+
+`docs/SKILLS.md` is the human-facing guide — installation, the tool/skill/prompt
+distinction, where the removed advisory tools and prompts went, and troubleshooting.
+Users who connect this MCP server from another project get skills only by copying them:
+`npm run skills:install -- --user` (`scripts/install-skills.mjs`).
+
 Current skills (13): `marklogic` (router), `marklogic-bulk-import`,
 `marklogic-query-authoring`, `marklogic-data-modeling`, `marklogic-rag`,
 `marklogic-performance`, `marklogic-server-side-code`, `marklogic-project-setup`,
@@ -199,6 +211,9 @@ If a prompt really is right:
   semaphore-classification-tuning/  — classification quality playbooks
 scripts/
   validate-skills.mjs   — Agent Skills spec compliance check (npm run validate:skills)
+  install-skills.mjs    — copy skills into another project / ~/.claude (npm run skills:install)
+docs/
+  SKILLS.md          — human-facing skills guide: install, catalog, migration, troubleshooting
 src/
   server.ts          — factory: createMcpServer() wires tools + resources + prompts
   index.ts           — CLI entry point; selects stdio or HTTP transport
@@ -270,6 +285,7 @@ npm run build             # TypeScript → dist/; always run after editing .ts f
 npm test                  # Vitest; tests skip gracefully if ML_HOST is not set
 npm run lint              # ESLint over src/
 npm run validate:skills   # Agent Skills spec compliance for .claude/skills/
+npm run skills:install    # Copy skills elsewhere (-- --user | --project <dir> | --list)
 npm run dev               # Watch mode for development
 ```
 

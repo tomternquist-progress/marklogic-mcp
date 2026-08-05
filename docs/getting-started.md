@@ -314,8 +314,8 @@ The agent will use `ml_search` with the universal index — no configuration nee
 > "Discover the schema for the 'customers' collection, create a TDE view, then
 > count customers by country."
 
-The agent will chain `ml_schema_discover` → `tde_schema_generator` prompt →
-`ml_tde_install` → `ml_optic_query` with a GROUP BY.
+The agent will chain `ml_schema_discover` → the `marklogic-server-side-code` skill
+(TDE template syntax) → `ml_tde_install` → `ml_optic_query` with a GROUP BY.
 
 ### 5. Bulk import
 
@@ -343,8 +343,9 @@ Key settings to know:
 
 ## Next Steps
 
-- Browse the full [Tools Reference](../README.md#tools-reference) for all 80+ tools
-- Try the `problem_advisor` prompt with a natural-language goal
-- Set up [Semaphore integration](../README.md#semaphore-20-tools) for taxonomy
+- Browse the full [Tools Reference](../README.md#tools-reference) for all 103 tools
+- Install the [Agent Skills](SKILLS.md) so the agent picks the right approach on the
+  first try: `npm run skills:install -- --user`
+- Set up [Semaphore integration](../README.md#semaphore-25-tools) for taxonomy
   and classification
 - Connect [AWS QuickSight](../README.md#aws-quicksight-integration) for BI dashboards

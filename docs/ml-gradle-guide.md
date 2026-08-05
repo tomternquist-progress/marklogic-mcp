@@ -5,8 +5,8 @@ plugin. It covers the project layout, the deploy lifecycle, and the gotchas you'
 your first deploy. Everything below was verified end-to-end against MarkLogic 12.0.1
 during the development of this MCP server.
 
-For a deploy-ready starter project, use the `ml_gradle_scaffold` tool — it returns a
-file map with every gotcha here already addressed.
+For a deploy-ready starter project, use the `marklogic-project-setup` skill — its
+`templates/` tree is a complete project with every gotcha here already addressed.
 
 ---
 
@@ -94,8 +94,8 @@ server with `mlAppName` as its name, and three forests by default.
 
 ## The four first-deploy gotchas
 
-These each cost ~30 minutes to discover the first time. The `ml_gradle_scaffold` tool
-emits projects that have all four already fixed.
+These each cost ~30 minutes to discover the first time. The `marklogic-project-setup`
+skill's template tree has all four already fixed.
 
 ### 1. Basic auth challenge → "unsupported auth scheme"
 

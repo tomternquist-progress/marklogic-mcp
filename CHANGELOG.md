@@ -9,6 +9,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Agent Skills documentation and installer** (`docs/SKILLS.md`, `scripts/install-skills.mjs`)
+  `docs/SKILLS.md` is the human-facing guide to the 13 skills in `.claude/skills/`: why they
+  exist (the ~50,700-token per-request tool-description cost), the three progressive-disclosure
+  levels, the full catalog with bundled `references/`/`templates/`, how skills differ from
+  tools/prompts/resources, and troubleshooting.
+
+  Skills are discovered from the agent's filesystem, so they do **not** travel over the MCP
+  connection. `npm run skills:install -- --user` (or `--project <dir>`) copies them into
+  `~/.claude/skills` or another project, which is how anyone connecting this server from their
+  own repo gets the guidance. Existing skill directories are skipped unless `--force`, so
+  re-running after a pull never discards local edits. Supports `--list`, `--only a,b`, and
+  `--dry-run`.
+
+- **Skills catalog sync guard** (`tests/skills/skills-catalog.test.ts`)
+  Fails the build when a skill is added or removed without updating all three catalogs — the
+  README table, the `docs/SKILLS.md` catalog, and the `AGENT SKILLS` section of
+  `INSTRUCTIONS_TEXT`. Also asserts the Agent Skills spec constraints (frontmatter fields,
+  name/directory match, no dead `references/` links) under `npm test`, and `npm run
+  validate:skills` now runs in CI alongside the test suite.
+
 - **`semaphore_publish_diagnose` tool** (`src/tools/semaphore.ts`, `src/client/semaphore.ts`)
   Triangulates KMM concept count (OE API), labeled English concept count (SPARQL with GRAPH
   clause), and CLS estimated rule count to identify the root cause of publish failures.
@@ -64,6 +84,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   One-time global prerequisite: at least one model must have been published via Studio once.
 
 ### Changed
+
+- **README, getting-started, and ml-gradle guide brought in line with the skills migration**
+  Documented all 103 registered tools (the reference tables were missing 15, and two whole
+  groups — Answer & Recipes and Data Hub Framework — had no section at all), corrected the
+  per-group counts, added an Agent Skills section with the catalog and install instructions,
+  replaced the Prompts Reference (25 prompts → 3) with a pointer to the migration table, and
+  added the `marklogic://security` resource that was never listed. Stale references to the
+  removed `ml_suggest_approach`, `ml_gradle_scaffold`, `semaphore_taxonomy_scaffold`,
+  `problem_advisor`, `query_approach_advisor`, `tde_schema_generator`, and `oauth_setup_advisor`
+  now point at the skills that replaced them.
 
 - **`semaphore_publish` prerequisites** (`src/tools/semaphore.ts`)
   Removed "open Studio Publisher tab" as a required manual step. Updated to document that
